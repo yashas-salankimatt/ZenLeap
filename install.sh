@@ -43,7 +43,7 @@ gui_prompt() {
         echo "$result"
     else
         echo -n "$message (y/n): "
-        read -r response
+        read -r response < /dev/tty
         echo "$response"
     fi
 }
@@ -86,7 +86,7 @@ gui_choose() {
             echo "  $((i+1)). ${options[$i]}"
         done
         echo -n "Select (1-${#options[@]}): "
-        read -r selection
+        read -r selection < /dev/tty
         echo "$selection"
     fi
 }
@@ -237,7 +237,7 @@ find_profile() {
         done
         echo ""
         echo -n "Select profile (1-${#PROFILES[@]}): "
-        read -r selection
+        read -r selection < /dev/tty
 
         if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#PROFILES[@]} ]; then
             echo -e "${RED}Invalid selection${NC}"
@@ -257,7 +257,7 @@ check_zen_running() {
     if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Zen Browser is running${NC}"
         echo -n "Close Zen Browser to continue? (y/n): "
-        read -r response
+        read -r response < /dev/tty
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
                 osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
@@ -489,7 +489,7 @@ do_install() {
 
     # Offer to open Zen
     echo -n "Open Zen Browser now? (y/n): "
-    read -r response
+    read -r response < /dev/tty
     if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
         if [ "$OS" = "macos" ]; then
             open "$ZEN_APP"
@@ -521,7 +521,7 @@ do_uninstall() {
     if [ "$ZEN_WAS_RUNNING" = true ]; then
         echo ""
         echo -n "Reopen Zen Browser? (y/n): "
-        read -r response
+        read -r response < /dev/tty
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
                 open "$ZEN_APP"
