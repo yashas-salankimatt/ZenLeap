@@ -271,95 +271,48 @@
 
   // Find the scrollable tab container
   function findScrollableTabContainer() {
-    // Strategy: Walk up from current tab to find the actual scrollable ancestor
     const currentTab = gBrowser.selectedTab;
-    if (!currentTab) {
-      log('findScrollableTabContainer: No current tab');
-      return null;
-    }
+    if (!currentTab) return null;
 
     // Walk up from the tab to find scrollable parent
     let element = currentTab.parentElement;
     let depth = 0;
-    const maxDepth = 20;
+    const maxDepth = 15;
 
     while (element && depth < maxDepth) {
-      // Check if this element is actually scrollable (has overflow content)
-      const hasOverflowContent = element.scrollHeight > element.clientHeight;
-      const style = window.getComputedStyle(element);
-      const canScroll = style.overflowY === 'auto' || style.overflowY === 'scroll' ||
-                        style.overflow === 'auto' || style.overflow === 'scroll';
-
-      // Also check for XUL scrollbox
-      const isScrollbox = element.tagName?.toLowerCase() === 'scrollbox' ||
-                          element.tagName?.toLowerCase() === 'arrowscrollbox' ||
-                          element.classList?.contains('scrollbox');
-
-      if (hasOverflowContent && (canScroll || isScrollbox)) {
-        log(`findScrollableTabContainer: Found at depth ${depth}: ${element.tagName}#${element.id}.${element.className}`);
-        log(`  scrollHeight=${element.scrollHeight}, clientHeight=${element.clientHeight}`);
-        return element;
+      // Check for Firefox/XUL scrollbox property (most common in Zen)
+      if (element.scrollbox && element.scrollbox.scrollHeight > element.scrollbox.clientHeight) {
+        return element.scrollbox;
       }
 
-      // Check for Firefox/XUL scrollbox property
-      if (element.scrollbox && element.scrollbox.scrollHeight > element.scrollbox.clientHeight) {
-        log(`findScrollableTabContainer: Found scrollbox property at depth ${depth}`);
-        return element.scrollbox;
+      // Check if this element is directly scrollable
+      const hasOverflowContent = element.scrollHeight > element.clientHeight;
+      if (hasOverflowContent) {
+        const style = window.getComputedStyle(element);
+        const canScroll = style.overflowY === 'auto' || style.overflowY === 'scroll';
+        const isScrollbox = element.tagName?.toLowerCase() === 'scrollbox' ||
+                            element.tagName?.toLowerCase() === 'arrowscrollbox';
+
+        if (canScroll || isScrollbox) {
+          return element;
+        }
       }
 
       element = element.parentElement;
       depth++;
     }
 
-    // Fallback: Try known selectors and check which one is actually scrollable
-    const selectors = [
-      '#tabbrowser-arrowscrollbox',
-      '#tabbrowser-tabs',
-      '.tabbrowser-tabs',
-      '#TabsToolbar',
-      '#zen-sidebar-tabs-wrapper',
-      '#vertical-pinned-tabs-container',
-      '.zen-workspace-tabs-section',
-      'arrowscrollbox',
-      '[orient="vertical"]'
-    ];
-
+    // Fallback: try known selectors
+    const selectors = ['#tabbrowser-arrowscrollbox', 'arrowscrollbox', '#tabbrowser-tabs'];
     for (const selector of selectors) {
       const el = document.querySelector(selector);
-      if (el) {
-        // Check the element itself
-        if (el.scrollHeight > el.clientHeight) {
-          log(`findScrollableTabContainer: Fallback found ${selector}, scrollHeight=${el.scrollHeight}, clientHeight=${el.clientHeight}`);
-          return el.scrollbox || el;
-        }
-        // Check if it has a scrollbox child/property
-        if (el.scrollbox && el.scrollbox.scrollHeight > el.scrollbox.clientHeight) {
-          log(`findScrollableTabContainer: Fallback found ${selector}.scrollbox`);
-          return el.scrollbox;
-        }
+      if (el?.scrollbox?.scrollHeight > el?.scrollbox?.clientHeight) {
+        return el.scrollbox;
+      }
+      if (el?.scrollHeight > el?.clientHeight) {
+        return el;
       }
     }
-
-    // Last resort: find ANY element with vertical scroll that contains tabs
-    const allScrollable = document.querySelectorAll('*');
-    for (const el of allScrollable) {
-      if (el.scrollHeight > el.clientHeight + 100) { // At least 100px of overflow
-        if (el.querySelector('tab') || el.closest('tab')) {
-          log(`findScrollableTabContainer: Last resort found ${el.tagName}#${el.id}`);
-          return el;
-        }
-      }
-    }
-
-    log('findScrollableTabContainer: Could not find scrollable container');
-    // Debug: log the tab's ancestry
-    let debug = currentTab;
-    let ancestry = [];
-    while (debug && ancestry.length < 15) {
-      ancestry.push(`${debug.tagName}#${debug.id}(sh:${debug.scrollHeight},ch:${debug.clientHeight})`);
-      debug = debug.parentElement;
-    }
-    log('Tab ancestry: ' + ancestry.join(' > '));
 
     return null;
   }
@@ -368,22 +321,14 @@
   // position: 'center', 'top', or 'bottom'
   function scrollTabIntoView(position) {
     const currentTab = gBrowser.selectedTab;
-    if (!currentTab) {
-      log('No current tab to scroll to');
-      return;
-    }
+    if (!currentTab) return;
 
     const scrollContainer = findScrollableTabContainer();
     if (!scrollContainer) {
-      log('Could not find scrollable tab container - trying scrollIntoView fallback');
       // Fallback: use native scrollIntoView
-      try {
-        const block = position === 'center' ? 'center' : (position === 'top' ? 'start' : 'end');
-        currentTab.scrollIntoView({ behavior: 'smooth', block: block });
-        log(`Used scrollIntoView fallback with block=${block}`);
-      } catch (e) {
-        log(`scrollIntoView fallback failed: ${e}`);
-      }
+      const block = position === 'center' ? 'center' : (position === 'top' ? 'start' : 'end');
+      currentTab.scrollIntoView({ behavior: 'smooth', block: block });
+      log(`Scroll fallback: scrollIntoView(${block})`);
       return;
     }
 
@@ -392,69 +337,42 @@
     const tabRect = currentTab.getBoundingClientRect();
     const currentScrollTop = scrollContainer.scrollTop;
 
-    log(`scrollTabIntoView: container rect: top=${containerRect.top}, height=${containerRect.height}`);
-    log(`scrollTabIntoView: tab rect: top=${tabRect.top}, height=${tabRect.height}`);
-    log(`scrollTabIntoView: currentScrollTop=${currentScrollTop}, scrollHeight=${scrollContainer.scrollHeight}`);
-
     // Calculate tab position relative to scroll container's content
-    // tabRect is relative to viewport, we need to adjust for container position and current scroll
     const tabTopInContainer = tabRect.top - containerRect.top + currentScrollTop;
     const tabBottomInContainer = tabTopInContainer + tabRect.height;
     const tabCenterInContainer = tabTopInContainer + tabRect.height / 2;
 
     const viewHeight = containerRect.height;
-    const contentHeight = scrollContainer.scrollHeight;
-    const maxScroll = Math.max(0, contentHeight - viewHeight);
+    const maxScroll = Math.max(0, scrollContainer.scrollHeight - viewHeight);
 
-    log(`scrollTabIntoView: viewHeight=${viewHeight}, contentHeight=${contentHeight}, maxScroll=${maxScroll}`);
-
-    // Check if scrolling is even possible
+    // Check if scrolling is possible
     if (maxScroll <= 0) {
-      log('Tab container is not scrollable (all tabs fit in view) - trying scrollIntoView fallback');
-      // Try fallback anyway
-      try {
-        const block = position === 'center' ? 'center' : (position === 'top' ? 'start' : 'end');
-        currentTab.scrollIntoView({ behavior: 'smooth', block: block });
-        log(`Used scrollIntoView fallback with block=${block}`);
-      } catch (e) {
-        log(`scrollIntoView fallback failed: ${e}`);
-      }
+      log('All tabs fit in view, no scroll needed');
       return;
     }
 
     let targetScroll;
-    const padding = 10; // Small padding from edges
+    const padding = 10;
 
     if (position === 'center') {
-      // Center the tab in the viewport
       targetScroll = tabCenterInContainer - viewHeight / 2;
-      log(`Centering tab: tabCenter=${tabCenterInContainer}, viewHeight=${viewHeight}, target=${targetScroll}`);
     } else if (position === 'top') {
-      // Put tab at the top of viewport
       targetScroll = tabTopInContainer - padding;
-      log(`Moving tab to top: tabTop=${tabTopInContainer}, target=${targetScroll}`);
     } else if (position === 'bottom') {
-      // Put tab at the bottom of viewport
       targetScroll = tabBottomInContainer - viewHeight + padding;
-      log(`Moving tab to bottom: tabBottom=${tabBottomInContainer}, viewHeight=${viewHeight}, target=${targetScroll}`);
     }
 
-    // Clamp to valid scroll range
+    // Clamp to valid range
     targetScroll = Math.max(0, Math.min(maxScroll, targetScroll));
 
-    // Only scroll if there's a meaningful change
+    // Only scroll if meaningful change
     if (Math.abs(targetScroll - currentScrollTop) < 2) {
-      log(`Already at ${position} position (or close enough)`);
+      log(`Already at ${position}`);
       return;
     }
 
-    // Smooth scroll
-    scrollContainer.scrollTo({
-      top: targetScroll,
-      behavior: 'smooth'
-    });
-
-    log(`Scrolled to ${position}: ${currentScrollTop} -> ${targetScroll}`);
+    scrollContainer.scrollTo({ top: targetScroll, behavior: 'smooth' });
+    log(`Scrolled ${position}: ${Math.round(currentScrollTop)} -> ${Math.round(targetScroll)}`);
   }
 
   // Handle keydown events
