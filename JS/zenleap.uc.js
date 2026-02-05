@@ -194,42 +194,63 @@
     }
   }
 
-  // Check if sidebar is currently hidden (compact mode active)
-  function isSidebarHidden() {
-    // Check if compact mode is hiding the sidebar
-    // Method 1: Check for compact mode attribute on root
-    const isCompactMode = document.documentElement.hasAttribute('zen-compact-mode') ||
-                          document.documentElement.hasAttribute('compact-mode');
+  // Check if we're in compact mode (sidebar CAN be hidden)
+  function isCompactModeEnabled() {
+    // Check for compact mode attribute on root
+    if (document.documentElement.hasAttribute('zen-compact-mode') ||
+        document.documentElement.hasAttribute('compact-mode')) {
+      return true;
+    }
 
-    // Method 2: Check the preference directly
+    // Check the preference directly
     try {
-      const compactModeEnabled = Services.prefs.getBoolPref('zen.view.compact', false);
-      const hideSidebar = Services.prefs.getBoolPref('zen.view.compact.hide-tabbar', true);
-      if (compactModeEnabled && hideSidebar) {
-        return true;
-      }
+      return Services.prefs.getBoolPref('zen.view.compact', false);
     } catch (e) {
-      // Prefs might not exist
+      return false;
+    }
+  }
+
+  // Check if sidebar is currently ACTUALLY visible on screen
+  // In compact mode, the sidebar always has a small sliver visible (for hover trigger)
+  // - Hidden: left=-223, right=5 (only ~5px visible)
+  // - Visible: left=-4, right=224 (most of width visible)
+  // So we check if MORE THAN HALF of the sidebar is on-screen
+  function isSidebarVisible() {
+    const sidebar = document.getElementById('navigator-toolbox');
+    if (!sidebar) {
+      log('Sidebar visible check: #navigator-toolbox not found');
+      return false;
     }
 
-    // Method 3: Check actual visibility of sidebar
-    const sidebar = document.getElementById('navigator-toolbox') ||
-                    document.getElementById('TabsToolbar') ||
-                    document.querySelector('#zen-sidebar-box-container');
+    const rect = sidebar.getBoundingClientRect();
+    const style = window.getComputedStyle(sidebar);
 
-    if (sidebar) {
-      const style = window.getComputedStyle(sidebar);
-      if (style.display === 'none' || style.visibility === 'hidden' ||
-          style.opacity === '0' || parseInt(style.width) === 0) {
-        return true;
-      }
+    // Check basic CSS visibility
+    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) {
+      log('Sidebar visible check: hidden via CSS');
+      return false;
     }
 
-    return isCompactMode;
+    // The key check: how much of the sidebar is actually visible?
+    // rect.right tells us how many pixels from the left edge of viewport to the right edge of sidebar
+    // If rect.right > half the sidebar width, most of it is visible
+    const visibleWidth = Math.max(0, rect.right);
+    const visiblePercent = (visibleWidth / rect.width) * 100;
+    const isVisible = visiblePercent > 50;
+
+    log(`Sidebar visible check: right=${rect.right}, width=${rect.width}, visiblePercent=${visiblePercent.toFixed(0)}%, isVisible=${isVisible}`);
+    return isVisible;
   }
 
   // Show the floating sidebar (for compact mode)
+  // Returns true if we actually toggled it (so we know to toggle it back)
   function showFloatingSidebar() {
+    // First check if sidebar is already visible - don't toggle if it is!
+    if (isSidebarVisible()) {
+      log('Sidebar already visible, not toggling');
+      return false;  // Return false = we didn't change anything
+    }
+
     // Try multiple methods to show the sidebar
 
     // Method 1: Execute Zen's command to show sidebar in compact mode
@@ -256,16 +277,7 @@
       }
     }
 
-    // Method 3: Set the sidebar expanded preference temporarily
-    try {
-      Services.prefs.setBoolPref('zen.view.sidebar-expanded.on-hover', true);
-      log('Set zen.view.sidebar-expanded.on-hover to true');
-      return true;
-    } catch (e) {
-      log(`Setting sidebar-expanded pref failed: ${e}`);
-    }
-
-    // Method 4: Dispatch a synthetic mouse event to trigger hover behavior
+    // Method 3: Dispatch a synthetic mouse event to trigger hover behavior
     const sidebarTrigger = document.querySelector('#zen-sidebar-box-container') ||
                            document.getElementById('TabsToolbar');
     if (sidebarTrigger) {
@@ -285,6 +297,12 @@
 
   // Hide the floating sidebar (restore compact mode state)
   function hideFloatingSidebar() {
+    // First check if sidebar is actually visible - don't toggle if already hidden!
+    if (!isSidebarVisible()) {
+      log('Sidebar already hidden, not toggling');
+      return false;
+    }
+
     // Method 1: Try the hide sidebar command
     const hideSidebarCmd = document.getElementById('cmd_zenCompactModeShowSidebar');
     if (hideSidebarCmd) {
@@ -375,10 +393,11 @@
     browseDirection = null;
     sidebarWasExpanded = false;
 
-    // Show sidebar if in compact mode
-    if (isSidebarHidden()) {
+    // Show sidebar if in compact mode and sidebar is not already visible
+    if (isCompactModeEnabled()) {
+      // showFloatingSidebar checks visibility internally and returns false if already visible
       sidebarWasExpanded = showFloatingSidebar();
-      log(`Expanded sidebar on leap mode entry: ${sidebarWasExpanded}`);
+      log(`Compact mode active, expanded sidebar: ${sidebarWasExpanded}`);
     }
 
     document.documentElement.setAttribute('data-zenleap-active', 'true');
