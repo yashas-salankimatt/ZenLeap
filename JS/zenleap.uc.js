@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.3.0
+// @version        2.4.0
 // ==/UserScript==
 
 (function() {
@@ -2499,6 +2499,21 @@
       return;
     }
 
+    // Handle help mode - Escape or ? to close
+    if (helpMode) {
+      if (event.key === 'Escape' || event.key === '?') {
+        event.preventDefault();
+        event.stopPropagation();
+        exitHelpMode();
+        return;
+      }
+      // Any other key also closes help mode
+      event.preventDefault();
+      event.stopPropagation();
+      exitHelpMode();
+      return;
+    }
+
     // Handle search mode input first
     if (searchMode) {
       if (handleSearchKeyDown(event)) {
@@ -2795,6 +2810,11 @@
       if (jumpForward()) {
         exitLeapMode(true); // Center scroll
       }
+      return;
+    }
+    // ? - open help modal
+    if (originalKey === '?') {
+      enterHelpMode();
       return;
     }
 

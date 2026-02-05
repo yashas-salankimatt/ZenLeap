@@ -5,6 +5,26 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-02-05
+
+### Added
+- **Help Modal** - Comprehensive keybinding reference
+  - `Ctrl+Space` → `?` = open help modal
+  - Shows all keybindings organized by mode
+  - Glassmorphism UI matching search modal
+  - Press any key to close
+- **Tab Search Enhancements**
+  - Multi-word fuzzy search (words can match in any order)
+  - Recency-based ranking with exponential decay
+  - `x` in normal mode or `Ctrl+X` in insert mode = close selected tab
+  - `S` in normal mode = substitute entire search query
+  - `j`/`k` navigation in normal mode
+  - Improved cursor visibility with block cursor in normal mode
+
+### Changed
+- Search results now exclude current tab
+- Increased search results window height for more results
+
 ## [2.3.0] - 2025-02-05
 
 ### Added
@@ -105,6 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.4.0 | 2025-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |
 | 2.3.0 | 2025-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |
 | 2.2.0 | 2025-02-05 | Jump history (o/i), marks (m/') |
 | 2.1.0 | 2025-02-05 | Manager app, compact mode, arrow keys |

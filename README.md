@@ -40,18 +40,25 @@ Scroll the current tab into view:
 Quickly find and switch to any tab with fuzzy search:
 - `Ctrl+/` — Open search modal
 - Type to fuzzy search through all open tabs by title and URL
+- Multi-word search: words can match in any order (e.g., "git hub" matches "GitHub")
+- Recency-weighted ranking: recently accessed tabs rank higher
 - Real-time results with match highlighting
 - Navigate with `↑`/`↓` or `Ctrl+j`/`Ctrl+k`
 - Press `1-9` in normal mode to quick jump to a result
 - `Enter` — Open selected tab
+- `x` (normal) or `Ctrl+X` (insert) — Close selected tab
 - `Escape` — Toggle between vim modes or close modal
 
 **Vim Mode in Search:**
 - Starts in INSERT mode for typing
 - `Escape` toggles to NORMAL mode
-- Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`
-- Editing: `x`, `s`, `D`, `C`
+- Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`, `j`, `k`
+- Editing: `x`, `s`, `S`, `D`, `C`
 - Insert switches: `i`, `a`, `I`, `A`
+
+### Help
+- `Ctrl+Space` → `?` — Open help modal with all keybindings
+- Press any key to close
 
 ### Compact Mode Support
 When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating.
@@ -191,8 +198,10 @@ cd claude-code/ZenLeap
 | **Tab Search** | `Ctrl+/` | Open fuzzy search modal |
 | | `↑/↓` or `Ctrl+j/k` | Navigate results |
 | | `Enter` | Open selected tab |
+| | `x` or `Ctrl+X` | Close selected tab |
 | | `1-9` (normal) | Quick jump to result |
 | | `Escape` | Toggle vim mode / close |
+| **Help** | `?` | Open help modal |
 
 ### Examples
 
