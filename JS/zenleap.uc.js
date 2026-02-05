@@ -1037,22 +1037,21 @@
           background-color: #455a6f;
         }
 
-        tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]:hover::after {
-          opacity: 0;
-          width: 0;
-          margin: 0;
+        /* Hide badge on hover to make room for close button */
+        tab:not([zen-glance-tab="true"]):hover > .tab-stack > .tab-content[data-zenleap-rel]::after {
+          display: none !important;
         }
 
+        /* Hide close button by default */
         tab .tab-close-button {
-          visibility: hidden;
-          opacity: 0;
-          width: 0;
-          margin: 0;
+          display: none !important;
         }
 
+        /* Show close button on hover */
         tab:hover .tab-close-button {
-          visibility: visible;
-          opacity: 1;
+          display: flex !important;
+          visibility: visible !important;
+          opacity: 1 !important;
         }
 
         /* Highlighted tab badge */
