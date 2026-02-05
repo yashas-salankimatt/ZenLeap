@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.0.0
+// @version        2.1.0
 // ==/UserScript==
 
 (function() {
@@ -39,6 +39,9 @@
   let highlightedTabIndex = -1;
   let originalTabIndex = -1;
   let browseDirection = null;  // 'up' or 'down' - initial direction
+
+  // Sidebar state (for compact mode)
+  let sidebarWasExpanded = false;  // Track if we expanded the sidebar
 
   // Utility: Convert number to display character
   function numberToDisplay(num) {
@@ -191,6 +194,140 @@
     }
   }
 
+  // Check if sidebar is currently hidden (compact mode active)
+  function isSidebarHidden() {
+    // Check if compact mode is hiding the sidebar
+    // Method 1: Check for compact mode attribute on root
+    const isCompactMode = document.documentElement.hasAttribute('zen-compact-mode') ||
+                          document.documentElement.hasAttribute('compact-mode');
+
+    // Method 2: Check the preference directly
+    try {
+      const compactModeEnabled = Services.prefs.getBoolPref('zen.view.compact', false);
+      const hideSidebar = Services.prefs.getBoolPref('zen.view.compact.hide-tabbar', true);
+      if (compactModeEnabled && hideSidebar) {
+        return true;
+      }
+    } catch (e) {
+      // Prefs might not exist
+    }
+
+    // Method 3: Check actual visibility of sidebar
+    const sidebar = document.getElementById('navigator-toolbox') ||
+                    document.getElementById('TabsToolbar') ||
+                    document.querySelector('#zen-sidebar-box-container');
+
+    if (sidebar) {
+      const style = window.getComputedStyle(sidebar);
+      if (style.display === 'none' || style.visibility === 'hidden' ||
+          style.opacity === '0' || parseInt(style.width) === 0) {
+        return true;
+      }
+    }
+
+    return isCompactMode;
+  }
+
+  // Show the floating sidebar (for compact mode)
+  function showFloatingSidebar() {
+    // Try multiple methods to show the sidebar
+
+    // Method 1: Execute Zen's command to show sidebar in compact mode
+    const showSidebarCmd = document.getElementById('cmd_zenCompactModeShowSidebar');
+    if (showSidebarCmd) {
+      try {
+        showSidebarCmd.doCommand();
+        log('Showed sidebar via cmd_zenCompactModeShowSidebar');
+        return true;
+      } catch (e) {
+        log(`cmd_zenCompactModeShowSidebar failed: ${e}`);
+      }
+    }
+
+    // Method 2: Try the toggle sidebar command
+    const toggleSidebarCmd = document.getElementById('cmd_zenToggleSidebar');
+    if (toggleSidebarCmd) {
+      try {
+        toggleSidebarCmd.doCommand();
+        log('Showed sidebar via cmd_zenToggleSidebar');
+        return true;
+      } catch (e) {
+        log(`cmd_zenToggleSidebar failed: ${e}`);
+      }
+    }
+
+    // Method 3: Set the sidebar expanded preference temporarily
+    try {
+      Services.prefs.setBoolPref('zen.view.sidebar-expanded.on-hover', true);
+      log('Set zen.view.sidebar-expanded.on-hover to true');
+      return true;
+    } catch (e) {
+      log(`Setting sidebar-expanded pref failed: ${e}`);
+    }
+
+    // Method 4: Dispatch a synthetic mouse event to trigger hover behavior
+    const sidebarTrigger = document.querySelector('#zen-sidebar-box-container') ||
+                           document.getElementById('TabsToolbar');
+    if (sidebarTrigger) {
+      const mouseEnterEvent = new MouseEvent('mouseenter', {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      });
+      sidebarTrigger.dispatchEvent(mouseEnterEvent);
+      log('Dispatched mouseenter event to sidebar');
+      return true;
+    }
+
+    log('Could not show floating sidebar - no method worked');
+    return false;
+  }
+
+  // Hide the floating sidebar (restore compact mode state)
+  function hideFloatingSidebar() {
+    // Method 1: Try the hide sidebar command
+    const hideSidebarCmd = document.getElementById('cmd_zenCompactModeShowSidebar');
+    if (hideSidebarCmd) {
+      try {
+        // This command toggles, so call it again to hide
+        hideSidebarCmd.doCommand();
+        log('Hid sidebar via cmd_zenCompactModeShowSidebar');
+        return true;
+      } catch (e) {
+        log(`cmd_zenCompactModeShowSidebar (hide) failed: ${e}`);
+      }
+    }
+
+    // Method 2: Try the toggle sidebar command
+    const toggleSidebarCmd = document.getElementById('cmd_zenToggleSidebar');
+    if (toggleSidebarCmd) {
+      try {
+        toggleSidebarCmd.doCommand();
+        log('Hid sidebar via cmd_zenToggleSidebar');
+        return true;
+      } catch (e) {
+        log(`cmd_zenToggleSidebar (hide) failed: ${e}`);
+      }
+    }
+
+    // Method 3: Dispatch mouseleave to trigger hover-off behavior
+    const sidebarTrigger = document.querySelector('#zen-sidebar-box-container') ||
+                           document.getElementById('TabsToolbar');
+    if (sidebarTrigger) {
+      const mouseLeaveEvent = new MouseEvent('mouseleave', {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      });
+      sidebarTrigger.dispatchEvent(mouseLeaveEvent);
+      log('Dispatched mouseleave event to sidebar');
+      return true;
+    }
+
+    log('Could not hide floating sidebar');
+    return false;
+  }
+
   // Update overlay state
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
@@ -236,6 +373,13 @@
     highlightedTabIndex = -1;
     originalTabIndex = -1;
     browseDirection = null;
+    sidebarWasExpanded = false;
+
+    // Show sidebar if in compact mode
+    if (isSidebarHidden()) {
+      sidebarWasExpanded = showFloatingSidebar();
+      log(`Expanded sidebar on leap mode entry: ${sidebarWasExpanded}`);
+    }
 
     document.documentElement.setAttribute('data-zenleap-active', 'true');
     showLeapOverlay();
@@ -421,6 +565,16 @@
   // Exit leap mode
   function exitLeapMode(centerScroll = false) {
     clearHighlight();
+
+    // Hide sidebar if we expanded it on entry
+    if (sidebarWasExpanded) {
+      // Small delay to let the user see their selection before hiding
+      setTimeout(() => {
+        hideFloatingSidebar();
+        log('Hid sidebar on leap mode exit');
+      }, 100);
+    }
+    sidebarWasExpanded = false;
 
     leapMode = false;
     browseMode = false;
@@ -955,7 +1109,7 @@
     updateRelativeNumbers();
 
     log('ZenLeap initialized successfully!');
-    log('Press Ctrl+Space to enter leap mode');
+    log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
     log('  j/k = browse mode (j/k=move, Enter=open, x=close, Esc=cancel)');
     log('  gg = first tab | G = last tab | g{num} = go to tab #');
     log('  z + z/t/b = scroll center/top/bottom');
