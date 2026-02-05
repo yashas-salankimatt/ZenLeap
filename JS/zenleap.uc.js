@@ -70,6 +70,10 @@
   let searchHintBar = null;       // Hint bar below results
   let searchVimIndicator = null;
 
+  // Help modal
+  let helpMode = false;
+  let helpModal = null;
+
   // Utility: Convert number to display character
   function numberToDisplay(num) {
     if (num === 0) return CONFIG.currentTabIndicator;
@@ -951,9 +955,357 @@
       searchHintBar.innerHTML = `
         <span><kbd>↑↓</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
+        <span><kbd>Ctrl+x</kbd> close tab</span>
         <span><kbd>Esc</kbd> normal mode</span>
       `;
     }
+  }
+
+  // ============================================
+  // HELP MODAL
+  // ============================================
+
+  function createHelpModal() {
+    if (helpModal) return;
+
+    helpModal = document.createElement('div');
+    helpModal.id = 'zenleap-help-modal';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-help-backdrop';
+    backdrop.addEventListener('click', () => exitHelpMode());
+
+    const container = document.createElement('div');
+    container.id = 'zenleap-help-container';
+
+    container.innerHTML = `
+      <div class="zenleap-help-header">
+        <h1>ZenLeap</h1>
+        <span class="zenleap-help-version">v2.3.0</span>
+        <span class="zenleap-help-subtitle">Vim-style Tab Navigation</span>
+      </div>
+
+      <div class="zenleap-help-content">
+        <div class="zenleap-help-section">
+          <h2>🚀 Leap Mode</h2>
+          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>Space</kbd> to activate</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Enter browse mode (down/up)</span></div>
+            <div class="zenleap-help-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>Enter browse mode (arrows)</span></div>
+            <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
+            <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
+            <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
+            <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
+            <div class="zenleap-help-item"><kbd>'</kbd><span>Jump to mark</span></div>
+            <div class="zenleap-help-item"><kbd>o</kbd><span>Jump back in history</span></div>
+            <div class="zenleap-help-item"><kbd>i</kbd><span>Jump forward in history</span></div>
+            <div class="zenleap-help-item"><kbd>?</kbd><span>Show this help</span></div>
+            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Exit leap mode</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>📂 Browse Mode</h2>
+          <p class="zenleap-help-trigger">After pressing <kbd>j</kbd> or <kbd>k</kbd> in leap mode</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Move selection down/up</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>1-9</kbd> <kbd>a-z</kbd><span>Jump N tabs from origin</span></div>
+            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Cancel, return to original</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>📍 G-Mode</h2>
+          <p class="zenleap-help-trigger">After pressing <kbd>g</kbd> in leap mode</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>g</kbd><span>Go to first tab (gg)</span></div>
+            <div class="zenleap-help-item"><kbd>G</kbd><span>Go to last tab</span></div>
+            <div class="zenleap-help-item"><kbd>1-9</kbd> + <kbd>Enter</kbd><span>Go to tab #N</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>📜 Z-Mode</h2>
+          <p class="zenleap-help-trigger">After pressing <kbd>z</kbd> in leap mode</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>z</kbd><span>Center current tab (zz)</span></div>
+            <div class="zenleap-help-item"><kbd>t</kbd><span>Scroll to top (zt)</span></div>
+            <div class="zenleap-help-item"><kbd>b</kbd><span>Scroll to bottom (zb)</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>🔖 Marks</h2>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>m</kbd> + <kbd>a-z</kbd><span>Set mark (repeat to toggle off)</span></div>
+            <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
+            <div class="zenleap-help-item"><kbd>'</kbd> + <kbd>a-z</kbd><span>Jump to marked tab</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>'</kbd> + <kbd>char</kbd><span>Quick jump (no leap mode)</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>🔍 Tab Search</h2>
+          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>/</kbd> to open</p>
+
+          <h3>Insert Mode</h3>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>Navigate results</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>j/k</kbd><span>Navigate results</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Switch to normal mode</span></div>
+          </div>
+
+          <h3>Normal Mode</h3>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Navigate results</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump to result</span></div>
+            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Move cursor left/right</span></div>
+            <div class="zenleap-help-item"><kbd>w</kbd> / <kbd>b</kbd> / <kbd>e</kbd><span>Word movement</span></div>
+            <div class="zenleap-help-item"><kbd>0</kbd> / <kbd>$</kbd><span>Beginning/end of line</span></div>
+            <div class="zenleap-help-item"><kbd>i</kbd> / <kbd>a</kbd><span>Insert at/after cursor</span></div>
+            <div class="zenleap-help-item"><kbd>I</kbd> / <kbd>A</kbd><span>Insert at beginning/end</span></div>
+            <div class="zenleap-help-item"><kbd>s</kbd><span>Substitute character</span></div>
+            <div class="zenleap-help-item"><kbd>S</kbd><span>Substitute entire line</span></div>
+            <div class="zenleap-help-item"><kbd>D</kbd> / <kbd>C</kbd><span>Delete/change to end</span></div>
+            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Close search</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="zenleap-help-footer">
+        <span>Press <kbd>Esc</kbd> or <kbd>?</kbd> to close</span>
+      </div>
+    `;
+
+    helpModal.appendChild(backdrop);
+    helpModal.appendChild(container);
+
+    // Inject styles
+    const style = document.createElement('style');
+    style.id = 'zenleap-help-styles';
+    style.textContent = `
+      #zenleap-help-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 100001;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+      }
+
+      #zenleap-help-modal.active {
+        display: flex;
+      }
+
+      #zenleap-help-backdrop {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(8px);
+      }
+
+      #zenleap-help-container {
+        position: relative;
+        width: 95%;
+        max-width: 900px;
+        max-height: 85vh;
+        background: rgba(25, 25, 30, 0.98);
+        border-radius: 16px;
+        box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        animation: zenleap-help-appear 0.2s ease-out;
+      }
+
+      @keyframes zenleap-help-appear {
+        from {
+          opacity: 0;
+          transform: scale(0.95) translateY(-10px);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+      }
+
+      .zenleap-help-header {
+        padding: 24px 32px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+      }
+
+      .zenleap-help-header h1 {
+        margin: 0;
+        font-size: 28px;
+        font-weight: 700;
+        color: #61afef;
+        letter-spacing: -0.5px;
+        display: inline;
+      }
+
+      .zenleap-help-version {
+        font-size: 12px;
+        color: #666;
+        margin-left: 12px;
+        font-family: monospace;
+      }
+
+      .zenleap-help-subtitle {
+        display: block;
+        margin-top: 6px;
+        font-size: 14px;
+        color: #888;
+        font-weight: 400;
+      }
+
+      .zenleap-help-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 24px 32px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+      }
+
+      .zenleap-help-section {
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .zenleap-help-section h2 {
+        margin: 0 0 12px 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #e0e0e0;
+      }
+
+      .zenleap-help-section h3 {
+        margin: 16px 0 10px 0;
+        font-size: 12px;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .zenleap-help-trigger {
+        margin: 0 0 14px 0;
+        font-size: 12px;
+        color: #666;
+      }
+
+      .zenleap-help-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .zenleap-help-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 13px;
+      }
+
+      .zenleap-help-item kbd {
+        background: rgba(97, 175, 239, 0.15);
+        color: #61afef;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 11px;
+        font-weight: 600;
+        border: 1px solid rgba(97, 175, 239, 0.3);
+        min-width: 20px;
+        text-align: center;
+      }
+
+      .zenleap-help-item span {
+        color: #aaa;
+        flex: 1;
+      }
+
+      .zenleap-help-footer {
+        padding: 16px 32px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+        font-size: 12px;
+        color: #666;
+      }
+
+      .zenleap-help-footer kbd {
+        background: rgba(255, 255, 255, 0.1);
+        color: #888;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 10px;
+      }
+
+      /* Scrollbar styling */
+      .zenleap-help-content::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      .zenleap-help-content::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .zenleap-help-content::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 4px;
+      }
+
+      .zenleap-help-content::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.2);
+      }
+    `;
+
+    document.head.appendChild(style);
+    document.documentElement.appendChild(helpModal);
+
+    log('Help modal created');
+  }
+
+  function enterHelpMode() {
+    if (helpMode) return;
+
+    // Exit leap mode if active
+    if (leapMode) {
+      exitLeapMode(false);
+    }
+
+    createHelpModal();
+
+    helpMode = true;
+    helpModal.classList.add('active');
+
+    log('Entered help mode');
+  }
+
+  function exitHelpMode() {
+    if (!helpMode) return;
+
+    helpMode = false;
+    helpModal.classList.remove('active');
+
+    log('Exited help mode');
   }
 
   // Enter search mode
@@ -1148,6 +1500,14 @@
       event.preventDefault();
       event.stopPropagation();
       selectSearchResult(searchSelectedIndex);
+      return true;
+    }
+
+    // Ctrl+X to close selected tab (works in insert mode)
+    if (event.ctrlKey && key === 'x') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSelectedSearchResult();
       return true;
     }
 
