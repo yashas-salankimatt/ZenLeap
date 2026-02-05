@@ -654,7 +654,7 @@
       #zenleap-search-input-display .cursor-char {
         background: #61afef;
         color: #1e1e1e;
-        animation: zenleap-cursor-blink 1s step-end infinite;
+        animation: zenleap-cursor-char-blink 1s step-end infinite;
       }
 
       #zenleap-search-input-display .cursor-empty {
@@ -664,10 +664,17 @@
         vertical-align: text-bottom;
         border-left: 2px solid #61afef;
         margin-left: -1px;
-        animation: zenleap-cursor-blink 1s step-end infinite;
+        animation: zenleap-cursor-empty-blink 1s step-end infinite;
       }
 
-      @keyframes zenleap-cursor-blink {
+      /* Cursor on character: only blink the background, keep character visible */
+      @keyframes zenleap-cursor-char-blink {
+        0%, 100% { background-color: #61afef; }
+        50% { background-color: transparent; color: #e0e0e0; }
+      }
+
+      /* Cursor at end of text: blink the line */
+      @keyframes zenleap-cursor-empty-blink {
         0%, 100% { opacity: 1; }
         50% { opacity: 0; }
       }
