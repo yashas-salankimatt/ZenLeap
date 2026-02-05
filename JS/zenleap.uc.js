@@ -9,6 +9,9 @@
 (function() {
   'use strict';
 
+  // Version (update this in one place, used by help modal)
+  const VERSION = '2.4.0';
+
   // Configuration
   const CONFIG = {
     debug: false,  // Set to true to enable console logging
@@ -981,7 +984,7 @@
     container.innerHTML = `
       <div class="zenleap-help-header">
         <h1>ZenLeap</h1>
-        <span class="zenleap-help-version">v2.3.0</span>
+        <span class="zenleap-help-version">v${VERSION}</span>
         <span class="zenleap-help-subtitle">Vim-style Tab Navigation</span>
       </div>
 
