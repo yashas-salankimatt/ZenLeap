@@ -13,11 +13,14 @@
   const CONFIG = {
     debug: true,
     currentTabIndicator: '·',  // What to show on current tab (could be '0' or '·')
-    overflowIndicator: '+',    // For positions > 15
+    overflowIndicator: '+',    // For positions > 45
     leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds
     triggerKey: ' ',           // Space key
     triggerModifier: 'ctrlKey' // Ctrl modifier
   };
+
+  // Special characters for distances 36-45 (shift + number row)
+  const SPECIAL_CHARS = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
 
   // State
   let leapMode = false;
@@ -27,18 +30,29 @@
   let leapOverlay = null;
 
   // Utility: Convert number to display character
+  // 0 = current, 1-9 = digits, 10-35 = A-Z, 36-45 = special chars
   function numberToDisplay(num) {
     if (num === 0) return CONFIG.currentTabIndicator;
     if (num >= 1 && num <= 9) return String(num);
-    if (num >= 10 && num <= 15) return String.fromCharCode(65 + num - 10); // A-F
-    return CONFIG.overflowIndicator;
+    if (num >= 10 && num <= 35) return String.fromCharCode(65 + num - 10); // A-Z
+    if (num >= 36 && num <= 45) return SPECIAL_CHARS[num - 36]; // !@#$%^&*()
+    return CONFIG.overflowIndicator; // 46+
   }
 
   // Utility: Convert display character back to number
+  // Supports: 1-9, A-Z (case insensitive), !@#$%^&*()
   function displayToNumber(char) {
+    // Digits 1-9
+    if (char >= '1' && char <= '9') return parseInt(char);
+
+    // Letters A-Z (case insensitive) = 10-35
     const upper = char.toUpperCase();
-    if (upper >= '1' && upper <= '9') return parseInt(upper);
-    if (upper >= 'A' && upper <= 'F') return upper.charCodeAt(0) - 65 + 10;
+    if (upper >= 'A' && upper <= 'Z') return upper.charCodeAt(0) - 65 + 10;
+
+    // Special characters = 36-45
+    const specialIndex = SPECIAL_CHARS.indexOf(char);
+    if (specialIndex !== -1) return 36 + specialIndex;
+
     return null;
   }
 
@@ -194,10 +208,10 @@
       overlayDirectionLabel.textContent = 'z';
       overlayHintLabel.textContent = 'z=center  t=top  b=bottom';
     } else if (leapDirection) {
-      // Direction set: waiting for number
+      // Direction set: waiting for number/letter
       leapOverlay.classList.add('leap-direction-set');
       overlayDirectionLabel.textContent = leapDirection === 'up' ? '↑ UP' : '↓ DOWN';
-      overlayHintLabel.textContent = 'Press 1-9 or a-f to jump';
+      overlayHintLabel.textContent = '1-9, a-z, or !@#$%^&*()';
     } else {
       // Initial state: waiting for j, k, or z
       leapOverlay.classList.remove('leap-direction-set');
@@ -641,7 +655,7 @@
 
     log('ZenLeap initialized successfully!');
     log('Press Ctrl+Space to enter leap mode');
-    log('  j/k + 1-9/a-f = jump N tabs down/up');
+    log('  j/k + 1-9/a-z/!@#$%^&*() = jump 1-45 tabs down/up');
     log('  zz = center tab | zt = tab to top | zb = tab to bottom');
   }
 
