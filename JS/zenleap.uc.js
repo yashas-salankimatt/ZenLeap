@@ -366,10 +366,21 @@
     };
   }
 
-  // Calculate recency bonus for a tab (0-50 points)
-  // Uses logarithmic decay: recently accessed tabs get higher bonus
-  // Falls back to position-based bonus if lastAccessed is unavailable
-  function calculateRecencyBonus(tab, fallbackIndex, totalTabs) {
+  // Calculate recency multiplier for a tab (0.8 to 1.8)
+  // Uses exponential decay: recently accessed tabs get boosted, old tabs get penalized
+  // Formula: multiplier = 0.8 + 1.0 × e^(-ageMinutes / 12)
+  //
+  // | Age        | Multiplier | Effect       |
+  // |------------|------------|--------------|
+  // | 0 min      | 1.80       | +80% boost   |
+  // | 3 min      | 1.58       | +58% boost   |
+  // | 10 min     | 1.23       | +23% boost   |
+  // | 20 min     | 0.99       | neutral      |
+  // | 30 min     | 0.88       | -12% penalty |
+  // | 1 hour     | 0.81       | -19% penalty |
+  // | 1 day+     | 0.80       | -20% floor   |
+  //
+  function calculateRecencyMultiplier(tab) {
     const lastAccessed = tab.lastAccessed;
 
     // Check if lastAccessed is available and valid
@@ -378,23 +389,13 @@
       const ageMs = Math.max(0, now - lastAccessed);
       const ageMinutes = ageMs / (1000 * 60);
 
-      // Logarithmic decay formula (increased from 25 to 50 max):
-      // - Just accessed (0 min): 50 points
-      // - 10 mins ago: ~45 points
-      // - 1 hour ago: ~41 points
-      // - 1 day ago: ~34 points
-      // - 1 week ago: ~30 points
-      // - Very old: approaches 25
-      const bonus = Math.max(0, 50 - (5 * Math.log10(ageMinutes + 1)));
-      return bonus;
+      // Exponential decay: floor=0.8, range=1.0, halflife=12 minutes
+      const multiplier = 0.8 + 1.0 * Math.exp(-ageMinutes / 12);
+      return multiplier;
     }
 
-    // Fallback: use inverse of tab position (0-10 point range)
-    // Earlier tabs in the list get a small bonus
-    if (totalTabs > 1) {
-      return 10 * (1 - fallbackIndex / (totalTabs - 1));
-    }
-    return 0;
+    // Fallback: neutral multiplier when lastAccessed unavailable
+    return 1.0;
   }
 
   // Sort tabs by recency (most recently accessed first)
@@ -443,7 +444,7 @@
       }));
     }
 
-    // With query: combine fuzzy match score + recency bonus
+    // With query: combine fuzzy match score × recency multiplier
     const results = [];
 
     tabs.forEach((tab, idx) => {
@@ -456,17 +457,18 @@
       if (match) {
         const matchScore = match.score;
 
-        // Add recency bonus (0-50 points)
-        const recencyBonus = calculateRecencyBonus(tab, idx, totalTabs);
+        // Get recency multiplier (0.8 to 1.8)
+        const recencyMultiplier = calculateRecencyMultiplier(tab);
 
-        // Combined score: match quality is primary, recency is secondary
-        const totalScore = matchScore + recencyBonus;
+        // Combined score: matchScore × recencyMultiplier
+        // Recent tabs get boosted, old tabs get penalized
+        const totalScore = matchScore * recencyMultiplier;
 
         results.push({
           tab,
           score: totalScore,
-          matchScore,      // For debugging
-          recencyBonus,    // For debugging
+          matchScore,           // For debugging
+          recencyMultiplier,    // For debugging
           titleIndices: match.titleIndices,
           urlIndices: match.urlIndices
         });
@@ -487,7 +489,7 @@
         const ageMins = (ageMs / 60000).toFixed(1);
         debugLines.push(
           `#${i + 1}: "${tab.label.substring(0, 50)}"` +
-          `\n    total=${r.score.toFixed(1)} | match=${r.matchScore.toFixed(1)} | recency=${r.recencyBonus.toFixed(1)}` +
+          `\n    total=${r.score.toFixed(1)} | match=${r.matchScore.toFixed(1)} | mult=${r.recencyMultiplier.toFixed(2)}x` +
           `\n    lastAccessed=${ageMins}min ago`
         );
       });
