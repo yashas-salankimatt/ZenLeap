@@ -29,6 +29,9 @@
   let leapMode = false;
   let browseMode = false;      // true when navigating with j/k
   let zMode = false;           // true after pressing 'z', waiting for z/t/b
+  let gMode = false;           // true after pressing 'g', waiting for g or number
+  let gNumberBuffer = '';      // accumulates digits for absolute tab positioning
+  let gNumberTimeout = null;   // timeout for multi-digit number entry
   let leapModeTimeout = null;
   let leapOverlay = null;
 
@@ -200,6 +203,16 @@
       const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
       overlayDirectionLabel.textContent = pos;
       overlayHintLabel.textContent = 'j/k=move  Enter=open  x=close  Esc=cancel';
+    } else if (gMode) {
+      leapOverlay.classList.add('leap-direction-set');
+      overlayModeLabel.textContent = 'LEAP';
+      if (gNumberBuffer) {
+        overlayDirectionLabel.textContent = `g${gNumberBuffer}`;
+        overlayHintLabel.textContent = 'type number, then Enter or wait';
+      } else {
+        overlayDirectionLabel.textContent = 'g';
+        overlayHintLabel.textContent = 'g=first  G=last  0-9=go to tab #';
+      }
     } else if (zMode) {
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
@@ -209,7 +222,7 @@
       leapOverlay.classList.remove('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = '';
-      overlayHintLabel.textContent = 'j/k=browse  z=scroll  1-9/a-z=jump';
+      overlayHintLabel.textContent = 'j/k=browse  g=goto  z=scroll';
     }
   }
 
@@ -412,6 +425,9 @@
     leapMode = false;
     browseMode = false;
     zMode = false;
+    gMode = false;
+    gNumberBuffer = '';
+    clearTimeout(gNumberTimeout);
     highlightedTabIndex = -1;
     originalTabIndex = -1;
     browseDirection = null;
@@ -426,6 +442,18 @@
     }
 
     log('Exited leap mode');
+  }
+
+  // Go to absolute tab position (1-indexed)
+  function goToAbsoluteTab(tabNumber) {
+    const tabs = getVisibleTabs();
+    if (tabs.length === 0) return;
+
+    // tabNumber is 1-indexed, convert to 0-indexed
+    const targetIndex = Math.max(0, Math.min(tabs.length - 1, tabNumber - 1));
+    gBrowser.selectedTab = tabs[targetIndex];
+    log(`Jumped to absolute tab ${tabNumber} (index ${targetIndex})`);
+    exitLeapMode(true);
   }
 
   // Navigate to tab by relative distance (direct jump, no browse mode)
@@ -623,6 +651,68 @@
       return;
     }
 
+    // === G-MODE HANDLING ===
+    if (gMode) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // gg - go to first tab
+      if (key === 'g' && gNumberBuffer === '') {
+        goToAbsoluteTab(1);
+        return;
+      }
+
+      // G in g-mode - go to last tab
+      if (originalKey === 'G' && gNumberBuffer === '') {
+        const tabs = getVisibleTabs();
+        goToAbsoluteTab(tabs.length);
+        return;
+      }
+
+      // Number keys - accumulate for absolute position
+      if (key >= '0' && key <= '9') {
+        gNumberBuffer += key;
+        clearTimeout(gNumberTimeout);
+        updateLeapOverlayState();
+
+        // Set timeout to auto-execute after pause
+        gNumberTimeout = setTimeout(() => {
+          if (gNumberBuffer) {
+            const tabNum = parseInt(gNumberBuffer);
+            if (tabNum > 0) {
+              goToAbsoluteTab(tabNum);
+            } else {
+              // 0 alone could mean first tab or cancel
+              gMode = false;
+              gNumberBuffer = '';
+              updateLeapOverlayState();
+            }
+          }
+        }, 800); // 800ms timeout for multi-digit
+
+        log(`g-mode number buffer: ${gNumberBuffer}`);
+        return;
+      }
+
+      // Enter to confirm number immediately
+      if (key === 'enter' && gNumberBuffer) {
+        clearTimeout(gNumberTimeout);
+        const tabNum = parseInt(gNumberBuffer);
+        if (tabNum > 0) {
+          goToAbsoluteTab(tabNum);
+        }
+        return;
+      }
+
+      // Invalid key, exit g-mode but stay in leap mode
+      gMode = false;
+      gNumberBuffer = '';
+      clearTimeout(gNumberTimeout);
+      updateLeapOverlayState();
+      log(`Invalid g-mode key: ${key}, exiting g-mode`);
+      return;
+    }
+
     // === Z-MODE HANDLING ===
     if (zMode) {
       event.preventDefault();
@@ -651,7 +741,7 @@
       return;
     }
 
-    // === INITIAL LEAP MODE (waiting for j/k/z or direct jump) ===
+    // === INITIAL LEAP MODE (waiting for j/k/g/z or direct jump) ===
     event.preventDefault();
     event.stopPropagation();
 
@@ -663,6 +753,20 @@
       enterBrowseMode('up');
       return;
     }
+    // G (shift+g) - go to last tab directly (must check before lowercase g)
+    if (originalKey === 'G') {
+      const tabs = getVisibleTabs();
+      goToAbsoluteTab(tabs.length);
+      return;
+    }
+    if (key === 'g') {
+      gMode = true;
+      gNumberBuffer = '';
+      clearTimeout(leapModeTimeout); // No timeout in g-mode
+      updateLeapOverlayState();
+      log('Entered g-mode');
+      return;
+    }
     if (key === 'z') {
       zMode = true;
       clearTimeout(leapModeTimeout); // No timeout in z-mode
@@ -671,14 +775,8 @@
       return;
     }
 
-    // Direct jump with number/letter (no browse mode)
-    const distance = displayToNumber(originalKey);
-    if (distance !== null && distance >= 1) {
-      // Default direction is down for direct jumps
-      navigateToTab('down', distance);
-      exitLeapMode(true);
-      return;
-    }
+    // Any other key in initial leap mode - ignore (don't exit, just wait for valid command)
+    log(`Unrecognized key in leap mode: ${key}`);
   }
 
   // Set up event listeners for tab changes
@@ -858,9 +956,9 @@
 
     log('ZenLeap initialized successfully!');
     log('Press Ctrl+Space to enter leap mode');
-    log('  j/k = browse mode (navigate with j/k, Enter=open, x=close, Esc=cancel)');
+    log('  j/k = browse mode (j/k=move, Enter=open, x=close, Esc=cancel)');
+    log('  gg = first tab | G = last tab | g{num} = go to tab #');
     log('  z + z/t/b = scroll center/top/bottom');
-    log('  1-9/a-z/!@#$%^&*() = direct jump');
   }
 
   // Start initialization
