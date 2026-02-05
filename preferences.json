@@ -1,0 +1,15 @@
+[
+  {
+    "property": "uc.zenleap.debug",
+    "label": "Enable debug logging in Browser Console",
+    "type": "checkbox",
+    "disabledOn": []
+  },
+  {
+    "property": "uc.zenleap.current_indicator",
+    "label": "Current tab indicator character",
+    "placeholder": "· (default)",
+    "type": "string",
+    "disabledOn": []
+  }
+]
