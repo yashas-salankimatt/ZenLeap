@@ -261,8 +261,8 @@
   // TAB SEARCH FUNCTIONS
   // ============================================
 
-  // Fuzzy match algorithm - returns { score, indices } or null if no match
-  function fuzzyMatch(query, text) {
+  // Fuzzy match algorithm for a single term - returns { score, indices } or null if no match
+  function fuzzyMatchSingle(query, text) {
     if (!query || !text) return null;
 
     const queryLower = query.toLowerCase();
@@ -315,7 +315,58 @@
     return { score, indices };
   }
 
-  // Calculate recency bonus for a tab (0-25 points)
+  // Multi-word fuzzy match - splits query into words, ALL words must match
+  // Each word can match in either title or URL
+  // Returns { score, titleIndices, urlIndices } or null if any word doesn't match
+  function fuzzyMatch(query, title, url) {
+    if (!query) return null;
+
+    const words = query.trim().split(/\s+/).filter(w => w.length > 0);
+    if (words.length === 0) return null;
+
+    let totalScore = 0;
+    let allTitleIndices = [];
+    let allUrlIndices = [];
+
+    for (const word of words) {
+      const titleMatch = fuzzyMatchSingle(word, title || '');
+      const urlMatch = fuzzyMatchSingle(word, url || '');
+
+      // Word must match in either title or url
+      if (!titleMatch && !urlMatch) {
+        return null; // This word doesn't match anywhere, fail the whole query
+      }
+
+      // Use the better match (title weighted 2x)
+      const titleScore = titleMatch ? titleMatch.score * 2 : 0;
+      const urlScore = urlMatch ? urlMatch.score : 0;
+
+      // Add both scores if both match, otherwise just the one that matched
+      if (titleMatch && urlMatch) {
+        // Both match - use combined score but avoid double counting
+        totalScore += Math.max(titleScore, urlScore) + Math.min(titleScore, urlScore) * 0.3;
+        allTitleIndices.push(...titleMatch.indices);
+        allUrlIndices.push(...urlMatch.indices);
+      } else if (titleMatch) {
+        totalScore += titleScore;
+        allTitleIndices.push(...titleMatch.indices);
+      } else {
+        totalScore += urlScore;
+        allUrlIndices.push(...urlMatch.indices);
+      }
+    }
+
+    // Bonus for matching more words (encourages specific searches)
+    totalScore += words.length * 5;
+
+    return {
+      score: totalScore,
+      titleIndices: [...new Set(allTitleIndices)].sort((a, b) => a - b),
+      urlIndices: [...new Set(allUrlIndices)].sort((a, b) => a - b)
+    };
+  }
+
+  // Calculate recency bonus for a tab (0-50 points)
   // Uses logarithmic decay: recently accessed tabs get higher bonus
   // Falls back to position-based bonus if lastAccessed is unavailable
   function calculateRecencyBonus(tab, fallbackIndex, totalTabs) {
@@ -327,21 +378,21 @@
       const ageMs = Math.max(0, now - lastAccessed);
       const ageMinutes = ageMs / (1000 * 60);
 
-      // Logarithmic decay formula:
-      // - Just accessed (0 min): 25 points
-      // - 10 mins ago: ~20 points
-      // - 1 hour ago: ~16 points
-      // - 1 day ago: ~9 points
-      // - 1 week ago: ~5 points
-      // - Very old: approaches 0
-      const bonus = Math.max(0, 25 - (5 * Math.log10(ageMinutes + 1)));
+      // Logarithmic decay formula (increased from 25 to 50 max):
+      // - Just accessed (0 min): 50 points
+      // - 10 mins ago: ~45 points
+      // - 1 hour ago: ~41 points
+      // - 1 day ago: ~34 points
+      // - 1 week ago: ~30 points
+      // - Very old: approaches 25
+      const bonus = Math.max(0, 50 - (5 * Math.log10(ageMinutes + 1)));
       return bonus;
     }
 
-    // Fallback: use inverse of tab position (0-5 point range)
+    // Fallback: use inverse of tab position (0-10 point range)
     // Earlier tabs in the list get a small bonus
     if (totalTabs > 1) {
-      return 5 * (1 - fallbackIndex / (totalTabs - 1));
+      return 10 * (1 - fallbackIndex / (totalTabs - 1));
     }
     return 0;
   }
@@ -373,14 +424,18 @@
 
   // Search tabs and return sorted results
   // Combines fuzzy match score with recency bonus for ranking
+  // Omits the current tab from results (you don't need to search for where you already are)
   function searchTabs(query) {
-    const tabs = getVisibleTabs();
+    const currentTab = gBrowser.selectedTab;
+
+    // Get visible tabs, excluding the current tab
+    const tabs = getVisibleTabs().filter(tab => tab !== currentTab);
     const totalTabs = tabs.length;
 
     // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
       const sortedTabs = sortTabsByRecency(tabs);
-      return sortedTabs.slice(0, 20).map((tab, idx) => ({
+      return sortedTabs.slice(0, 100).map((tab, idx) => ({
         tab,
         score: 100 - idx, // Score reflects sorted position
         titleIndices: [],
@@ -395,16 +450,13 @@
       const title = tab.label || '';
       const url = tab.linkedBrowser?.currentURI?.spec || '';
 
-      const titleMatch = fuzzyMatch(query, title);
-      const urlMatch = fuzzyMatch(query, url);
+      // Multi-word fuzzy match - all words must match somewhere in title or URL
+      const match = fuzzyMatch(query, title, url);
 
-      if (titleMatch || urlMatch) {
-        // Calculate match score (title weighted 2x)
-        const titleScore = titleMatch ? titleMatch.score * 2 : 0;
-        const urlScore = urlMatch ? urlMatch.score : 0;
-        const matchScore = titleScore + urlScore;
+      if (match) {
+        const matchScore = match.score;
 
-        // Add recency bonus (0-25 points)
+        // Add recency bonus (0-50 points)
         const recencyBonus = calculateRecencyBonus(tab, idx, totalTabs);
 
         // Combined score: match quality is primary, recency is secondary
@@ -415,8 +467,8 @@
           score: totalScore,
           matchScore,      // For debugging
           recencyBonus,    // For debugging
-          titleIndices: titleMatch ? titleMatch.indices : [],
-          urlIndices: urlMatch ? urlMatch.indices : []
+          titleIndices: match.titleIndices,
+          urlIndices: match.urlIndices
         });
       }
     });
@@ -424,14 +476,27 @@
     // Sort by combined score descending
     results.sort((a, b) => b.score - a.score);
 
-    // Log top results for debugging (can be removed later)
+    // Log all results for debugging
     if (results.length > 0 && CONFIG.debug) {
-      log(`Search "${query}": top result "${results[0].tab.label}" ` +
-          `(match=${results[0].matchScore.toFixed(1)}, recency=${results[0].recencyBonus.toFixed(1)})`);
+      const debugLines = [`\n=== Search Results for "${query}" ===`];
+      const topResults = results.slice(0, 15); // Show top 15
+      topResults.forEach((r, i) => {
+        const tab = r.tab;
+        const lastAccessed = tab.lastAccessed;
+        const ageMs = lastAccessed ? Date.now() - lastAccessed : 0;
+        const ageMins = (ageMs / 60000).toFixed(1);
+        debugLines.push(
+          `#${i + 1}: "${tab.label.substring(0, 50)}"` +
+          `\n    total=${r.score.toFixed(1)} | match=${r.matchScore.toFixed(1)} | recency=${r.recencyBonus.toFixed(1)}` +
+          `\n    lastAccessed=${ageMins}min ago`
+        );
+      });
+      debugLines.push(`=== End Results ===\n`);
+      log(debugLines.join('\n'));
     }
 
-    // Return top 20 results (1-9 have quick jump labels)
-    return results.slice(0, 20);
+    // Return top 100 results (1-9 have quick jump labels)
+    return results.slice(0, 100);
   }
 
   // Create search modal
@@ -591,17 +656,18 @@
       }
 
       #zenleap-search-input-display .cursor-empty {
-        background: #61afef;
         display: inline-block;
-        width: 10px;
-        height: 1.2em;
+        width: 0;
+        height: 1em;
         vertical-align: text-bottom;
+        border-left: 2px solid #61afef;
+        margin-left: -1px;
         animation: zenleap-cursor-blink 1s step-end infinite;
       }
 
       @keyframes zenleap-cursor-blink {
         0%, 100% { opacity: 1; }
-        50% { opacity: 0.3; }
+        50% { opacity: 0; }
       }
 
       #zenleap-search-input-display .placeholder {
@@ -868,7 +934,8 @@
       searchHintBar.innerHTML = `
         <span><kbd>j/k</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
-        <span><kbd>1-9</kbd> quick jump</span>
+        <span><kbd>x</kbd> close tab</span>
+        <span><kbd>1-9</kbd> jump</span>
         <span><kbd>Esc</kbd> close</span>
       `;
     } else {
@@ -954,6 +1021,37 @@
     }
 
     exitSearchMode();
+  }
+
+  // Close the selected search result tab
+  function closeSelectedSearchResult() {
+    if (searchSelectedIndex < 0 || searchSelectedIndex >= searchResults.length) return;
+
+    const result = searchResults[searchSelectedIndex];
+    if (!result || !result.tab) return;
+
+    const tabToClose = result.tab;
+    const tabLabel = tabToClose.label;
+
+    // Close the tab
+    gBrowser.removeTab(tabToClose);
+    log(`Closed tab from search: ${tabLabel}`);
+
+    // Remove from results array
+    searchResults.splice(searchSelectedIndex, 1);
+
+    // Adjust selection if needed
+    if (searchResults.length === 0) {
+      // No more results, re-run search to refresh
+      renderSearchResults();
+    } else {
+      // Keep selection in bounds
+      if (searchSelectedIndex >= searchResults.length) {
+        searchSelectedIndex = searchResults.length - 1;
+      }
+      // Re-render with updated results
+      renderSearchResults();
+    }
   }
 
   // Move search selection
@@ -1164,17 +1262,8 @@
         break;
 
       // Editing commands
-      case 'x': // Delete character
-        if (searchCursorPos < len) {
-          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          searchInput.value = searchQuery;
-          // Adjust cursor if we deleted the last character
-          if (searchCursorPos >= searchQuery.length && searchQuery.length > 0) {
-            searchCursorPos = searchQuery.length - 1;
-          }
-          renderSearchResults();
-          renderSearchDisplay();
-        }
+      case 'x': // Close selected tab
+        closeSelectedSearchResult();
         break;
 
       case 's': // Substitute (delete and insert)
