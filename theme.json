@@ -2,9 +2,9 @@
   "id": "zenleap-relative-tab-nav",
   "name": "ZenLeap - Relative Tab Navigation",
   "description": "Vim-style relative tab numbering with keyboard navigation (Ctrl+Space chord). Requires fx-autoconfig for full functionality.",
-  "homepage": "https://github.com/yourusername/zenleap",
+  "homepage": "https://github.com/yashas-salankimatt/ZenLeap",
   "author": "ZenLeap",
-  "version": "1.0.0",
+  "version": "2.4.0",
   "tags": ["tabs", "keyboard", "vim", "navigation"],
   "createdAt": "2025-02-05",
   "updatedAt": "2025-02-05"

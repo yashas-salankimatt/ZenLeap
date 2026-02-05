@@ -52,38 +52,51 @@ USE_REMOTE=false
 CHECK_ONLY=false
 GUI_MODE=false
 
+# Escape a string for safe use inside AppleScript double quotes
+escape_applescript() {
+    local str="$1"
+    str="${str//\\/\\\\}"  # Escape backslashes first
+    str="${str//\"/\\\"}"  # Escape double quotes
+    echo "$str"
+}
+
 # GUI helper functions
 gui_prompt() {
-    local message="$1"
+    local message
+    message=$(escape_applescript "$1")
     local default="$2"
     if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
         result=$(osascript -e "display dialog \"$message\" buttons {\"No\", \"Yes\"} default button \"Yes\"" 2>/dev/null | grep -q "Yes" && echo "y" || echo "n")
         echo "$result"
     else
-        echo -n "$message (y/n): "
+        echo -n "$1 (y/n): "
         read -r response <&3
         echo "$response"
     fi
 }
 
 gui_alert() {
-    local message="$1"
+    local message
+    message=$(escape_applescript "$1")
     if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
         osascript -e "display dialog \"$message\" buttons {\"OK\"} default button \"OK\"" 2>/dev/null
     else
-        echo -e "$message"
+        echo -e "$1"
     fi
 }
 
 gui_choose() {
-    local prompt="$1"
+    local prompt
+    prompt=$(escape_applescript "$1")
     shift
     local options=("$@")
     if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
-        # Build AppleScript list
+        # Build AppleScript list with escaped strings
         local list_items=""
         for opt in "${options[@]}"; do
-            list_items+="\"$opt\", "
+            local escaped_opt
+            escaped_opt=$(escape_applescript "$opt")
+            list_items+="\"$escaped_opt\", "
         done
         list_items="${list_items%, }"
         result=$(osascript -e "choose from list {$list_items} with prompt \"$prompt\"" 2>/dev/null)
@@ -206,7 +219,8 @@ detect_os() {
             ;;
         MINGW*|MSYS*|CYGWIN*)
             OS="windows"
-            echo -e "${RED}Windows detected. Please use install.ps1 instead.${NC}"
+            echo -e "${RED}Windows is not currently supported. Please install manually.${NC}"
+            echo "See: https://github.com/yashas-salankimatt/ZenLeap#manual-installation"
             exit 1
             ;;
         *)
@@ -304,7 +318,7 @@ install_fxautoconfig() {
     echo -e "${BLUE}Installing fx-autoconfig...${NC}"
 
     TEMP_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_DIR" EXIT
+    trap 'rm -rf "$TEMP_DIR"' EXIT
 
     echo "  Downloading..."
     if command -v curl &> /dev/null; then
@@ -330,11 +344,7 @@ install_fxautoconfig() {
     # Install to Zen Resources (requires admin)
     echo "  Installing to Zen Browser (may require admin password)..."
     if [ -d "$EXTRACTED_DIR/program" ]; then
-        if [ "$OS" = "macos" ]; then
-            sudo cp -r "$EXTRACTED_DIR/program/"* "$ZEN_RESOURCES/"
-        else
-            sudo cp -r "$EXTRACTED_DIR/program/"* "$ZEN_RESOURCES/"
-        fi
+        sudo cp -r "$EXTRACTED_DIR/program/"* "$ZEN_RESOURCES/"
     fi
 
     # Install to profile

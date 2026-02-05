@@ -12,7 +12,7 @@
   // Version - keep in sync with @version in header above
   const VERSION = '2.4.0';
 
-  // Configuration
+  // Configuration (defaults, overridden by preferences if set)
   const CONFIG = {
     debug: false,  // Set to true to enable console logging
     currentTabIndicator: '·',  // What to show on current tab
@@ -21,6 +21,21 @@
     triggerKey: ' ',           // Space key
     triggerModifier: 'ctrlKey' // Ctrl modifier
   };
+
+  // Read preferences from about:config (defined in preferences.json)
+  try {
+    if (Services && Services.prefs) {
+      if (Services.prefs.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
+        CONFIG.debug = Services.prefs.getBoolPref('uc.zenleap.debug');
+      }
+      if (Services.prefs.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
+        const indicator = Services.prefs.getStringPref('uc.zenleap.current_indicator');
+        if (indicator) CONFIG.currentTabIndicator = indicator;
+      }
+    }
+  } catch (e) {
+    // Services not available, use defaults
+  }
 
   // Special characters for distances 36-45 (shift + number row)
   const SPECIAL_CHARS = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
@@ -100,12 +115,26 @@
   // JUMP LIST (like vim's Ctrl+O / Ctrl+I)
   // ============================================
 
+  // Clean up closed tabs from jump list, preserving correct index
+  function filterJumpList() {
+    if (jumpList.length === 0) return;
+    const currentEntry = (jumpListIndex >= 0 && jumpListIndex < jumpList.length)
+      ? jumpList[jumpListIndex] : null;
+    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    if (currentEntry) {
+      const newIndex = jumpList.indexOf(currentEntry);
+      jumpListIndex = newIndex >= 0 ? newIndex : Math.min(jumpListIndex, jumpList.length - 1);
+    } else {
+      jumpListIndex = jumpList.length - 1;
+    }
+  }
+
   // Record a jump to the jump list
   function recordJump(tab) {
     if (!recordingJumps || !tab) return;
 
     // Clean up any closed tabs from the list
-    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    filterJumpList();
 
     // If we're not at the end of the list, truncate forward history
     if (jumpListIndex >= 0 && jumpListIndex < jumpList.length - 1) {
@@ -132,7 +161,7 @@
   // Jump backward in the jump list (like vim Ctrl+O)
   function jumpBack() {
     // Clean up closed tabs
-    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    filterJumpList();
 
     if (jumpList.length === 0) {
       log('Jump list is empty');
@@ -160,7 +189,7 @@
   // Jump forward in the jump list (like vim Ctrl+I)
   function jumpForward() {
     // Clean up closed tabs
-    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    filterJumpList();
 
     if (jumpListIndex < jumpList.length - 1) {
       jumpListIndex++;
@@ -406,19 +435,17 @@
   }
 
   // Sort tabs by recency (most recently accessed first)
-  // Falls back to original order if lastAccessed is unavailable
+  // Uses lastAccessed where available, falls back to 0 for tabs without it
   function sortTabsByRecency(tabs) {
     if (tabs.length === 0) return tabs;
 
-    // Check if lastAccessed is available by sampling first tab
-    const sampleTab = tabs[0];
-    const hasLastAccessed = sampleTab.lastAccessed &&
-      typeof sampleTab.lastAccessed === 'number' &&
-      sampleTab.lastAccessed > 0;
+    // Check if any tab has lastAccessed data
+    const hasAnyRecency = tabs.some(t =>
+      t.lastAccessed && typeof t.lastAccessed === 'number' && t.lastAccessed > 0
+    );
 
-    if (!hasLastAccessed) {
-      // Fallback: return original order (Firefox may already order by recency)
-      log('lastAccessed not available, using default tab order');
+    if (!hasAnyRecency) {
+      log('lastAccessed not available on any tab, using default order');
       return tabs;
     }
 
@@ -1446,13 +1473,19 @@
       if (searchInput) {
         searchInput.style.display = '';
 
-        // Focus with retry mechanism
+        // Focus with retry mechanism (max 30 attempts ~500ms)
+        let focusRetries = 0;
         const focusInput = () => {
           if (searchInput && searchMode && searchVimMode === 'insert') {
             searchInput.focus();
             searchInput.setSelectionRange(searchCursorPos, searchCursorPos);
             if (document.activeElement !== searchInput) {
-              requestAnimationFrame(focusInput);
+              focusRetries++;
+              if (focusRetries < 30) {
+                requestAnimationFrame(focusInput);
+              } else {
+                log('Search input focus failed after 30 attempts');
+              }
             } else {
               log('Search input focused');
             }
@@ -3028,11 +3061,19 @@
   }
 
   // Initialize
+  let initRetries = 0;
+  const MAX_INIT_RETRIES = 20;
+
   function init() {
     log(`Initializing ZenLeap v${VERSION}...`);
 
     if (!gBrowser || !gBrowser.tabs) {
-      log('gBrowser not ready, retrying in 500ms');
+      initRetries++;
+      if (initRetries > MAX_INIT_RETRIES) {
+        console.error('[ZenLeap] Failed to initialize after ' + MAX_INIT_RETRIES + ' retries. gBrowser not available.');
+        return;
+      }
+      log(`gBrowser not ready, retrying in 500ms (attempt ${initRetries}/${MAX_INIT_RETRIES})`);
       setTimeout(init, 500);
       return;
     }

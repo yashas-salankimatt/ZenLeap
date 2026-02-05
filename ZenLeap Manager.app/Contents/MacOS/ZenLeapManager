@@ -15,7 +15,7 @@ PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
 
 # Temp directory for downloads
 TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # Detect Zen app path
 if [ -d "/Applications/Zen.app" ]; then
@@ -27,21 +27,32 @@ else
 fi
 ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
 
+# Escape a string for safe use inside AppleScript double quotes
+escape_applescript() {
+    local str="$1"
+    str="${str//\\/\\\\}"  # Escape backslashes first
+    str="${str//\"/\\\"}"  # Escape double quotes
+    echo "$str"
+}
+
 # Helper: Show alert dialog
 show_alert() {
-    local message="$1"
+    local message
+    message=$(escape_applescript "$1")
     osascript -e "display dialog \"$message\" with title \"ZenLeap Manager\" buttons {\"OK\"} default button \"OK\"" 2>/dev/null || true
 }
 
 # Helper: Show error dialog
 show_error() {
-    local message="$1"
+    local message
+    message=$(escape_applescript "$1")
     osascript -e "display dialog \"$message\" with title \"ZenLeap Manager - Error\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
 }
 
 # Helper: Ask yes/no question
 ask_yes_no() {
-    local message="$1"
+    local message
+    message=$(escape_applescript "$1")
     local result
     result=$(osascript -e "display dialog \"$message\" with title \"ZenLeap Manager\" buttons {\"No\", \"Yes\"} default button \"Yes\"" 2>&1) || return 1
     echo "$result" | grep -q "Yes"
@@ -49,14 +60,17 @@ ask_yes_no() {
 
 # Helper: Choose from list
 choose_from_list() {
-    local prompt="$1"
+    local prompt
+    prompt=$(escape_applescript "$1")
     shift
     local items=("$@")
 
     # Build AppleScript list string
     local list_str=""
     for item in "${items[@]}"; do
-        list_str+="\"$item\", "
+        local escaped_item
+        escaped_item=$(escape_applescript "$item")
+        list_str+="\"$escaped_item\", "
     done
     list_str="${list_str%, }"
 
