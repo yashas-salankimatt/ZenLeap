@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.2.0
+// @version        2.3.0
 // ==/UserScript==
 
 (function() {
@@ -53,6 +53,21 @@
 
   // Marks (like vim marks)
   let marks = new Map();       // character -> tab reference
+
+  // ============================================
+  // TAB SEARCH (Spotlight-like fuzzy finder)
+  // ============================================
+  let searchMode = false;
+  let searchQuery = '';
+  let searchResults = [];
+  let searchSelectedIndex = 0;
+  let searchVimMode = 'insert';  // 'insert' or 'normal'
+  let searchCursorPos = 0;
+  let searchModal = null;
+  let searchInput = null;
+  let searchInputDisplay = null;  // Visual display for normal mode with block cursor
+  let searchResultsList = null;
+  let searchVimIndicator = null;
 
   // Utility: Convert number to display character
   function numberToDisplay(num) {
@@ -239,6 +254,931 @@
         log(`Cleaned up mark '${char}' for closed tab`);
       }
     }
+  }
+
+  // ============================================
+  // TAB SEARCH FUNCTIONS
+  // ============================================
+
+  // Fuzzy match algorithm - returns { score, indices } or null if no match
+  function fuzzyMatch(query, text) {
+    if (!query || !text) return null;
+
+    const queryLower = query.toLowerCase();
+    const textLower = text.toLowerCase();
+    const queryLen = queryLower.length;
+    const textLen = textLower.length;
+
+    if (queryLen > textLen) return null;
+
+    let score = 0;
+    let queryIdx = 0;
+    let indices = [];
+    let lastMatchIdx = -1;
+    let consecutiveMatches = 0;
+
+    for (let i = 0; i < textLen && queryIdx < queryLen; i++) {
+      if (textLower[i] === queryLower[queryIdx]) {
+        indices.push(i);
+
+        // Bonus for consecutive matches
+        if (lastMatchIdx === i - 1) {
+          consecutiveMatches++;
+          score += 10 + consecutiveMatches * 5;
+        } else {
+          consecutiveMatches = 0;
+          score += 5;
+        }
+
+        // Bonus for word boundary match
+        if (i === 0 || /[\s\-_./]/.test(text[i - 1])) {
+          score += 15;
+        }
+
+        // Bonus for case match
+        if (query[queryIdx] === text[i]) {
+          score += 2;
+        }
+
+        // Penalty for distance from start
+        score -= i * 0.1;
+
+        lastMatchIdx = i;
+        queryIdx++;
+      }
+    }
+
+    // Must match all query characters
+    if (queryIdx !== queryLen) return null;
+
+    return { score, indices };
+  }
+
+  // Search tabs and return sorted results
+  function searchTabs(query) {
+    if (!query || query.trim() === '') {
+      // Return all tabs sorted by recency (most recent first)
+      return getVisibleTabs().slice(0, 9).map((tab, idx) => ({
+        tab,
+        score: 100 - idx,
+        titleIndices: [],
+        urlIndices: []
+      }));
+    }
+
+    const tabs = getVisibleTabs();
+    const results = [];
+
+    for (const tab of tabs) {
+      const title = tab.label || '';
+      const url = tab.linkedBrowser?.currentURI?.spec || '';
+
+      const titleMatch = fuzzyMatch(query, title);
+      const urlMatch = fuzzyMatch(query, url);
+
+      if (titleMatch || urlMatch) {
+        const titleScore = titleMatch ? titleMatch.score * 2 : 0; // Title matches are more valuable
+        const urlScore = urlMatch ? urlMatch.score : 0;
+
+        results.push({
+          tab,
+          score: titleScore + urlScore,
+          titleIndices: titleMatch ? titleMatch.indices : [],
+          urlIndices: urlMatch ? urlMatch.indices : []
+        });
+      }
+    }
+
+    // Sort by score descending
+    results.sort((a, b) => b.score - a.score);
+
+    // Return top 9 results
+    return results.slice(0, 9);
+  }
+
+  // Create search modal
+  function createSearchModal() {
+    if (searchModal) return;
+
+    searchModal = document.createElement('div');
+    searchModal.id = 'zenleap-search-modal';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-search-backdrop';
+    backdrop.addEventListener('click', () => exitSearchMode());
+
+    const container = document.createElement('div');
+    container.id = 'zenleap-search-container';
+
+    const inputWrapper = document.createElement('div');
+    inputWrapper.id = 'zenleap-search-input-wrapper';
+
+    const searchIcon = document.createElement('span');
+    searchIcon.id = 'zenleap-search-icon';
+    searchIcon.textContent = '🔍';
+
+    searchInput = document.createElement('input');
+    searchInput.id = 'zenleap-search-input';
+    searchInput.type = 'text';
+    searchInput.placeholder = 'Search tabs...';
+    searchInput.autocomplete = 'off';
+    searchInput.spellcheck = false;
+    searchInput.setAttribute('tabindex', '0');
+
+    // Display element for normal mode - shows text with block cursor
+    searchInputDisplay = document.createElement('div');
+    searchInputDisplay.id = 'zenleap-search-input-display';
+    searchInputDisplay.style.display = 'none';
+
+    searchVimIndicator = document.createElement('span');
+    searchVimIndicator.id = 'zenleap-search-vim-indicator';
+    searchVimIndicator.textContent = 'INSERT';
+
+    inputWrapper.appendChild(searchIcon);
+    inputWrapper.appendChild(searchInput);
+    inputWrapper.appendChild(searchInputDisplay);
+    inputWrapper.appendChild(searchVimIndicator);
+
+    searchResultsList = document.createElement('div');
+    searchResultsList.id = 'zenleap-search-results';
+
+    container.appendChild(inputWrapper);
+    container.appendChild(searchResultsList);
+
+    searchModal.appendChild(backdrop);
+    searchModal.appendChild(container);
+
+    // Inject styles
+    const style = document.createElement('style');
+    style.id = 'zenleap-search-styles';
+    style.textContent = `
+      #zenleap-search-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 100000;
+        display: none;
+        justify-content: center;
+        align-items: flex-start;
+        padding-top: 15vh;
+      }
+
+      #zenleap-search-modal.active {
+        display: flex;
+      }
+
+      #zenleap-search-backdrop {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+      }
+
+      #zenleap-search-container {
+        position: relative;
+        width: 90%;
+        max-width: 600px;
+        background: rgba(30, 30, 30, 0.95);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+        animation: zenleap-search-appear 0.15s ease-out;
+      }
+
+      @keyframes zenleap-search-appear {
+        from {
+          opacity: 0;
+          transform: translateY(-20px) scale(0.95);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      #zenleap-search-input-wrapper {
+        display: flex;
+        align-items: center;
+        padding: 16px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        gap: 12px;
+      }
+
+      #zenleap-search-icon {
+        font-size: 20px;
+        opacity: 0.6;
+      }
+
+      #zenleap-search-input {
+        flex: 1;
+        background: transparent;
+        border: none;
+        outline: none;
+        font-size: 18px;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        caret-color: #61afef;
+      }
+
+      #zenleap-search-input::placeholder {
+        color: #666;
+      }
+
+      #zenleap-search-input-display {
+        flex: 1;
+        font-size: 18px;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        white-space: pre;
+        min-height: 27px;
+        line-height: 27px;
+      }
+
+      #zenleap-search-input-display .cursor-char {
+        background: #61afef;
+        color: #1e1e1e;
+        animation: zenleap-cursor-blink 1s step-end infinite;
+      }
+
+      #zenleap-search-input-display .cursor-empty {
+        background: #61afef;
+        display: inline-block;
+        width: 10px;
+        height: 1.2em;
+        vertical-align: text-bottom;
+        animation: zenleap-cursor-blink 1s step-end infinite;
+      }
+
+      @keyframes zenleap-cursor-blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+
+      #zenleap-search-input-display .placeholder {
+        color: #666;
+      }
+
+      #zenleap-search-vim-indicator {
+        font-size: 10px;
+        font-weight: 600;
+        font-family: monospace;
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: #61afef;
+        color: #1e1e1e;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      #zenleap-search-vim-indicator.normal {
+        background: #e5c07b;
+      }
+
+      #zenleap-search-results {
+        max-height: 400px;
+        overflow-y: auto;
+      }
+
+      .zenleap-search-result {
+        display: flex;
+        align-items: center;
+        padding: 12px 20px;
+        cursor: pointer;
+        transition: background 0.1s ease;
+        gap: 12px;
+      }
+
+      .zenleap-search-result:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .zenleap-search-result.selected {
+        background: rgba(97, 175, 239, 0.2);
+      }
+
+      .zenleap-search-result-favicon {
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        object-fit: contain;
+        flex-shrink: 0;
+      }
+
+      .zenleap-search-result-info {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .zenleap-search-result-title {
+        font-size: 14px;
+        font-weight: 500;
+        color: #e0e0e0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 2px;
+      }
+
+      .zenleap-search-result-url {
+        font-size: 12px;
+        color: #888;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .zenleap-search-result-title .match,
+      .zenleap-search-result-url .match {
+        color: #61afef;
+        font-weight: 600;
+      }
+
+      .zenleap-search-result-label {
+        font-size: 12px;
+        font-weight: 600;
+        font-family: monospace;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #888;
+        flex-shrink: 0;
+      }
+
+      .zenleap-search-result.selected .zenleap-search-result-label {
+        background: #61afef;
+        color: #1e1e1e;
+      }
+
+      .zenleap-search-empty {
+        padding: 40px 20px;
+        text-align: center;
+        color: #666;
+        font-size: 14px;
+      }
+
+      .zenleap-search-hint {
+        padding: 12px 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        font-size: 11px;
+        color: #666;
+        display: flex;
+        gap: 16px;
+        justify-content: center;
+      }
+
+      .zenleap-search-hint kbd {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 10px;
+      }
+    `;
+
+    document.head.appendChild(style);
+    document.documentElement.appendChild(searchModal);
+
+    // Add input event listener
+    searchInput.addEventListener('input', handleSearchInput);
+
+    // Handle keydown on input for insert mode navigation
+    searchInput.addEventListener('keydown', (e) => {
+      // In insert mode, let navigation keys be handled by our main handler
+      if ((e.ctrlKey && (e.key === 'j' || e.key === 'k')) ||
+          e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
+          e.key === 'Enter' || e.key === 'Escape') {
+        return; // Let handleSearchKeyDown handle these
+      }
+      // Stop propagation for normal typing (but allow default behavior)
+      e.stopPropagation();
+    });
+
+    log('Search modal created');
+  }
+
+  // Highlight matched characters in text
+  function highlightMatches(text, indices) {
+    if (!indices || indices.length === 0) return escapeHtml(text);
+
+    let result = '';
+    let lastIdx = 0;
+
+    for (const idx of indices) {
+      if (idx > lastIdx) {
+        result += escapeHtml(text.slice(lastIdx, idx));
+      }
+      result += `<span class="match">${escapeHtml(text[idx])}</span>`;
+      lastIdx = idx + 1;
+    }
+
+    if (lastIdx < text.length) {
+      result += escapeHtml(text.slice(lastIdx));
+    }
+
+    return result;
+  }
+
+  // Escape HTML special characters (XHTML-safe)
+  function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Render search results
+  function renderSearchResults() {
+    if (!searchResultsList) return;
+
+    searchResults = searchTabs(searchQuery);
+
+    if (searchResults.length === 0) {
+      searchResultsList.innerHTML = '<div class="zenleap-search-empty">No matching tabs found</div>';
+      return;
+    }
+
+    // Clamp selected index
+    if (searchSelectedIndex >= searchResults.length) {
+      searchSelectedIndex = searchResults.length - 1;
+    }
+    if (searchSelectedIndex < 0) {
+      searchSelectedIndex = 0;
+    }
+
+    let html = '';
+    searchResults.forEach((result, idx) => {
+      const tab = result.tab;
+      const title = tab.label || 'Untitled';
+      const url = tab.linkedBrowser?.currentURI?.spec || '';
+      // Use default favicon if none available, and ensure it's a safe string
+      let favicon = tab.image;
+      if (!favicon || typeof favicon !== 'string' || favicon.trim() === '') {
+        favicon = 'chrome://branding/content/icon32.png';
+      }
+      const isSelected = idx === searchSelectedIndex;
+      const label = idx + 1; // 1-9
+
+      const highlightedTitle = highlightMatches(title, result.titleIndices);
+      const highlightedUrl = highlightMatches(url, result.urlIndices);
+
+      html += `
+        <div class="zenleap-search-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
+          <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
+          <div class="zenleap-search-result-info">
+            <div class="zenleap-search-result-title">${highlightedTitle}</div>
+            <div class="zenleap-search-result-url">${highlightedUrl}</div>
+          </div>
+          <span class="zenleap-search-result-label">${label}</span>
+        </div>
+      `;
+    });
+
+    // Add hint bar
+    html += `
+      <div class="zenleap-search-hint">
+        <span><kbd>↑↓</kbd> navigate</span>
+        <span><kbd>Enter</kbd> open</span>
+        <span><kbd>1-9</kbd> quick jump</span>
+        <span><kbd>Esc</kbd> ${searchVimMode === 'insert' ? 'vim mode' : 'close'}</span>
+      </div>
+    `;
+
+    searchResultsList.innerHTML = html;
+
+    // Add click handlers and favicon error handlers
+    searchResultsList.querySelectorAll('.zenleap-search-result').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.index);
+        selectSearchResult(idx);
+      });
+
+      // Handle favicon load errors
+      const img = el.querySelector('.zenleap-search-result-favicon');
+      if (img) {
+        img.addEventListener('error', () => {
+          img.src = 'chrome://branding/content/icon32.png';
+        });
+      }
+    });
+
+    // Scroll selected into view
+    const selectedEl = searchResultsList.querySelector('.zenleap-search-result.selected');
+    if (selectedEl) {
+      selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // Enter search mode
+  function enterSearchMode() {
+    if (searchMode) return;
+
+    // Exit leap mode if active
+    if (leapMode) {
+      exitLeapMode(false);
+    }
+
+    createSearchModal();
+
+    // Reset all search state
+    searchMode = true;
+    searchQuery = '';
+    searchSelectedIndex = 0;
+    searchVimMode = 'insert';
+    searchCursorPos = 0;
+
+    // Reset input value
+    searchInput.value = '';
+
+    // Show modal
+    searchModal.classList.add('active');
+
+    // Render results (shows all tabs when query is empty)
+    renderSearchResults();
+
+    // Use updateSearchVimIndicator to properly set up input/display visibility
+    // This ensures input is shown and display is hidden for insert mode
+    updateSearchVimIndicator();
+
+    log('Entered search mode');
+  }
+
+  // Exit search mode
+  function exitSearchMode() {
+    if (!searchMode) return;
+
+    searchMode = false;
+    searchModal.classList.remove('active');
+
+    // Reset vim mode to insert for next time
+    searchVimMode = 'insert';
+
+    // Ensure input is visible and display is hidden for next open
+    if (searchInput) {
+      searchInput.style.display = '';
+      searchInput.blur();
+    }
+    if (searchInputDisplay) {
+      searchInputDisplay.style.display = 'none';
+    }
+
+    log('Exited search mode');
+  }
+
+  // Select and open a search result
+  function selectSearchResult(index) {
+    if (index < 0 || index >= searchResults.length) return;
+
+    const result = searchResults[index];
+    if (result && result.tab) {
+      // Record jump before navigating
+      recordJump(gBrowser.selectedTab);
+
+      gBrowser.selectedTab = result.tab;
+
+      // Record destination
+      recordJump(result.tab);
+
+      log(`Opened tab from search: ${result.tab.label}`);
+    }
+
+    exitSearchMode();
+  }
+
+  // Move search selection
+  function moveSearchSelection(direction) {
+    if (searchResults.length === 0) return;
+
+    if (direction === 'down') {
+      searchSelectedIndex = (searchSelectedIndex + 1) % searchResults.length;
+    } else {
+      searchSelectedIndex = (searchSelectedIndex - 1 + searchResults.length) % searchResults.length;
+    }
+
+    renderSearchResults();
+  }
+
+  // Update search vim indicator and handle focus/display based on mode
+  function updateSearchVimIndicator() {
+    if (!searchVimIndicator) return;
+
+    if (searchVimMode === 'insert') {
+      searchVimIndicator.textContent = 'INSERT';
+      searchVimIndicator.classList.remove('normal');
+
+      // Show input, hide display
+      if (searchInputDisplay) {
+        searchInputDisplay.style.display = 'none';
+      }
+      if (searchInput) {
+        searchInput.style.display = '';
+
+        // Focus with retry mechanism
+        const focusInput = () => {
+          if (searchInput && searchMode && searchVimMode === 'insert') {
+            searchInput.focus();
+            searchInput.setSelectionRange(searchCursorPos, searchCursorPos);
+            if (document.activeElement !== searchInput) {
+              requestAnimationFrame(focusInput);
+            } else {
+              log('Search input focused');
+            }
+          }
+        };
+        requestAnimationFrame(focusInput);
+      }
+    } else {
+      searchVimIndicator.textContent = 'NORMAL';
+      searchVimIndicator.classList.add('normal');
+
+      // Hide input, show display with block cursor
+      if (searchInput) {
+        searchInput.style.display = 'none';
+        searchInput.blur();
+      }
+      if (searchInputDisplay) {
+        searchInputDisplay.style.display = '';
+        renderSearchDisplay();
+      }
+    }
+  }
+
+  // Handle search mode keyboard input
+  function handleSearchKeyDown(event) {
+    const key = event.key;
+
+    // Navigation keys work in both modes
+    if ((event.ctrlKey && key === 'j') || key === 'ArrowDown') {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSearchSelection('down');
+      return true;
+    }
+
+    if ((event.ctrlKey && key === 'k') || key === 'ArrowUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSearchSelection('up');
+      return true;
+    }
+
+    // Enter to select
+    if (key === 'Enter') {
+      event.preventDefault();
+      event.stopPropagation();
+      selectSearchResult(searchSelectedIndex);
+      return true;
+    }
+
+    // Escape handling
+    if (key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (searchVimMode === 'insert') {
+        // Switch to normal mode
+        // Save cursor position before blurring
+        searchCursorPos = searchInput.selectionStart || 0;
+        searchVimMode = 'normal';
+        updateSearchVimIndicator(); // This will blur the input
+      } else {
+        // Exit search mode
+        exitSearchMode();
+      }
+      return true;
+    }
+
+    // Vim normal mode handling
+    if (searchVimMode === 'normal') {
+      event.preventDefault();
+      event.stopPropagation();
+
+      handleVimNormalMode(key, event);
+      return true;
+    }
+
+    // Insert mode - let input handle it, but update state
+    // We'll handle this in the input event
+    return false;
+  }
+
+  // Handle vim normal mode commands
+  function handleVimNormalMode(key, event) {
+    const text = searchQuery;
+    const len = text.length;
+
+    // Quick jump with numbers 1-9
+    if (key >= '1' && key <= '9') {
+      const idx = parseInt(key) - 1;
+      if (idx < searchResults.length) {
+        selectSearchResult(idx);
+      }
+      return;
+    }
+
+    // Movement commands
+    switch (key) {
+      case 'h': // Left
+        searchCursorPos = Math.max(0, searchCursorPos - 1);
+        renderSearchDisplay();
+        break;
+
+      case 'l': // Right
+        searchCursorPos = Math.min(len > 0 ? len - 1 : 0, searchCursorPos + 1);
+        renderSearchDisplay();
+        break;
+
+      case '0': // Beginning of line
+        searchCursorPos = 0;
+        renderSearchDisplay();
+        break;
+
+      case '$': // End of line
+        searchCursorPos = Math.max(0, len - 1);
+        renderSearchDisplay();
+        break;
+
+      case 'w': // Word forward
+        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'forward');
+        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
+        renderSearchDisplay();
+        break;
+
+      case 'b': // Word backward
+        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'backward');
+        renderSearchDisplay();
+        break;
+
+      case 'e': // End of word
+        searchCursorPos = findWordEnd(text, searchCursorPos);
+        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
+        renderSearchDisplay();
+        break;
+
+      // Insert mode switches
+      case 'i': // Insert at cursor
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will focus and set cursor
+        break;
+
+      case 'a': // Insert after cursor
+        searchCursorPos = Math.min(len, searchCursorPos + 1);
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will focus and set cursor
+        break;
+
+      case 'I': // Insert at beginning
+        searchCursorPos = 0;
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will focus and set cursor
+        break;
+
+      case 'A': // Insert at end
+        searchCursorPos = len;
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will focus and set cursor
+        break;
+
+      // Editing commands
+      case 'x': // Delete character
+        if (searchCursorPos < len) {
+          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          searchInput.value = searchQuery;
+          // Adjust cursor if we deleted the last character
+          if (searchCursorPos >= searchQuery.length && searchQuery.length > 0) {
+            searchCursorPos = searchQuery.length - 1;
+          }
+          renderSearchResults();
+          renderSearchDisplay();
+        }
+        break;
+
+      case 's': // Substitute (delete and insert)
+        if (searchCursorPos < len) {
+          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          searchInput.value = searchQuery;
+          renderSearchResults();
+        }
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will show input and focus
+        break;
+
+      case 'D': // Delete to end of line
+        searchQuery = text.slice(0, searchCursorPos);
+        searchInput.value = searchQuery;
+        // Adjust cursor to end
+        if (searchCursorPos > 0) searchCursorPos = searchQuery.length > 0 ? searchQuery.length - 1 : 0;
+        renderSearchResults();
+        renderSearchDisplay();
+        break;
+
+      case 'C': // Change to end of line
+        searchQuery = text.slice(0, searchCursorPos);
+        searchInput.value = searchQuery;
+        renderSearchResults();
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will show input and focus
+        break;
+
+      case 'd': // Wait for second key (dd for delete line)
+        // For simplicity, just clear on 'd' press
+        // A more complete implementation would wait for the second key
+        // For now, we'll treat 'd' alone as delete character like 'x'
+        if (searchCursorPos < len) {
+          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          searchInput.value = searchQuery;
+          if (searchCursorPos >= searchQuery.length && searchQuery.length > 0) {
+            searchCursorPos = searchQuery.length - 1;
+          }
+          renderSearchResults();
+          renderSearchDisplay();
+        }
+        break;
+    }
+  }
+
+  // Find next word boundary
+  function findNextWordBoundary(text, pos, direction) {
+    const len = text.length;
+
+    if (direction === 'forward') {
+      // Skip current word
+      while (pos < len && !/\s/.test(text[pos])) pos++;
+      // Skip whitespace
+      while (pos < len && /\s/.test(text[pos])) pos++;
+      return pos;
+    } else {
+      // Move back one
+      if (pos > 0) pos--;
+      // Skip whitespace
+      while (pos > 0 && /\s/.test(text[pos])) pos--;
+      // Find start of word
+      while (pos > 0 && !/\s/.test(text[pos - 1])) pos--;
+      return pos;
+    }
+  }
+
+  // Find end of current word
+  function findWordEnd(text, pos) {
+    const len = text.length;
+    if (pos >= len) return len;
+
+    // Move forward one
+    pos++;
+    // Skip whitespace
+    while (pos < len && /\s/.test(text[pos])) pos++;
+    // Find end of word
+    while (pos < len && !/\s/.test(text[pos])) pos++;
+    return Math.max(0, pos - 1);
+  }
+
+  // Update input cursor position
+  function updateInputCursor() {
+    if (!searchInput) return;
+    searchInput.setSelectionRange(searchCursorPos, searchCursorPos);
+  }
+
+  // Render the display element with block cursor for normal mode
+  function renderSearchDisplay() {
+    if (!searchInputDisplay) return;
+
+    const text = searchQuery;
+    const pos = searchCursorPos;
+
+    if (text.length === 0) {
+      // Empty - show placeholder with cursor
+      searchInputDisplay.innerHTML = '<span class="cursor-empty"></span><span class="placeholder">Search tabs...</span>';
+      return;
+    }
+
+    // Split text around cursor position
+    const before = escapeHtml(text.slice(0, pos));
+    const cursorChar = pos < text.length ? escapeHtml(text[pos]) : '';
+    const after = pos < text.length ? escapeHtml(text.slice(pos + 1)) : '';
+
+    if (pos >= text.length) {
+      // Cursor at end - show block cursor after text
+      searchInputDisplay.innerHTML = `${before}<span class="cursor-empty"></span>`;
+    } else {
+      // Cursor on a character - highlight that character
+      searchInputDisplay.innerHTML = `${before}<span class="cursor-char">${cursorChar}</span>${after}`;
+    }
+  }
+
+  // Handle search input changes
+  function handleSearchInput(event) {
+    searchQuery = searchInput.value;
+    searchCursorPos = searchInput.selectionStart;
+    searchSelectedIndex = 0; // Reset selection on query change
+    renderSearchResults();
   }
 
   // Get visible tabs
@@ -976,6 +1916,23 @@
       return;
     }
 
+    // Handle search mode input first
+    if (searchMode) {
+      if (handleSearchKeyDown(event)) {
+        return;
+      }
+      // Let unhandled keys (insert mode typing) pass through to input
+      return;
+    }
+
+    // Check for search trigger: Ctrl+/
+    if (event.ctrlKey && event.key === '/') {
+      event.preventDefault();
+      event.stopPropagation();
+      enterSearchMode();
+      return;
+    }
+
     // Check for leap mode trigger: Ctrl+Space
     if (event[CONFIG.triggerModifier] && event.key === CONFIG.triggerKey) {
       event.preventDefault();
@@ -1466,7 +2423,7 @@
 
   // Initialize
   function init() {
-    log('Initializing ZenLeap v2.2.0...');
+    log('Initializing ZenLeap v2.3.0...');
 
     if (!gBrowser || !gBrowser.tabs) {
       log('gBrowser not ready, retrying in 500ms');
@@ -1479,7 +2436,7 @@
     setupKeyboardListener();
     updateRelativeNumbers();
 
-    log('ZenLeap initialized successfully!');
+    log('ZenLeap v2.3.0 initialized successfully!');
     log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
     log('  j/k/↑↓ = browse mode | Enter=open | x=close | Esc=cancel');
     log('  g = goto (gg=first, G=last, g{num}=tab #)');
@@ -1487,6 +2444,7 @@
     log('  m{char} = set/toggle mark | M = clear all marks');
     log('  \'{char} = goto mark | Ctrl+\'{char} = quick goto');
     log('  o = jump back | i = jump forward');
+    log('Press Ctrl+/ for tab search (vim-style fuzzy finder)');
   }
 
   // Start initialization

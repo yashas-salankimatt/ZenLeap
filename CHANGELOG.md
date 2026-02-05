@@ -5,6 +5,25 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2025-02-05
+
+### Added
+- **Tab Search** (Spotlight-like fuzzy finder)
+  - `Ctrl+/` = open search modal
+  - Fuzzy search through all open tabs by title and URL
+  - Real-time results with match highlighting
+  - Navigate with `↑`/`↓` or `Ctrl+j`/`Ctrl+k`
+  - Quick jump with `1-9` keys in normal mode
+  - `Enter` = open selected tab
+  - **Vim Mode**:
+    - Starts in INSERT mode for typing
+    - `Escape` = toggle to NORMAL mode
+    - Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`
+    - Editing: `x`, `s`, `D`, `C`
+    - Insert switches: `i`, `a`, `I`, `A`
+  - Glassmorphism UI with smooth animations
+  - Shows up to 9 results with quick-jump labels
+
 ## [2.2.0] - 2025-02-05
 
 ### Added
@@ -86,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.3.0 | 2025-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |
 | 2.2.0 | 2025-02-05 | Jump history (o/i), marks (m/') |
 | 2.1.0 | 2025-02-05 | Manager app, compact mode, arrow keys |
 | 2.0.0 | 2025-02-05 | Browse mode, g-mode, z-mode |

@@ -36,6 +36,23 @@ Scroll the current tab into view:
 - `Ctrl+Space` → `zt` — Scroll current tab to top
 - `Ctrl+Space` → `zb` — Scroll current tab to bottom
 
+### Tab Search (Spotlight-like Fuzzy Finder)
+Quickly find and switch to any tab with fuzzy search:
+- `Ctrl+/` — Open search modal
+- Type to fuzzy search through all open tabs by title and URL
+- Real-time results with match highlighting
+- Navigate with `↑`/`↓` or `Ctrl+j`/`Ctrl+k`
+- Press `1-9` in normal mode to quick jump to a result
+- `Enter` — Open selected tab
+- `Escape` — Toggle between vim modes or close modal
+
+**Vim Mode in Search:**
+- Starts in INSERT mode for typing
+- `Escape` toggles to NORMAL mode
+- Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`
+- Editing: `x`, `s`, `D`, `C`
+- Insert switches: `i`, `a`, `I`, `A`
+
 ### Compact Mode Support
 When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating.
 
@@ -171,6 +188,11 @@ cd claude-code/ZenLeap
 | | `Ctrl+'{char}` | Quick jump (no leap mode) |
 | **Jump History** | `o` | Jump back (like vim Ctrl+O) |
 | | `i` | Jump forward (like vim Ctrl+I) |
+| **Tab Search** | `Ctrl+/` | Open fuzzy search modal |
+| | `↑/↓` or `Ctrl+j/k` | Navigate results |
+| | `Enter` | Open selected tab |
+| | `1-9` (normal) | Quick jump to result |
+| | `Escape` | Toggle vim mode / close |
 
 ### Examples
 
@@ -213,6 +235,21 @@ Ctrl+' → a                      (quick jump without leap mode)
 ```
 Ctrl+Space → o                  (go back to previous tab)
 Ctrl+Space → i                  (go forward in history)
+```
+
+**Search for a tab:**
+```
+Ctrl+/                          (open search modal)
+git                             (type to fuzzy search)
+↓ or Ctrl+j                     (select next result)
+Enter                           (open selected tab)
+```
+
+**Quick jump in search:**
+```
+Ctrl+/                          (open search modal)
+doc                             (type query)
+3                               (press 3 in normal mode to jump to result #3)
 ```
 
 ## Customization
