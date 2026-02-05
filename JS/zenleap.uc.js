@@ -357,7 +357,7 @@
       const tabs = getVisibleTabs();
       const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
       overlayDirectionLabel.textContent = pos;
-      overlayHintLabel.textContent = 'j/k=move  Enter=open  x=close  Esc=cancel';
+      overlayHintLabel.textContent = 'j/k/↑↓=move  Enter=open  x=close  Esc=cancel';
     } else if (gMode) {
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
@@ -377,7 +377,7 @@
       leapOverlay.classList.remove('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = '';
-      overlayHintLabel.textContent = 'j/k=browse  g=goto  z=scroll';
+      overlayHintLabel.textContent = 'j/k/↑↓=browse  g=goto  z=scroll';
     }
   }
 
@@ -797,11 +797,11 @@
       event.preventDefault();
       event.stopPropagation();
 
-      if (key === 'j') {
+      if (key === 'j' || key === 'arrowdown') {
         moveHighlight('down');
         return;
       }
-      if (key === 'k') {
+      if (key === 'k' || key === 'arrowup') {
         moveHighlight('up');
         return;
       }
@@ -918,11 +918,11 @@
     event.preventDefault();
     event.stopPropagation();
 
-    if (key === 'j') {
+    if (key === 'j' || key === 'arrowdown') {
       enterBrowseMode('down');
       return;
     }
-    if (key === 'k') {
+    if (key === 'k' || key === 'arrowup') {
       enterBrowseMode('up');
       return;
     }
