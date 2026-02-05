@@ -474,7 +474,8 @@
         opacity: 0.6;
       }
 
-      #zenleap-search-input {
+      #zenleap-search-input,
+      #zenleap-search-input-display {
         flex: 1;
         background: transparent;
         border: none;
@@ -482,6 +483,14 @@
         font-size: 18px;
         color: #e0e0e0;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        height: 27px;
+        line-height: 27px;
+        padding: 0;
+        margin: 0;
+        box-sizing: border-box;
+      }
+
+      #zenleap-search-input {
         caret-color: #61afef;
       }
 
@@ -490,13 +499,7 @@
       }
 
       #zenleap-search-input-display {
-        flex: 1;
-        font-size: 18px;
-        color: #e0e0e0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         white-space: pre;
-        min-height: 27px;
-        line-height: 27px;
       }
 
       #zenleap-search-input-display .cursor-char {
@@ -1083,6 +1086,15 @@
       case 'C': // Change to end of line
         searchQuery = text.slice(0, searchCursorPos);
         searchInput.value = searchQuery;
+        renderSearchResults();
+        searchVimMode = 'insert';
+        updateSearchVimIndicator(); // This will show input and focus
+        break;
+
+      case 'S': // Substitute entire line (clear all and enter insert mode)
+        searchQuery = '';
+        searchInput.value = '';
+        searchCursorPos = 0;
         renderSearchResults();
         searchVimMode = 'insert';
         updateSearchVimIndicator(); // This will show input and focus
