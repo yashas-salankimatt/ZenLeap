@@ -3,13 +3,13 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.4.0
+// @version        2.4.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
-  // Version (update this in one place, used by help modal)
+  // Version - keep in sync with @version in header above
   const VERSION = '2.4.0';
 
   // Configuration
