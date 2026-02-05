@@ -67,6 +67,7 @@
   let searchInput = null;
   let searchInputDisplay = null;  // Visual display for normal mode with block cursor
   let searchResultsList = null;
+  let searchHintBar = null;       // Hint bar below results
   let searchVimIndicator = null;
 
   // Utility: Convert number to display character
@@ -314,22 +315,83 @@
     return { score, indices };
   }
 
+  // Calculate recency bonus for a tab (0-25 points)
+  // Uses logarithmic decay: recently accessed tabs get higher bonus
+  // Falls back to position-based bonus if lastAccessed is unavailable
+  function calculateRecencyBonus(tab, fallbackIndex, totalTabs) {
+    const lastAccessed = tab.lastAccessed;
+
+    // Check if lastAccessed is available and valid
+    if (lastAccessed && typeof lastAccessed === 'number' && lastAccessed > 0) {
+      const now = Date.now();
+      const ageMs = Math.max(0, now - lastAccessed);
+      const ageMinutes = ageMs / (1000 * 60);
+
+      // Logarithmic decay formula:
+      // - Just accessed (0 min): 25 points
+      // - 10 mins ago: ~20 points
+      // - 1 hour ago: ~16 points
+      // - 1 day ago: ~9 points
+      // - 1 week ago: ~5 points
+      // - Very old: approaches 0
+      const bonus = Math.max(0, 25 - (5 * Math.log10(ageMinutes + 1)));
+      return bonus;
+    }
+
+    // Fallback: use inverse of tab position (0-5 point range)
+    // Earlier tabs in the list get a small bonus
+    if (totalTabs > 1) {
+      return 5 * (1 - fallbackIndex / (totalTabs - 1));
+    }
+    return 0;
+  }
+
+  // Sort tabs by recency (most recently accessed first)
+  // Falls back to original order if lastAccessed is unavailable
+  function sortTabsByRecency(tabs) {
+    if (tabs.length === 0) return tabs;
+
+    // Check if lastAccessed is available by sampling first tab
+    const sampleTab = tabs[0];
+    const hasLastAccessed = sampleTab.lastAccessed &&
+      typeof sampleTab.lastAccessed === 'number' &&
+      sampleTab.lastAccessed > 0;
+
+    if (!hasLastAccessed) {
+      // Fallback: return original order (Firefox may already order by recency)
+      log('lastAccessed not available, using default tab order');
+      return tabs;
+    }
+
+    // Sort by lastAccessed descending (most recent first)
+    return [...tabs].sort((a, b) => {
+      const aTime = a.lastAccessed || 0;
+      const bTime = b.lastAccessed || 0;
+      return bTime - aTime;
+    });
+  }
+
   // Search tabs and return sorted results
+  // Combines fuzzy match score with recency bonus for ranking
   function searchTabs(query) {
+    const tabs = getVisibleTabs();
+    const totalTabs = tabs.length;
+
+    // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
-      // Return all tabs sorted by recency (most recent first)
-      return getVisibleTabs().slice(0, 9).map((tab, idx) => ({
+      const sortedTabs = sortTabsByRecency(tabs);
+      return sortedTabs.slice(0, 20).map((tab, idx) => ({
         tab,
-        score: 100 - idx,
+        score: 100 - idx, // Score reflects sorted position
         titleIndices: [],
         urlIndices: []
       }));
     }
 
-    const tabs = getVisibleTabs();
+    // With query: combine fuzzy match score + recency bonus
     const results = [];
 
-    for (const tab of tabs) {
+    tabs.forEach((tab, idx) => {
       const title = tab.label || '';
       const url = tab.linkedBrowser?.currentURI?.spec || '';
 
@@ -337,23 +399,39 @@
       const urlMatch = fuzzyMatch(query, url);
 
       if (titleMatch || urlMatch) {
-        const titleScore = titleMatch ? titleMatch.score * 2 : 0; // Title matches are more valuable
+        // Calculate match score (title weighted 2x)
+        const titleScore = titleMatch ? titleMatch.score * 2 : 0;
         const urlScore = urlMatch ? urlMatch.score : 0;
+        const matchScore = titleScore + urlScore;
+
+        // Add recency bonus (0-25 points)
+        const recencyBonus = calculateRecencyBonus(tab, idx, totalTabs);
+
+        // Combined score: match quality is primary, recency is secondary
+        const totalScore = matchScore + recencyBonus;
 
         results.push({
           tab,
-          score: titleScore + urlScore,
+          score: totalScore,
+          matchScore,      // For debugging
+          recencyBonus,    // For debugging
           titleIndices: titleMatch ? titleMatch.indices : [],
           urlIndices: urlMatch ? urlMatch.indices : []
         });
       }
-    }
+    });
 
-    // Sort by score descending
+    // Sort by combined score descending
     results.sort((a, b) => b.score - a.score);
 
-    // Return top 9 results
-    return results.slice(0, 9);
+    // Log top results for debugging (can be removed later)
+    if (results.length > 0 && CONFIG.debug) {
+      log(`Search "${query}": top result "${results[0].tab.label}" ` +
+          `(match=${results[0].matchScore.toFixed(1)}, recency=${results[0].recencyBonus.toFixed(1)})`);
+    }
+
+    // Return top 20 results (1-9 have quick jump labels)
+    return results.slice(0, 20);
   }
 
   // Create search modal
@@ -402,8 +480,12 @@
     searchResultsList = document.createElement('div');
     searchResultsList.id = 'zenleap-search-results';
 
+    searchHintBar = document.createElement('div');
+    searchHintBar.id = 'zenleap-search-hint-bar';
+
     container.appendChild(inputWrapper);
     container.appendChild(searchResultsList);
+    container.appendChild(searchHintBar);
 
     searchModal.appendChild(backdrop);
     searchModal.appendChild(container);
@@ -543,7 +625,7 @@
       }
 
       #zenleap-search-results {
-        max-height: 400px;
+        max-height: 60vh;
         overflow-y: auto;
       }
 
@@ -625,7 +707,7 @@
         font-size: 14px;
       }
 
-      .zenleap-search-hint {
+      #zenleap-search-hint-bar {
         padding: 12px 20px;
         border-top: 1px solid rgba(255, 255, 255, 0.1);
         font-size: 11px;
@@ -633,9 +715,10 @@
         display: flex;
         gap: 16px;
         justify-content: center;
+        flex-shrink: 0;
       }
 
-      .zenleap-search-hint kbd {
+      #zenleap-search-hint-bar kbd {
         background: rgba(255, 255, 255, 0.1);
         padding: 2px 6px;
         border-radius: 3px;
@@ -728,7 +811,7 @@
         favicon = 'chrome://branding/content/icon32.png';
       }
       const isSelected = idx === searchSelectedIndex;
-      const label = idx + 1; // 1-9
+      const label = idx < 9 ? idx + 1 : ''; // Only 1-9 have quick jump labels
 
       const highlightedTitle = highlightMatches(title, result.titleIndices);
       const highlightedUrl = highlightMatches(url, result.urlIndices);
@@ -740,22 +823,19 @@
             <div class="zenleap-search-result-title">${highlightedTitle}</div>
             <div class="zenleap-search-result-url">${highlightedUrl}</div>
           </div>
-          <span class="zenleap-search-result-label">${label}</span>
+          ${label ? `<span class="zenleap-search-result-label">${label}</span>` : ''}
         </div>
       `;
     });
 
     // Add hint bar
     html += `
-      <div class="zenleap-search-hint">
-        <span><kbd>↑↓</kbd> navigate</span>
-        <span><kbd>Enter</kbd> open</span>
-        <span><kbd>1-9</kbd> quick jump</span>
-        <span><kbd>Esc</kbd> ${searchVimMode === 'insert' ? 'vim mode' : 'close'}</span>
-      </div>
     `;
 
     searchResultsList.innerHTML = html;
+
+    // Update hint bar
+    updateSearchHintBar();
 
     // Add click handlers and favicon error handlers
     searchResultsList.querySelectorAll('.zenleap-search-result').forEach(el => {
@@ -777,6 +857,26 @@
     const selectedEl = searchResultsList.querySelector('.zenleap-search-result.selected');
     if (selectedEl) {
       selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  // Update the hint bar content based on current mode
+  function updateSearchHintBar() {
+    if (!searchHintBar) return;
+
+    if (searchVimMode === 'normal') {
+      searchHintBar.innerHTML = `
+        <span><kbd>j/k</kbd> navigate</span>
+        <span><kbd>Enter</kbd> open</span>
+        <span><kbd>1-9</kbd> quick jump</span>
+        <span><kbd>Esc</kbd> close</span>
+      `;
+    } else {
+      searchHintBar.innerHTML = `
+        <span><kbd>↑↓</kbd> navigate</span>
+        <span><kbd>Enter</kbd> open</span>
+        <span><kbd>Esc</kbd> normal mode</span>
+      `;
     }
   }
 
@@ -912,6 +1012,9 @@
         renderSearchDisplay();
       }
     }
+
+    // Update hint bar to reflect current mode
+    updateSearchHintBar();
   }
 
   // Handle search mode keyboard input
@@ -987,7 +1090,17 @@
       return;
     }
 
-    // Movement commands
+    // Result navigation with j/k in normal mode
+    if (key === 'j') {
+      moveSearchSelection('down');
+      return;
+    }
+    if (key === 'k') {
+      moveSearchSelection('up');
+      return;
+    }
+
+    // Cursor movement commands
     switch (key) {
       case 'h': // Left
         searchCursorPos = Math.max(0, searchCursorPos - 1);
