@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        1.0.0
+// @version        2.0.0
 // ==/UserScript==
 
 (function() {
@@ -12,9 +12,9 @@
   // Configuration
   const CONFIG = {
     debug: true,
-    currentTabIndicator: '·',  // What to show on current tab (could be '0' or '·')
+    currentTabIndicator: '·',  // What to show on current tab
     overflowIndicator: '+',    // For positions > 45
-    leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds
+    leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds (not used in browse mode)
     triggerKey: ' ',           // Space key
     triggerModifier: 'ctrlKey' // Ctrl modifier
   };
@@ -22,47 +22,45 @@
   // Special characters for distances 36-45 (shift + number row)
   const SPECIAL_CHARS = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
 
+  // Modifier keys to ignore when pressed alone
+  const MODIFIER_KEYS = ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'];
+
   // State
   let leapMode = false;
-  let leapDirection = null; // 'up' (k) or 'down' (j)
-  let zMode = false;        // true after pressing 'z', waiting for z/t/b
+  let browseMode = false;      // true when navigating with j/k
+  let zMode = false;           // true after pressing 'z', waiting for z/t/b
   let leapModeTimeout = null;
   let leapOverlay = null;
 
+  // Browse mode state
+  let highlightedTabIndex = -1;
+  let originalTabIndex = -1;
+  let browseDirection = null;  // 'up' or 'down' - initial direction
+
   // Utility: Convert number to display character
-  // 0 = current, 1-9 = digits, 10-35 = A-Z, 36-45 = special chars
   function numberToDisplay(num) {
     if (num === 0) return CONFIG.currentTabIndicator;
     if (num >= 1 && num <= 9) return String(num);
     if (num >= 10 && num <= 35) return String.fromCharCode(65 + num - 10); // A-Z
-    if (num >= 36 && num <= 45) return SPECIAL_CHARS[num - 36]; // !@#$%^&*()
-    return CONFIG.overflowIndicator; // 46+
+    if (num >= 36 && num <= 45) return SPECIAL_CHARS[num - 36];
+    return CONFIG.overflowIndicator;
   }
 
   // Utility: Convert display character back to number
-  // Supports: 1-9, A-Z (case insensitive), !@#$%^&*()
   function displayToNumber(char) {
-    // Digits 1-9
     if (char >= '1' && char <= '9') return parseInt(char);
-
-    // Letters A-Z (case insensitive) = 10-35
     const upper = char.toUpperCase();
     if (upper >= 'A' && upper <= 'Z') return upper.charCodeAt(0) - 65 + 10;
-
-    // Special characters = 36-45
     const specialIndex = SPECIAL_CHARS.indexOf(char);
     if (specialIndex !== -1) return 36 + specialIndex;
-
     return null;
   }
 
-  // Get visible tabs (excluding glance tabs and hidden workspace tabs)
+  // Get visible tabs
   function getVisibleTabs() {
     const tabs = Array.from(gBrowser.tabs);
     return tabs.filter(tab => {
-      // Exclude glance tabs
       if (tab.hasAttribute('zen-glance-tab')) return false;
-      // Exclude hidden tabs
       if (tab.hidden) return false;
       return true;
     });
@@ -84,12 +82,9 @@
       const direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
       const displayChar = numberToDisplay(relativeDistance);
 
-      // Set data attributes on the tab element (for CSS selectors)
       tab.setAttribute('data-zenleap-direction', direction);
       tab.setAttribute('data-zenleap-distance', relativeDistance);
 
-      // IMPORTANT: Set data-zenleap-rel on .tab-content because CSS attr()
-      // only reads from the element the pseudo-element is attached to
       const tabContent = tab.querySelector('.tab-content');
       if (tabContent) {
         tabContent.setAttribute('data-zenleap-rel', displayChar);
@@ -108,7 +103,6 @@
   function createLeapOverlay() {
     if (leapOverlay) return;
 
-    // Create elements programmatically to avoid innerHTML sanitization issues
     leapOverlay = document.createElement('div');
     leapOverlay.id = 'zenleap-overlay';
 
@@ -125,14 +119,13 @@
 
     overlayHintLabel = document.createElement('span');
     overlayHintLabel.id = 'zenleap-hint-label';
-    overlayHintLabel.textContent = 'Press j (down) or k (up)';
+    overlayHintLabel.textContent = '';
 
     content.appendChild(overlayModeLabel);
     content.appendChild(overlayDirectionLabel);
     content.appendChild(overlayHintLabel);
     leapOverlay.appendChild(content);
 
-    // Add styles
     const style = document.createElement('style');
     style.id = 'zenleap-overlay-styles';
     style.textContent = `
@@ -185,10 +178,7 @@
   function showLeapOverlay() {
     createLeapOverlay();
     leapOverlay.style.display = 'block';
-    // Reset state for new leap mode session
-    if (overlayDirectionLabel) overlayDirectionLabel.textContent = '';
-    if (overlayHintLabel) overlayHintLabel.textContent = 'j/k=jump  z=scroll';
-    leapOverlay.classList.remove('leap-direction-set');
+    updateLeapOverlayState();
   }
 
   // Hide leap mode overlay
@@ -198,25 +188,28 @@
     }
   }
 
-  // Update overlay state based on current leap mode state
+  // Update overlay state
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
 
-    if (zMode) {
-      // Z-mode: waiting for z, t, or b
+    if (browseMode) {
+      // Browse mode
       leapOverlay.classList.add('leap-direction-set');
+      overlayModeLabel.textContent = 'BROWSE';
+      const tabs = getVisibleTabs();
+      const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
+      overlayDirectionLabel.textContent = pos;
+      overlayHintLabel.textContent = 'j/k=move  Enter=open  x=close  Esc=cancel';
+    } else if (zMode) {
+      leapOverlay.classList.add('leap-direction-set');
+      overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = 'z';
       overlayHintLabel.textContent = 'z=center  t=top  b=bottom';
-    } else if (leapDirection) {
-      // Direction set: waiting for number/letter
-      leapOverlay.classList.add('leap-direction-set');
-      overlayDirectionLabel.textContent = leapDirection === 'up' ? '↑ UP' : '↓ DOWN';
-      overlayHintLabel.textContent = '1-9, a-z, or !@#$%^&*()';
     } else {
-      // Initial state: waiting for j, k, or z
       leapOverlay.classList.remove('leap-direction-set');
+      overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = '';
-      overlayHintLabel.textContent = 'j/k=jump  z=scroll';
+      overlayHintLabel.textContent = 'j/k=browse  z=scroll  1-9/a-z=jump';
     }
   }
 
@@ -225,14 +218,19 @@
     if (leapMode) return;
 
     leapMode = true;
-    leapDirection = null;
+    browseMode = false;
+    zMode = false;
+    highlightedTabIndex = -1;
+    originalTabIndex = -1;
+    browseDirection = null;
+
     document.documentElement.setAttribute('data-zenleap-active', 'true');
     showLeapOverlay();
 
-    // Auto-cancel after timeout
+    // Set timeout (will be cleared if entering browse mode)
     clearTimeout(leapModeTimeout);
     leapModeTimeout = setTimeout(() => {
-      if (leapMode) {
+      if (leapMode && !browseMode) {
         log('Leap mode timed out');
         exitLeapMode();
       }
@@ -241,18 +239,196 @@
     log('Entered leap mode');
   }
 
+  // Enter browse mode
+  function enterBrowseMode(direction) {
+    const tabs = getVisibleTabs();
+    const currentTab = gBrowser.selectedTab;
+    const currentIndex = tabs.indexOf(currentTab);
+
+    if (currentIndex === -1) {
+      log('Cannot enter browse mode: current tab not found');
+      return;
+    }
+
+    browseMode = true;
+    browseDirection = direction;
+    originalTabIndex = currentIndex;
+
+    // Move highlight one step in the initial direction
+    if (direction === 'down') {
+      highlightedTabIndex = Math.min(currentIndex + 1, tabs.length - 1);
+    } else {
+      highlightedTabIndex = Math.max(currentIndex - 1, 0);
+    }
+
+    // Clear the timeout - browse mode has no timeout
+    clearTimeout(leapModeTimeout);
+
+    updateHighlight();
+    updateLeapOverlayState();
+    log(`Entered browse mode, direction=${direction}, highlight=${highlightedTabIndex}`);
+  }
+
+  // Update the visual highlight on the browsed tab
+  function updateHighlight() {
+    const tabs = getVisibleTabs();
+
+    // Remove highlight from all tabs
+    tabs.forEach(tab => {
+      tab.removeAttribute('data-zenleap-highlight');
+    });
+
+    // Add highlight to the current browsed tab
+    if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+      const highlightedTab = tabs[highlightedTabIndex];
+      highlightedTab.setAttribute('data-zenleap-highlight', 'true');
+
+      // Scroll the highlighted tab into view
+      scrollTabToView(highlightedTab, 'center');
+    }
+  }
+
+  // Clear all highlights
+  function clearHighlight() {
+    const tabs = getVisibleTabs();
+    tabs.forEach(tab => {
+      tab.removeAttribute('data-zenleap-highlight');
+    });
+  }
+
+  // Move highlight up or down
+  function moveHighlight(direction) {
+    const tabs = getVisibleTabs();
+
+    if (direction === 'down') {
+      highlightedTabIndex = Math.min(highlightedTabIndex + 1, tabs.length - 1);
+    } else {
+      highlightedTabIndex = Math.max(highlightedTabIndex - 1, 0);
+    }
+
+    updateHighlight();
+    updateLeapOverlayState();
+    log(`Moved highlight ${direction} to ${highlightedTabIndex}`);
+  }
+
+  // Jump directly to a tab N positions from original and open it
+  // Direction is determined by where the highlight currently is relative to original
+  function jumpAndOpenTab(distance) {
+    const tabs = getVisibleTabs();
+
+    // Determine direction based on current highlight position vs original
+    let direction;
+    if (highlightedTabIndex < originalTabIndex) {
+      direction = 'up';
+    } else if (highlightedTabIndex > originalTabIndex) {
+      direction = 'down';
+    } else {
+      // Highlight is on original tab, use initial browse direction as fallback
+      direction = browseDirection;
+    }
+
+    let targetIndex;
+    if (direction === 'down') {
+      targetIndex = originalTabIndex + distance;
+    } else {
+      targetIndex = originalTabIndex - distance;
+    }
+
+    // Clamp to valid range
+    targetIndex = Math.max(0, Math.min(tabs.length - 1, targetIndex));
+
+    if (targetIndex >= 0 && targetIndex < tabs.length) {
+      gBrowser.selectedTab = tabs[targetIndex];
+      log(`Jumped ${direction} ${distance} from original (highlight was ${highlightedTabIndex < originalTabIndex ? 'above' : 'below'}), opened tab ${targetIndex}`);
+    }
+
+    exitLeapMode(true); // Center scroll on new tab
+  }
+
+  // Confirm selection - open the highlighted tab
+  function confirmBrowseSelection() {
+    const tabs = getVisibleTabs();
+
+    if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+      gBrowser.selectedTab = tabs[highlightedTabIndex];
+      log(`Confirmed selection: opened tab ${highlightedTabIndex}`);
+    }
+
+    exitLeapMode(true); // true = center scroll on new tab
+  }
+
+  // Close the highlighted tab
+  function closeHighlightedTab() {
+    const tabs = getVisibleTabs();
+
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) {
+      log('No valid tab to close');
+      return;
+    }
+
+    const tabToClose = tabs[highlightedTabIndex];
+    const wasLastTab = highlightedTabIndex === tabs.length - 1;
+
+    // Close the tab
+    gBrowser.removeTab(tabToClose);
+    log(`Closed tab at index ${highlightedTabIndex}`);
+
+    // Update tabs list after close
+    const newTabs = getVisibleTabs();
+
+    if (newTabs.length === 0) {
+      // All tabs closed, exit
+      exitLeapMode(false);
+      return;
+    }
+
+    // Adjust highlight index
+    if (wasLastTab || highlightedTabIndex >= newTabs.length) {
+      // Was last tab or index now out of bounds, move to previous
+      highlightedTabIndex = newTabs.length - 1;
+    }
+    // Otherwise keep same index (which now points to the next tab)
+
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
+  // Cancel browse mode - return to original tab
+  function cancelBrowseMode() {
+    const tabs = getVisibleTabs();
+
+    if (originalTabIndex >= 0 && originalTabIndex < tabs.length) {
+      gBrowser.selectedTab = tabs[originalTabIndex];
+      log(`Cancelled, returned to original tab ${originalTabIndex}`);
+    }
+
+    exitLeapMode(true); // Center scroll on original tab
+  }
+
   // Exit leap mode
-  function exitLeapMode() {
+  function exitLeapMode(centerScroll = false) {
+    clearHighlight();
+
     leapMode = false;
-    leapDirection = null;
+    browseMode = false;
     zMode = false;
+    highlightedTabIndex = -1;
+    originalTabIndex = -1;
+    browseDirection = null;
+
     clearTimeout(leapModeTimeout);
     document.documentElement.removeAttribute('data-zenleap-active');
     hideLeapOverlay();
+
+    if (centerScroll) {
+      // Small delay to let tab selection settle
+      setTimeout(() => scrollTabIntoView('center'), 50);
+    }
+
     log('Exited leap mode');
   }
 
-  // Navigate to tab by relative distance
+  // Navigate to tab by relative distance (direct jump, no browse mode)
   function navigateToTab(direction, distance) {
     const tabs = getVisibleTabs();
     const currentTab = gBrowser.selectedTab;
@@ -270,7 +446,6 @@
       targetIndex = currentIndex + distance;
     }
 
-    // Clamp to valid range
     targetIndex = Math.max(0, Math.min(tabs.length - 1, targetIndex));
 
     if (targetIndex !== currentIndex) {
@@ -283,23 +458,20 @@
     return false;
   }
 
-  // Find the scrollable tab container
+  // Find scrollable tab container
   function findScrollableTabContainer() {
     const currentTab = gBrowser.selectedTab;
     if (!currentTab) return null;
 
-    // Walk up from the tab to find scrollable parent
     let element = currentTab.parentElement;
     let depth = 0;
     const maxDepth = 15;
 
     while (element && depth < maxDepth) {
-      // Check for Firefox/XUL scrollbox property (most common in Zen)
       if (element.scrollbox && element.scrollbox.scrollHeight > element.scrollbox.clientHeight) {
         return element.scrollbox;
       }
 
-      // Check if this element is directly scrollable
       const hasOverflowContent = element.scrollHeight > element.clientHeight;
       if (hasOverflowContent) {
         const style = window.getComputedStyle(element);
@@ -316,7 +488,6 @@
       depth++;
     }
 
-    // Fallback: try known selectors
     const selectors = ['#tabbrowser-arrowscrollbox', 'arrowscrollbox', '#tabbrowser-tabs'];
     for (const selector of selectors) {
       const el = document.querySelector(selector);
@@ -331,27 +502,21 @@
     return null;
   }
 
-  // Scroll the current tab into view at a specific position
-  // position: 'center', 'top', or 'bottom'
-  function scrollTabIntoView(position) {
-    const currentTab = gBrowser.selectedTab;
-    if (!currentTab) return;
+  // Scroll a specific tab into view
+  function scrollTabToView(tab, position) {
+    if (!tab) return;
 
     const scrollContainer = findScrollableTabContainer();
     if (!scrollContainer) {
-      // Fallback: use native scrollIntoView
       const block = position === 'center' ? 'center' : (position === 'top' ? 'start' : 'end');
-      currentTab.scrollIntoView({ behavior: 'smooth', block: block });
-      log(`Scroll fallback: scrollIntoView(${block})`);
+      tab.scrollIntoView({ behavior: 'smooth', block: block });
       return;
     }
 
-    // Get dimensions
     const containerRect = scrollContainer.getBoundingClientRect();
-    const tabRect = currentTab.getBoundingClientRect();
+    const tabRect = tab.getBoundingClientRect();
     const currentScrollTop = scrollContainer.scrollTop;
 
-    // Calculate tab position relative to scroll container's content
     const tabTopInContainer = tabRect.top - containerRect.top + currentScrollTop;
     const tabBottomInContainer = tabTopInContainer + tabRect.height;
     const tabCenterInContainer = tabTopInContainer + tabRect.height / 2;
@@ -359,11 +524,7 @@
     const viewHeight = containerRect.height;
     const maxScroll = Math.max(0, scrollContainer.scrollHeight - viewHeight);
 
-    // Check if scrolling is possible
-    if (maxScroll <= 0) {
-      log('All tabs fit in view, no scroll needed');
-      return;
-    }
+    if (maxScroll <= 0) return;
 
     let targetScroll;
     const padding = 10;
@@ -376,28 +537,36 @@
       targetScroll = tabBottomInContainer - viewHeight + padding;
     }
 
-    // Clamp to valid range
     targetScroll = Math.max(0, Math.min(maxScroll, targetScroll));
 
-    // Only scroll if meaningful change
-    if (Math.abs(targetScroll - currentScrollTop) < 2) {
-      log(`Already at ${position}`);
-      return;
-    }
+    if (Math.abs(targetScroll - currentScrollTop) < 2) return;
 
     scrollContainer.scrollTo({ top: targetScroll, behavior: 'smooth' });
-    log(`Scrolled ${position}: ${Math.round(currentScrollTop)} -> ${Math.round(targetScroll)}`);
+  }
+
+  // Scroll current tab into view
+  function scrollTabIntoView(position) {
+    const currentTab = gBrowser.selectedTab;
+    if (currentTab) {
+      scrollTabToView(currentTab, position);
+      log(`Scrolled ${position}`);
+    }
   }
 
   // Handle keydown events
   function handleKeyDown(event) {
+    // Ignore modifier keys pressed alone
+    if (MODIFIER_KEYS.includes(event.key)) {
+      return;
+    }
+
     // Check for leap mode trigger: Ctrl+Space
     if (event[CONFIG.triggerModifier] && event.key === CONFIG.triggerKey) {
       event.preventDefault();
       event.stopPropagation();
 
       if (leapMode) {
-        exitLeapMode();
+        exitLeapMode(false);
       } else {
         enterLeapMode();
       }
@@ -408,108 +577,128 @@
     if (!leapMode) return;
 
     const key = event.key.toLowerCase();
+    const originalKey = event.key; // Preserve case for special chars
 
     // Escape to cancel
     if (key === 'escape') {
       event.preventDefault();
       event.stopPropagation();
-      exitLeapMode();
+      if (browseMode) {
+        cancelBrowseMode();
+      } else {
+        exitLeapMode(false);
+      }
       return;
     }
 
-    // Handle z-mode (after pressing 'z')
+    // === BROWSE MODE HANDLING ===
+    if (browseMode) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (key === 'j') {
+        moveHighlight('down');
+        return;
+      }
+      if (key === 'k') {
+        moveHighlight('up');
+        return;
+      }
+      if (key === 'enter') {
+        confirmBrowseSelection();
+        return;
+      }
+      if (key === 'x') {
+        closeHighlightedTab();
+        return;
+      }
+
+      // Number/letter to jump N tabs from ORIGINAL tab and open it
+      const distance = displayToNumber(originalKey);
+      if (distance !== null && distance >= 1) {
+        jumpAndOpenTab(distance);
+        return;
+      }
+
+      return;
+    }
+
+    // === Z-MODE HANDLING ===
     if (zMode) {
       event.preventDefault();
       event.stopPropagation();
 
       if (key === 'z') {
-        // zz - center current tab
         scrollTabIntoView('center');
-        exitLeapMode();
+        exitLeapMode(false);
         return;
       }
       if (key === 't') {
-        // zt - current tab to top
         scrollTabIntoView('top');
-        exitLeapMode();
+        exitLeapMode(false);
         return;
       }
       if (key === 'b') {
-        // zb - current tab to bottom
         scrollTabIntoView('bottom');
-        exitLeapMode();
+        exitLeapMode(false);
         return;
       }
 
-      // Invalid key in z-mode, exit z-mode but stay in leap mode
+      // Invalid key, exit z-mode but stay in leap mode
       zMode = false;
       updateLeapOverlayState();
       log(`Invalid z-mode key: ${key}, exiting z-mode`);
       return;
     }
 
-    // Direction keys (j/k) or z-mode entry
-    if (!leapDirection) {
-      if (key === 'j') {
-        event.preventDefault();
-        event.stopPropagation();
-        leapDirection = 'down';
-        updateLeapOverlayState();
-        log('Direction set: down (j)');
-        return;
-      }
-      if (key === 'k') {
-        event.preventDefault();
-        event.stopPropagation();
-        leapDirection = 'up';
-        updateLeapOverlayState();
-        log('Direction set: up (k)');
-        return;
-      }
-      if (key === 'z') {
-        event.preventDefault();
-        event.stopPropagation();
-        zMode = true;
-        updateLeapOverlayState();
-        log('Entered z-mode (press z/t/b)');
-        return;
-      }
+    // === INITIAL LEAP MODE (waiting for j/k/z or direct jump) ===
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (key === 'j') {
+      enterBrowseMode('down');
+      return;
+    }
+    if (key === 'k') {
+      enterBrowseMode('up');
+      return;
+    }
+    if (key === 'z') {
+      zMode = true;
+      clearTimeout(leapModeTimeout); // No timeout in z-mode
+      updateLeapOverlayState();
+      log('Entered z-mode');
       return;
     }
 
-    // Number/hex keys for distance (when direction is set)
-    const distance = displayToNumber(key);
+    // Direct jump with number/letter (no browse mode)
+    const distance = displayToNumber(originalKey);
     if (distance !== null && distance >= 1) {
-      event.preventDefault();
-      event.stopPropagation();
-      navigateToTab(leapDirection, distance);
-      exitLeapMode();
+      // Default direction is down for direct jumps
+      navigateToTab('down', distance);
+      exitLeapMode(true);
       return;
     }
   }
 
   // Set up event listeners for tab changes
   function setupTabListeners() {
-    // Listen for tab selection changes
     gBrowser.tabContainer.addEventListener('TabSelect', () => {
       updateRelativeNumbers();
     });
 
-    // Listen for tab open/close
     gBrowser.tabContainer.addEventListener('TabOpen', () => {
-      setTimeout(updateRelativeNumbers, 50); // Small delay for DOM update
+      setTimeout(updateRelativeNumbers, 50);
     });
 
     gBrowser.tabContainer.addEventListener('TabClose', () => {
       setTimeout(updateRelativeNumbers, 50);
     });
 
-    // Listen for tab moves
     gBrowser.tabContainer.addEventListener('TabMove', () => {
       updateRelativeNumbers();
     });
 
-    // Listen for workspace changes (Zen-specific)
     document.addEventListener('ZenWorkspaceChanged', () => {
       setTimeout(updateRelativeNumbers, 100);
     });
@@ -519,24 +708,33 @@
 
   // Set up keyboard listener
   function setupKeyboardListener() {
-    // Use capture phase to intercept before other handlers
     window.addEventListener('keydown', handleKeyDown, true);
     log('Keyboard listener set up');
   }
 
-  // Add CSS for relative number display
+  // Add CSS for relative number display and highlight
   function injectStyles() {
     const style = document.createElement('style');
     style.id = 'zenleap-styles';
     style.textContent = `
-      /* Base styles for relative tab numbers */
+      /* Base styles */
       tab[data-zenleap-rel] {
         position: relative;
       }
 
+      /* Highlighted tab in browse mode */
+      tab[data-zenleap-highlight="true"] {
+        outline: 2px solid #61afef !important;
+        outline-offset: -2px;
+        background-color: rgba(97, 175, 239, 0.2) !important;
+      }
+
+      tab[data-zenleap-highlight="true"] > .tab-stack > .tab-content {
+        background-color: rgba(97, 175, 239, 0.15) !important;
+      }
+
       /* Expanded sidebar mode */
       @media (-moz-bool-pref: "zen.view.sidebar-expanded") {
-        /* Main number badge - reads data-zenleap-rel from .tab-content */
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           content: attr(data-zenleap-rel) !important;
           font-weight: bold;
@@ -555,30 +753,25 @@
           font-family: monospace;
         }
 
-        /* Current tab styling */
         tab[data-zenleap-direction="current"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           background-color: #61afef !important;
           color: #1e1e1e !important;
         }
 
-        /* Tabs above current */
         tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           background-color: #455a6f;
         }
 
-        /* Tabs below current */
         tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           background-color: #455a6f;
         }
 
-        /* Hide on hover, show close button */
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]:hover::after {
           opacity: 0;
           width: 0;
           margin: 0;
         }
 
-        /* Hide close button by default */
         tab .tab-close-button {
           visibility: hidden;
           opacity: 0;
@@ -589,6 +782,13 @@
         tab:hover .tab-close-button {
           visibility: visible;
           opacity: 1;
+        }
+
+        /* Highlighted tab badge */
+        tab[data-zenleap-highlight="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
+          background-color: #61afef !important;
+          color: #1e1e1e !important;
+          box-shadow: 0 0 8px rgba(97, 175, 239, 0.6);
         }
       }
 
@@ -607,9 +807,13 @@
           text-shadow: 0 0 2px rgba(0,0,0,0.5);
         }
 
-        /* Current tab in compact mode */
         tab[data-zenleap-direction="current"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
           color: #61afef !important;
+        }
+
+        tab[data-zenleap-highlight="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          color: #61afef !important;
+          text-shadow: 0 0 6px rgba(97, 175, 239, 0.8);
         }
       }
 
@@ -639,9 +843,8 @@
 
   // Initialize
   function init() {
-    log('Initializing ZenLeap...');
+    log('Initializing ZenLeap v2.0...');
 
-    // Wait for browser to be ready
     if (!gBrowser || !gBrowser.tabs) {
       log('gBrowser not ready, retrying in 500ms');
       setTimeout(init, 500);
@@ -655,11 +858,12 @@
 
     log('ZenLeap initialized successfully!');
     log('Press Ctrl+Space to enter leap mode');
-    log('  j/k + 1-9/a-z/!@#$%^&*() = jump 1-45 tabs down/up');
-    log('  zz = center tab | zt = tab to top | zb = tab to bottom');
+    log('  j/k = browse mode (navigate with j/k, Enter=open, x=close, Esc=cancel)');
+    log('  z + z/t/b = scroll center/top/bottom');
+    log('  1-9/a-z/!@#$%^&*() = direct jump');
   }
 
-  // Start initialization when DOM is ready
+  // Start initialization
   if (document.readyState === 'complete') {
     init();
   } else {
