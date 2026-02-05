@@ -1,12 +1,14 @@
 #!/bin/bash
-# ZenLeap Manager - GUI wrapper for install.sh
+# ZenLeap Manager - GUI wrapper for install/uninstall
 # This app manages ZenLeap installation via GUI dialogs
 
 set -e
 
-# URLs for remote files
-INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/install.sh"
-ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/JS/zenleap.uc.js"
+# GitHub URLs
+ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
+ZENLEAP_SCRIPT_URL="$ZENLEAP_REPO/JS/zenleap.uc.js"
+ZENLEAP_CSS_URL="$ZENLEAP_REPO/chrome.css"
+FXAUTOCONFIG_URL="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
 
 # Find profile base
 PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
@@ -15,29 +17,34 @@ PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
+# Detect Zen app path
+if [ -d "/Applications/Zen.app" ]; then
+    ZEN_APP="/Applications/Zen.app"
+elif [ -d "/Applications/Zen Browser.app" ]; then
+    ZEN_APP="/Applications/Zen Browser.app"
+else
+    ZEN_APP=""
+fi
+ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
+
 # Helper: Show alert dialog
 show_alert() {
     local message="$1"
-    local title="${2:-ZenLeap Manager}"
-    osascript -e "display dialog \"$message\" with title \"$title\" buttons {\"OK\"} default button \"OK\"" 2>/dev/null
+    osascript -e "display dialog \"$message\" with title \"ZenLeap Manager\" buttons {\"OK\"} default button \"OK\"" 2>/dev/null || true
 }
 
 # Helper: Show error dialog
 show_error() {
     local message="$1"
-    osascript -e "display dialog \"$message\" with title \"ZenLeap Manager - Error\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null
+    osascript -e "display dialog \"$message\" with title \"ZenLeap Manager - Error\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null || true
 }
 
 # Helper: Ask yes/no question
 ask_yes_no() {
     local message="$1"
     local result
-    result=$(osascript -e "display dialog \"$message\" with title \"ZenLeap Manager\" buttons {\"No\", \"Yes\"} default button \"Yes\"" 2>&1) || true
-    if echo "$result" | grep -q "Yes"; then
-        return 0
-    else
-        return 1
-    fi
+    result=$(osascript -e "display dialog \"$message\" with title \"ZenLeap Manager\" buttons {\"No\", \"Yes\"} default button \"Yes\"" 2>&1) || return 1
+    echo "$result" | grep -q "Yes"
 }
 
 # Helper: Choose from list
@@ -54,7 +61,7 @@ choose_from_list() {
     list_str="${list_str%, }"
 
     local result
-    result=$(osascript -e "choose from list {$list_str} with prompt \"$prompt\" with title \"ZenLeap Manager\"" 2>/dev/null)
+    result=$(osascript -e "choose from list {$list_str} with prompt \"$prompt\" with title \"ZenLeap Manager\"" 2>/dev/null) || true
 
     if [ "$result" = "false" ] || [ -z "$result" ]; then
         echo ""
@@ -63,95 +70,172 @@ choose_from_list() {
     fi
 }
 
-# Get version from zenleap.uc.js content
-get_version_from_content() {
-    echo "$1" | grep -o '@version[[:space:]]*[0-9.]*' | head -1 | sed 's/@version[[:space:]]*//'
-}
-
 # Get version from file
 get_version() {
     local file="$1"
     if [ -f "$file" ]; then
-        grep -o '@version[[:space:]]*[0-9.]*' "$file" | head -1 | sed 's/@version[[:space:]]*//'
+        grep -o '@version[[:space:]]*[0-9.]*' "$file" 2>/dev/null | head -1 | sed 's/@version[[:space:]]*//'
     else
         echo ""
     fi
 }
 
+# Get remote version
+get_remote_version() {
+    curl -sL "$ZENLEAP_SCRIPT_URL" 2>/dev/null | grep -o '@version[[:space:]]*[0-9.]*' | head -1 | sed 's/@version[[:space:]]*//'
+}
+
 # Compare versions (returns 0 if v1 >= v2)
 version_gte() {
-    local v1="$1"
-    local v2="$2"
-    [ "$(printf '%s\n' "$v2" "$v1" | sort -V | head -n1)" = "$v2" ]
+    [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
-# Find all profiles with ZenLeap status
-find_profiles() {
+# Check if fx-autoconfig is installed
+check_fxautoconfig() {
+    local profile_path="$1"
+    [ -f "$profile_path/chrome/utils/boot.sys.mjs" ]
+}
+
+# Install fx-autoconfig
+install_fxautoconfig() {
+    local profile_path="$1"
+
+    # Download
+    curl -sL "$FXAUTOCONFIG_URL" -o "$TEMP_DIR/fxautoconfig.zip" || return 1
+    unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR" || return 1
+
+    local extracted_dir=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "user-chrome-scripts*" | head -1)
+    [ -z "$extracted_dir" ] && return 1
+
+    # Install to Zen Resources (needs admin)
+    if [ -d "$extracted_dir/program" ]; then
+        osascript -e "do shell script \"cp -r '$extracted_dir/program/'* '$ZEN_RESOURCES/'\" with administrator privileges" || return 1
+    fi
+
+    # Install to profile
+    mkdir -p "$profile_path/chrome"
+    if [ -d "$extracted_dir/profile/chrome" ]; then
+        cp -r "$extracted_dir/profile/chrome/"* "$profile_path/chrome/"
+    fi
+
+    return 0
+}
+
+# Install ZenLeap
+install_zenleap() {
+    local profile_path="$1"
+    local chrome_dir="$profile_path/chrome"
+    local js_dir="$chrome_dir/JS"
+
+    mkdir -p "$js_dir"
+
+    # Download zenleap.uc.js
+    curl -sL "$ZENLEAP_SCRIPT_URL" -o "$js_dir/zenleap.uc.js" || return 1
+
+    # Download and add CSS
+    curl -sL "$ZENLEAP_CSS_URL" -o "$TEMP_DIR/chrome.css" || return 1
+
+    # Update userChrome.css
+    if [ -f "$chrome_dir/userChrome.css" ]; then
+        # Remove old ZenLeap styles
+        if grep -q "ZenLeap Styles" "$chrome_dir/userChrome.css" 2>/dev/null; then
+            perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$chrome_dir/userChrome.css"
+        fi
+    fi
+
+    echo "" >> "$chrome_dir/userChrome.css"
+    echo "/* === ZenLeap Styles === */" >> "$chrome_dir/userChrome.css"
+    cat "$TEMP_DIR/chrome.css" >> "$chrome_dir/userChrome.css"
+    echo "/* === End ZenLeap Styles === */" >> "$chrome_dir/userChrome.css"
+
+    # Set preferences via user.js
+    local user_js="$profile_path/user.js"
+    touch "$user_js"
+    if ! grep -q "toolkit.legacyUserProfileCustomizations.stylesheets" "$user_js" 2>/dev/null; then
+        echo 'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);' >> "$user_js"
+    fi
+
+    return 0
+}
+
+# Uninstall ZenLeap
+uninstall_zenleap() {
+    local profile_path="$1"
+    local chrome_dir="$profile_path/chrome"
+    local js_dir="$chrome_dir/JS"
+
+    # Remove zenleap.uc.js
+    [ -f "$js_dir/zenleap.uc.js" ] && rm "$js_dir/zenleap.uc.js"
+
+    # Remove styles from userChrome.css
+    if [ -f "$chrome_dir/userChrome.css" ] && grep -q "ZenLeap Styles" "$chrome_dir/userChrome.css" 2>/dev/null; then
+        perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$chrome_dir/userChrome.css"
+    fi
+
+    return 0
+}
+
+# Clear startup cache
+clear_cache() {
+    rm -rf "$HOME/Library/Caches/zen/startupCache" 2>/dev/null || true
+}
+
+# Close Zen Browser
+close_zen() {
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1; then
+        if ask_yes_no "Zen Browser is running.\n\nClose it to continue?"; then
+            osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
+            sleep 2
+            return 0
+        else
+            return 1
+        fi
+    fi
+    return 0
+}
+
+# Open Zen Browser
+open_zen() {
+    if [ -n "$ZEN_APP" ]; then
+        open "$ZEN_APP"
+    fi
+}
+
+# Get all profiles
+get_profiles() {
     local profiles=()
     if [ -d "$PROFILE_BASE" ]; then
-        while IFS= read -r -d '' dir; do
-            local name=$(basename "$dir")
-            local installed=""
-            local version=""
-            if [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
-                version=$(get_version "$dir/chrome/JS/zenleap.uc.js")
-                installed=" [v$version installed]"
-            fi
-            profiles+=("$name$installed")
-        done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print0 2>/dev/null)
+        while IFS= read -r dir; do
+            [ -d "$dir" ] && profiles+=("$dir")
+        done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" 2>/dev/null)
     fi
     echo "${profiles[@]}"
-}
-
-# Get profile path from display name
-get_profile_path() {
-    local display_name="$1"
-    # Remove the installed suffix if present
-    local name=$(echo "$display_name" | sed 's/ \[v.* installed\]$//')
-    echo "$PROFILE_BASE/$name"
-}
-
-# Download install script
-download_install_script() {
-    curl -sL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install.sh"
-    chmod +x "$TEMP_DIR/install.sh"
 }
 
 # Main menu
 main_menu() {
     # Check for Zen Browser
-    if [ ! -d "/Applications/Zen.app" ] && [ ! -d "/Applications/Zen Browser.app" ]; then
+    if [ -z "$ZEN_APP" ]; then
         show_error "Zen Browser is not installed.\n\nPlease install Zen Browser first from:\nhttps://zen-browser.app"
         exit 1
     fi
 
     # Get remote version
-    local remote_content
-    remote_content=$(curl -sL "$ZENLEAP_SCRIPT_URL" 2>/dev/null) || true
-    local remote_version=""
-    if [ -n "$remote_content" ]; then
-        remote_version=$(get_version_from_content "$remote_content")
-    fi
+    local remote_version=$(get_remote_version)
 
     # Find profiles and check installation status
-    local profiles_raw
-    profiles_raw=$(find_profiles)
-
-    # Check if any profile has ZenLeap installed
     local any_installed=false
     local installed_version=""
-    local installed_profile=""
+    local installed_profile_path=""
 
-    if [ -d "$PROFILE_BASE" ]; then
-        while IFS= read -r -d '' dir; do
-            if [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
-                any_installed=true
-                installed_version=$(get_version "$dir/chrome/JS/zenleap.uc.js")
-                installed_profile=$(basename "$dir")
-                break
-            fi
-        done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print0 2>/dev/null)
-    fi
+    while IFS= read -r dir; do
+        if [ -d "$dir" ] && [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
+            any_installed=true
+            installed_version=$(get_version "$dir/chrome/JS/zenleap.uc.js")
+            installed_profile_path="$dir"
+            break
+        fi
+    done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" 2>/dev/null)
 
     # Build status message
     local status_msg=""
@@ -159,15 +243,15 @@ main_menu() {
         status_msg="Installed: v$installed_version"
         if [ -n "$remote_version" ]; then
             if version_gte "$installed_version" "$remote_version"; then
-                status_msg+="\nLatest: v$remote_version (up to date)"
+                status_msg="$status_msg\nLatest: v$remote_version (up to date)"
             else
-                status_msg+="\nLatest: v$remote_version (UPDATE AVAILABLE)"
+                status_msg="$status_msg\nLatest: v$remote_version (UPDATE AVAILABLE)"
             fi
         fi
     else
         status_msg="Not installed"
         if [ -n "$remote_version" ]; then
-            status_msg+="\nLatest available: v$remote_version"
+            status_msg="$status_msg\nLatest available: v$remote_version"
         fi
     fi
 
@@ -175,7 +259,6 @@ main_menu() {
     local choice
     if [ "$any_installed" = true ]; then
         if [ -n "$remote_version" ] && ! version_gte "$installed_version" "$remote_version"; then
-            # Update available
             choice=$(osascript -e "display dialog \"ZenLeap Manager\n\n$status_msg\" with title \"ZenLeap Manager\" buttons {\"Quit\", \"Uninstall\", \"Update\"} default button \"Update\"" 2>&1) || exit 0
         else
             choice=$(osascript -e "display dialog \"ZenLeap Manager\n\n$status_msg\" with title \"ZenLeap Manager\" buttons {\"Quit\", \"Uninstall\", \"Reinstall\"} default button \"Quit\"" 2>&1) || exit 0
@@ -195,170 +278,139 @@ main_menu() {
 
 # Install action
 do_install() {
-    # Download latest install script
-    osascript -e 'display dialog "Downloading latest ZenLeap..." with title "ZenLeap Manager" buttons {} giving up after 1' 2>/dev/null &
-
-    if ! download_install_script; then
-        show_error "Failed to download installer.\n\nPlease check your internet connection."
-        exit 1
-    fi
-
     # Get list of profiles
-    local profiles=()
-    if [ -d "$PROFILE_BASE" ]; then
-        while IFS= read -r -d '' dir; do
+    local profile_names=()
+    local profile_paths=()
+
+    while IFS= read -r dir; do
+        if [ -d "$dir" ]; then
             local name=$(basename "$dir")
             local suffix=""
             if [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
                 local v=$(get_version "$dir/chrome/JS/zenleap.uc.js")
                 suffix=" [v$v installed]"
             fi
-            profiles+=("$name$suffix")
-        done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print0 2>/dev/null)
-    fi
+            profile_names+=("$name$suffix")
+            profile_paths+=("$dir")
+        fi
+    done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" 2>/dev/null)
 
-    if [ ${#profiles[@]} -eq 0 ]; then
+    if [ ${#profile_names[@]} -eq 0 ]; then
         show_error "No Zen Browser profiles found.\n\nPlease run Zen Browser at least once."
         exit 1
     fi
 
-    local selected_profile
-    if [ ${#profiles[@]} -eq 1 ]; then
-        selected_profile="${profiles[0]}"
+    local selected_name
+    local selected_path
+    if [ ${#profile_names[@]} -eq 1 ]; then
+        selected_name="${profile_names[0]}"
+        selected_path="${profile_paths[0]}"
     else
-        selected_profile=$(choose_from_list "Select profile to install ZenLeap:" "${profiles[@]}")
-        if [ -z "$selected_profile" ]; then
+        selected_name=$(choose_from_list "Select profile to install ZenLeap:" "${profile_names[@]}")
+        if [ -z "$selected_name" ]; then
             exit 0
         fi
+        # Find matching path
+        for i in "${!profile_names[@]}"; do
+            if [ "${profile_names[$i]}" = "$selected_name" ]; then
+                selected_path="${profile_paths[$i]}"
+                break
+            fi
+        done
     fi
 
-    local profile_path=$(get_profile_path "$selected_profile")
-    local profile_name=$(basename "$profile_path")
+    # Close Zen if running
+    if ! close_zen; then
+        show_alert "Installation cancelled."
+        exit 0
+    fi
 
-    # Check if Zen is running
-    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1; then
-        if ask_yes_no "Zen Browser is running.\n\nClose it to continue with installation?"; then
-            osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
-            sleep 2
-        else
-            show_alert "Installation cancelled.\n\nPlease close Zen Browser and try again."
-            exit 0
+    # Show progress
+    osascript -e 'display notification "Installing ZenLeap..." with title "ZenLeap Manager"' 2>/dev/null || true
+
+    # Check and install fx-autoconfig if needed
+    if ! check_fxautoconfig "$selected_path"; then
+        if ! install_fxautoconfig "$selected_path"; then
+            show_error "Failed to install fx-autoconfig.\n\nPlease try again or install manually."
+            exit 1
         fi
     fi
 
-    # Run install script with sudo for fx-autoconfig
-    # First check if fx-autoconfig needs to be installed
-    local needs_sudo=false
-    if [ ! -f "$profile_path/chrome/utils/boot.sys.mjs" ]; then
-        needs_sudo=true
+    # Install ZenLeap
+    if ! install_zenleap "$selected_path"; then
+        show_error "Failed to install ZenLeap.\n\nPlease check your internet connection."
+        exit 1
     fi
 
-    local install_output
-    if [ "$needs_sudo" = true ]; then
-        # Need admin for fx-autoconfig installation
-        install_output=$(osascript -e "do shell script \"'$TEMP_DIR/install.sh' install --remote << 'EOFPROFILE'
-$(($(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print 2>/dev/null | grep -n "^$profile_path$" | cut -d: -f1) ))
-EOFPROFILE\" with administrator privileges" 2>&1) || {
-            show_error "Installation failed.\n\n$install_output"
-            exit 1
-        }
-    else
-        # No sudo needed
-        install_output=$("$TEMP_DIR/install.sh" install --remote << EOFPROFILE
-$(($(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print 2>/dev/null | nl | grep "$profile_name" | awk '{print $1}') ))
-EOFPROFILE
-        2>&1) || {
-            show_error "Installation failed.\n\n$install_output"
-            exit 1
-        }
-    fi
+    # Clear cache
+    clear_cache
 
-    # Success - offer to open Zen
-    if ask_yes_no "ZenLeap installed successfully!\n\nOpen Zen Browser now?"; then
-        if [ -d "/Applications/Zen.app" ]; then
-            open "/Applications/Zen.app"
-        else
-            open "/Applications/Zen Browser.app"
-        fi
+    # Success
+    local version=$(get_version "$selected_path/chrome/JS/zenleap.uc.js")
+    if ask_yes_no "ZenLeap v$version installed successfully!\n\nOpen Zen Browser now?"; then
+        open_zen
     fi
 }
 
 # Uninstall action
 do_uninstall() {
     # Get list of profiles with ZenLeap installed
-    local profiles=()
-    if [ -d "$PROFILE_BASE" ]; then
-        while IFS= read -r -d '' dir; do
-            if [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
-                local name=$(basename "$dir")
-                local v=$(get_version "$dir/chrome/JS/zenleap.uc.js")
-                profiles+=("$name [v$v]")
-            fi
-        done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" -print0 2>/dev/null)
-    fi
+    local profile_names=()
+    local profile_paths=()
 
-    if [ ${#profiles[@]} -eq 0 ]; then
+    while IFS= read -r dir; do
+        if [ -d "$dir" ] && [ -f "$dir/chrome/JS/zenleap.uc.js" ]; then
+            local name=$(basename "$dir")
+            local v=$(get_version "$dir/chrome/JS/zenleap.uc.js")
+            profile_names+=("$name [v$v]")
+            profile_paths+=("$dir")
+        fi
+    done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -path "$PROFILE_BASE" 2>/dev/null)
+
+    if [ ${#profile_names[@]} -eq 0 ]; then
         show_alert "ZenLeap is not installed in any profile."
         exit 0
     fi
 
-    local selected_profile
-    if [ ${#profiles[@]} -eq 1 ]; then
-        selected_profile="${profiles[0]}"
+    local selected_name
+    local selected_path
+    if [ ${#profile_names[@]} -eq 1 ]; then
+        selected_name="${profile_names[0]}"
+        selected_path="${profile_paths[0]}"
     else
-        selected_profile=$(choose_from_list "Select profile to uninstall ZenLeap from:" "${profiles[@]}")
-        if [ -z "$selected_profile" ]; then
+        selected_name=$(choose_from_list "Select profile to uninstall ZenLeap from:" "${profile_names[@]}")
+        if [ -z "$selected_name" ]; then
             exit 0
         fi
+        # Find matching path
+        for i in "${!profile_names[@]}"; do
+            if [ "${profile_names[$i]}" = "$selected_name" ]; then
+                selected_path="${profile_paths[$i]}"
+                break
+            fi
+        done
     fi
 
-    # Extract profile name (remove version suffix)
-    local profile_name=$(echo "$selected_profile" | sed 's/ \[v.*\]$//')
-    local profile_path="$PROFILE_BASE/$profile_name"
-
-    # Check if Zen is running
+    # Track if Zen was running
     local zen_was_running=false
     if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1; then
         zen_was_running=true
-        if ask_yes_no "Zen Browser is running.\n\nClose it to continue with uninstallation?"; then
-            osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
-            sleep 2
-        else
-            show_alert "Uninstallation cancelled.\n\nPlease close Zen Browser and try again."
-            exit 0
-        fi
     fi
 
-    # Perform uninstall
-    local chrome_dir="$profile_path/chrome"
-    local js_dir="$chrome_dir/JS"
-
-    # Remove zenleap.uc.js
-    if [ -f "$js_dir/zenleap.uc.js" ]; then
-        rm "$js_dir/zenleap.uc.js"
+    # Close Zen if running
+    if ! close_zen; then
+        show_alert "Uninstallation cancelled."
+        exit 0
     fi
 
-    # Remove styles from userChrome.css
-    if [ -f "$chrome_dir/userChrome.css" ]; then
-        if grep -q "ZenLeap Styles" "$chrome_dir/userChrome.css" 2>/dev/null; then
-            perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$chrome_dir/userChrome.css"
-        fi
-    fi
-
-    # Clear startup cache
-    local cache_dir="$HOME/Library/Caches/zen"
-    if [ -d "$cache_dir/startupCache" ]; then
-        rm -rf "$cache_dir/startupCache"
-    fi
+    # Uninstall
+    uninstall_zenleap "$selected_path"
+    clear_cache
 
     # Success
     if [ "$zen_was_running" = true ]; then
         if ask_yes_no "ZenLeap uninstalled successfully!\n\nReopen Zen Browser?"; then
-            if [ -d "/Applications/Zen.app" ]; then
-                open "/Applications/Zen.app"
-            else
-                open "/Applications/Zen Browser.app"
-            fi
+            open_zen
         fi
     else
         show_alert "ZenLeap uninstalled successfully!"

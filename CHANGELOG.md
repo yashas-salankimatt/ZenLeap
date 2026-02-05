@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to ZenLeap will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.1.0] - 2025-02-05
+
+### Added
+- **ZenLeap Manager.app** - macOS GUI installer for easy install/update/uninstall
+- **Compact mode support** - Automatically expands floating sidebar when entering leap mode
+- **Arrow key navigation** - Use `↑`/`↓` in addition to `k`/`j` for navigation
+- **Extended numbering** - Support for A-Z (10-35) and special characters (36-45)
+- **Remote installation** - `install.sh --remote` downloads latest version from GitHub
+- **Version checking** - Manager app detects when updates are available
+- **Multi-profile support** - Installer handles multiple Zen Browser profiles
+
+### Changed
+- Close button now hidden by default, appears on hover (swaps with number badge)
+- Improved sidebar visibility detection for compact mode
+- Better error handling in install scripts
+
+### Fixed
+- Close button being pushed off edge of tab
+- Sidebar toggle working incorrectly when floating sidebar already visible
+- Profile selection in installer when multiple profiles exist
+
+## [2.0.0] - 2025-02-05
+
+### Added
+- **Browse Mode** - Navigate with j/k, Enter to open, x to close, Escape to cancel
+- **G-Mode** - Absolute positioning with `gg` (first), `G` (last), `g{num}` (go to #)
+- **Z-Mode** - Scroll commands `zz` (center), `zt` (top), `zb` (bottom)
+- Tab highlight visualization during browse mode
+- Scroll-into-view when browsing tabs
+- Direction-aware jump in browse mode (jump direction based on highlight position)
+
+### Changed
+- Removed direct number jump from initial leap mode (must enter browse mode first)
+- Improved keyboard handling to ignore modifier keys pressed alone
+
+### Fixed
+- Shift key incorrectly triggering navigation
+- G (shift+g) not working for last tab
+- Pressing 'g' causing immediate jump instead of entering g-mode
+
+## [1.0.0] - 2025-02-05
+
+### Added
+- Initial release
+- Relative tab numbering (1-9, A-F for 10-15)
+- Ctrl+Space chord to enter leap mode
+- j/k direction selection
+- Number/hex input to jump N tabs
+- Visual overlay showing current mode
+- CSS styling for expanded and compact sidebar modes
+- fx-autoconfig integration
+- Basic install script
+
+---
+
+## Version History Summary
+
+| Version | Date | Highlights |
+|---------|------|------------|
+| 2.1.0 | 2025-02-05 | Manager app, compact mode, arrow keys |
+| 2.0.0 | 2025-02-05 | Browse mode, g-mode, z-mode |
+| 1.0.0 | 2025-02-05 | Initial release |

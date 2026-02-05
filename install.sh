@@ -24,9 +24,9 @@ NC='\033[0m' # No Color
 
 # Configuration
 FXAUTOCONFIG_REPO="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
-ZENLEAP_REPO="https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap"
-ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/JS/zenleap.uc.js"
-ZENLEAP_CSS_URL="https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/chrome.css"
+ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
+ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
+ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Flags

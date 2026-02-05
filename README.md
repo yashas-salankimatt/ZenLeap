@@ -4,17 +4,40 @@ A vim-style relative tab numbering and keyboard navigation mod for [Zen Browser]
 
 ## Features
 
-- **Relative Tab Numbers**: Like vim's relative line numbers, shows distance from current tab
-  - Current tab: `·`
-  - Nearby tabs: `1`, `2`, `3`, ... `9`
-  - Extended range: `A`, `B`, `C`, `D`, `E`, `F` (hex for 10-15)
-  - Overflow: `+` (for 16+)
+### Relative Tab Numbers
+Like vim's relative line numbers, shows distance from current tab:
+- Current tab: `·`
+- Nearby tabs: `1`, `2`, `3`, ... `9`
+- Extended range: `A`-`Z` (10-35)
+- Special characters: `!@#$%^&*()` (36-45)
+- Overflow: `+` (46+)
 
-- **Keyboard Navigation**: Quick two-chord navigation
-  - `Ctrl+Space` → Enter leap mode
-  - `j` or `k` → Set direction (down/up)
-  - `1-9` or `a-f` → Jump that many tabs
-  - `Escape` → Cancel
+### Keyboard Navigation
+
+#### Browse Mode
+Navigate tabs visually with j/k or arrow keys:
+- `Ctrl+Space` → `j` or `↓` — Start browsing down
+- `Ctrl+Space` → `k` or `↑` — Start browsing up
+- Continue with `j/k/↑/↓` to move selection
+- `Enter` — Open selected tab
+- `x` — Close selected tab
+- `1-9, a-z` — Jump directly to tab N positions away
+- `Escape` — Cancel and return to original tab
+
+#### G-Mode (Absolute Positioning)
+Jump to specific tab positions:
+- `Ctrl+Space` → `gg` — Go to first tab
+- `Ctrl+Space` → `G` — Go to last tab
+- `Ctrl+Space` → `g` + `number` + `Enter` — Go to tab #N
+
+#### Z-Mode (Scroll Commands)
+Scroll the current tab into view:
+- `Ctrl+Space` → `zz` — Center current tab
+- `Ctrl+Space` → `zt` — Scroll current tab to top
+- `Ctrl+Space` → `zb` — Scroll current tab to bottom
+
+### Compact Mode Support
+When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating.
 
 ## Visual Demo
 
@@ -33,126 +56,149 @@ To jump to GitHub: Ctrl+Space → k → 3
 To jump to Docs: Ctrl+Space → j → 1
 ```
 
-## Requirements
-
-ZenLeap requires **fx-autoconfig** to run JavaScript in Zen Browser.
-
 ## Installation
 
-### Step 1: Install fx-autoconfig
+### Easy Install (Recommended)
 
-1. Download [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) from GitHub (green "Code" button → "Download ZIP")
+#### Option 1: ZenLeap Manager App (macOS)
 
-2. Extract and copy the **contents** of the `program/` folder to your Zen Browser installation:
+1. Download `ZenLeap.Manager.app.zip` from the [latest release](https://github.com/yashas-salankimatt/ZenLeap/releases)
+2. Extract and run `ZenLeap Manager.app`
+3. Click **Install** and follow the prompts
+4. Enter your admin password when asked (needed for fx-autoconfig)
+5. Restart Zen Browser when prompted
+
+The Manager app will:
+- Automatically download and install fx-autoconfig
+- Install the latest ZenLeap
+- Set required preferences
+- Notify you when updates are available
+
+#### Option 2: Command Line
+
+```bash
+# Download and run the installer
+curl -sL https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/install.sh | bash
+```
+
+Or clone the repo and run locally:
+
+```bash
+git clone https://github.com/yashas-salankimatt/ZenLeap.git
+cd claude-code/ZenLeap
+./install.sh
+```
+
+### Manual Installation
+
+<details>
+<summary>Click to expand manual installation steps</summary>
+
+#### Step 1: Install fx-autoconfig
+
+1. Download [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) from GitHub
+
+2. Copy the **contents** of `program/` to your Zen installation:
 
    | OS | Path |
    |----|------|
-   | **macOS** | `/Applications/Zen Browser.app/Contents/Resources/` |
+   | **macOS** | `/Applications/Zen.app/Contents/Resources/` |
    | **Windows** | `C:\Program Files\Zen Browser\` |
    | **Linux** | `/opt/zen-browser/` or `/usr/lib/zen/` |
 
-   You should copy:
-   - `config.js`
-   - `defaults/` folder (containing `pref/config-prefs.js`)
+3. Copy the **contents** of `profile/` to `<your-profile>/chrome/`:
 
-3. Copy the **contents** of the `profile/` folder to your Zen profile's `chrome/` folder:
+   Find your profile: `about:profiles` → "Root Directory"
 
-   - Find your profile: Open Zen → type `about:profiles` → look for "Root Directory"
-   - Create a `chrome/` folder inside your profile if it doesn't exist
-   - Copy the `utils/` folder from fx-autoconfig into `chrome/`
+#### Step 2: Install ZenLeap
 
-   Your profile structure should look like:
-   ```
-   <profile>/
-   └── chrome/
-       └── utils/
-           ├── boot.sys.mjs
-           ├── chrome.manifest
-           ├── fs.sys.mjs
-           ├── uc_api.sys.mjs
-           └── utils.sys.mjs
-   ```
+1. Create `<profile>/chrome/JS/` directory
+2. Copy `zenleap.uc.js` to `<profile>/chrome/JS/`
+3. Append `chrome.css` to `<profile>/chrome/userChrome.css`
 
-### Step 2: Install ZenLeap
+#### Step 3: Enable and Restart
 
-1. Create a `JS/` folder inside your profile's `chrome/` folder:
-   ```
-   <profile>/chrome/JS/
-   ```
-
-2. Copy `zenleap.uc.js` into `chrome/JS/`:
-   ```
-   <profile>/chrome/JS/zenleap.uc.js
-   ```
-
-3. (Optional) Append `chrome.css` contents to your `userChrome.css` for additional customization:
-   ```
-   <profile>/chrome/userChrome.css
-   ```
-
-### Step 3: Enable and Restart
-
-1. Open `about:config` in Zen Browser
-
-2. Search for and set these to `true`:
+1. In `about:config`, set to `true`:
    - `toolkit.legacyUserProfileCustomizations.stylesheets`
-   - `devtools.chrome.enabled`
-   - `devtools.debugger.remote-enabled`
 
-3. Go to `about:support` and click **"Clear Startup Cache"**
+2. Go to `about:support` → **"Clear Startup Cache"**
 
-4. **Completely restart Zen Browser** (quit and reopen)
+3. Restart Zen Browser
 
-## Usage
+</details>
 
-### Normal Mode
-- Tabs display relative numbers automatically
-- Current tab shows `·`
-- Other tabs show distance: `1`, `2`, `3`, ... `9`, `A`-`F`
+## Uninstallation
 
-### Leap Mode Navigation
+### Using ZenLeap Manager (macOS)
+1. Open `ZenLeap Manager.app`
+2. Click **Uninstall**
+3. Select the profile to uninstall from
+4. Restart Zen Browser when prompted
 
-| Step | Key | Action |
-|------|-----|--------|
-| 1 | `Ctrl+Space` | Enter leap mode (overlay appears) |
-| 2 | `j` or `k` | Set direction (down/up) |
-| 3 | `1-9` or `a-f` | Jump that many tabs |
+### Using Command Line
+```bash
+./install.sh uninstall
+```
 
-**Examples:**
-- Jump 3 tabs up: `Ctrl+Space` → `k` → `3`
-- Jump 5 tabs down: `Ctrl+Space` → `j` → `5`
-- Jump 10 tabs up: `Ctrl+Space` → `k` → `a`
-- Cancel: `Ctrl+Space` → `Escape`
+### Manual Uninstall
+1. Delete `<profile>/chrome/JS/zenleap.uc.js`
+2. Remove ZenLeap styles from `userChrome.css` (between `/* === ZenLeap Styles === */` markers)
+3. Clear startup cache and restart
 
-## Debugging
+## Usage Reference
 
-### Browser Console
-Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS) to open the Browser Console. Look for `[ZenLeap]` messages.
+### Quick Reference Card
 
-### Browser Toolbox
-Press `Ctrl+Shift+Alt+I` for full debugging capabilities:
-- Inspect tab elements and their `data-zenleap-*` attributes
-- Debug JavaScript execution
-- Edit CSS live in the Style Editor
+| Mode | Keys | Action |
+|------|------|--------|
+| **Enter Leap Mode** | `Ctrl+Space` | Activate ZenLeap |
+| **Browse Mode** | `j` / `↓` | Start browsing down |
+| | `k` / `↑` | Start browsing up |
+| | `j/k/↑/↓` | Move selection |
+| | `Enter` | Open selected tab |
+| | `x` | Close selected tab |
+| | `1-9, a-z` | Jump N tabs from origin |
+| | `Escape` | Cancel, return to original |
+| **G-Mode** | `gg` | First tab |
+| | `G` | Last tab |
+| | `g{num}Enter` | Go to tab #{num} |
+| **Z-Mode** | `zz` | Center current tab |
+| | `zt` | Scroll to top |
+| | `zb` | Scroll to bottom |
 
-### Common Issues
+### Examples
 
-**Numbers not showing:**
-- Ensure fx-autoconfig is properly installed
-- Check that startup cache was cleared
-- Verify the JS file is in `chrome/JS/` (not just `chrome/`)
-- Check Browser Console for errors
+**Browse and select a tab:**
+```
+Ctrl+Space → j → j → j → Enter    (move down 3 tabs, open it)
+```
 
-**Keyboard shortcuts not working:**
-- Make sure no extension is capturing `Ctrl+Space`
-- Try clicking somewhere in the browser chrome first
-- Check for conflicts in `about:addons` → Extensions
+**Quick jump in browse mode:**
+```
+Ctrl+Space → j → 5                 (jump 5 tabs down, open it)
+```
+
+**Go to first/last tab:**
+```
+Ctrl+Space → gg                    (first tab)
+Ctrl+Space → G                     (last tab)
+```
+
+**Go to specific tab number:**
+```
+Ctrl+Space → g → 1 → 2 → Enter     (go to tab #12)
+```
+
+**Center current tab in view:**
+```
+Ctrl+Space → zz
+```
 
 ## Customization
 
 ### CSS Variables
 
-Add these to your `userChrome.css` to customize colors:
+Add to your `userChrome.css`:
 
 ```css
 :root {
@@ -164,7 +210,7 @@ Add these to your `userChrome.css` to customize colors:
   --zenleap-current-bg: #61afef;
   --zenleap-current-color: #1e1e1e;
 
-  /* Direction colors (up/down) */
+  /* Direction colors */
   --zenleap-up-bg: #455a6f;
   --zenleap-down-bg: #455a6f;
 
@@ -176,24 +222,41 @@ Add these to your `userChrome.css` to customize colors:
 
 ### Changing the Trigger Key
 
-Edit `zenleap.uc.js` and modify the `CONFIG` object:
+Edit `zenleap.uc.js` and modify:
 
 ```javascript
 const CONFIG = {
-  triggerKey: ' ',           // Change to another key
+  triggerKey: ' ',           // Space key
   triggerModifier: 'ctrlKey' // Options: 'ctrlKey', 'altKey', 'shiftKey', 'metaKey'
 };
 ```
 
-## Uninstallation
+## Debugging
 
-1. Delete `<profile>/chrome/JS/zenleap.uc.js`
-2. Remove ZenLeap CSS from `userChrome.css` if added
-3. Clear startup cache and restart
+### Browser Console
+Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages.
 
-To completely remove fx-autoconfig:
-1. Delete `config.js` and `defaults/` from Zen installation directory
-2. Delete `<profile>/chrome/utils/` folder
+### Common Issues
+
+**Numbers not showing:**
+- Ensure fx-autoconfig is installed
+- Clear startup cache (`about:support`)
+- Verify `zenleap.uc.js` is in `chrome/JS/` (not just `chrome/`)
+
+**Keyboard shortcuts not working:**
+- Check no extension is capturing `Ctrl+Space`
+- Click somewhere in browser chrome first
+- Check `about:addons` for conflicts
+
+**Sidebar not expanding in compact mode:**
+- Make sure you're using Zen Browser (not Firefox)
+- Check Browser Console for errors
+
+## Requirements
+
+- [Zen Browser](https://zen-browser.app/) (Firefox-based)
+- [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) (auto-installed by installer)
+- macOS, Linux, or Windows
 
 ## License
 
@@ -201,6 +264,6 @@ MIT License
 
 ## Credits
 
-- Inspired by [tab-numbers](https://github.com/philmard/tab-numbers) theme for Zen
+- Inspired by vim's relative line numbers
 - Built with [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig)
-- Vim's relative line numbers concept
+- For [Zen Browser](https://zen-browser.app/)
