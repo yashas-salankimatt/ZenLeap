@@ -15,12 +15,30 @@
 
 set -e
 
-# Colors for output (disabled in GUI mode)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Colors for output (use $'...' for proper escape interpretation)
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m' # No Color
+
+# Open /dev/tty for interactive input (needed when piped from curl)
+# This must happen early, before any functions try to read
+if [ -t 0 ]; then
+    # stdin is a terminal, use it directly
+    exec 3<&0
+else
+    # stdin is a pipe (e.g., curl | bash), open /dev/tty
+    if [ -e /dev/tty ]; then
+        exec 3</dev/tty
+    else
+        echo "Error: No terminal available for interactive input"
+        echo "Please download and run the script directly instead:"
+        echo "  curl -sLO https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh"
+        echo "  bash install.sh"
+        exit 1
+    fi
+fi
 
 # Configuration
 FXAUTOCONFIG_REPO="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
@@ -43,7 +61,7 @@ gui_prompt() {
         echo "$result"
     else
         echo -n "$message (y/n): "
-        read -r response < /dev/tty
+        read -r response <&3
         echo "$response"
     fi
 }
@@ -86,7 +104,7 @@ gui_choose() {
             echo "  $((i+1)). ${options[$i]}"
         done
         echo -n "Select (1-${#options[@]}): "
-        read -r selection < /dev/tty
+        read -r selection <&3
         echo "$selection"
     fi
 }
@@ -237,7 +255,7 @@ find_profile() {
         done
         echo ""
         echo -n "Select profile (1-${#PROFILES[@]}): "
-        read -r selection < /dev/tty
+        read -r selection <&3
 
         if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#PROFILES[@]} ]; then
             echo -e "${RED}Invalid selection${NC}"
@@ -257,7 +275,7 @@ check_zen_running() {
     if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Zen Browser is running${NC}"
         echo -n "Close Zen Browser to continue? (y/n): "
-        read -r response < /dev/tty
+        read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
                 osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
@@ -489,7 +507,7 @@ do_install() {
 
     # Offer to open Zen
     echo -n "Open Zen Browser now? (y/n): "
-    read -r response < /dev/tty
+    read -r response <&3
     if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
         if [ "$OS" = "macos" ]; then
             open "$ZEN_APP"
@@ -521,7 +539,7 @@ do_uninstall() {
     if [ "$ZEN_WAS_RUNNING" = true ]; then
         echo ""
         echo -n "Reopen Zen Browser? (y/n): "
-        read -r response < /dev/tty
+        read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
                 open "$ZEN_APP"
