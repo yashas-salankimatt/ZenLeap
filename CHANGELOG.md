@@ -5,6 +5,28 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2025-02-05
+
+### Added
+- **Jump History** (like vim's Ctrl+O / Ctrl+I)
+  - `o` = jump back to previous tab in history
+  - `i` = jump forward in history
+  - Automatically tracks all tab switches
+  - Handles closed tabs gracefully
+- **Marks** (like vim marks)
+  - `m{char}` = set mark on current tab (a-z, 0-9)
+  - `m{char}` on same tab with same mark = toggle off (remove mark)
+  - `M` (Shift+m) = clear all marks
+  - `'{char}` = jump to marked tab
+  - `Ctrl+'{char}` = quick jump to mark (outside leap mode)
+  - Marked tabs display mark character instead of relative number
+  - Distinct red/magenta styling for marked tabs
+  - One tab can only have one mark (setting new mark removes old)
+
+### Changed
+- Updated overlay hints to show all available commands
+- Improved keyboard handling for new modes
+
 ## [2.1.0] - 2025-02-05
 
 ### Added
@@ -64,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.2.0 | 2025-02-05 | Jump history (o/i), marks (m/') |
 | 2.1.0 | 2025-02-05 | Manager app, compact mode, arrow keys |
 | 2.0.0 | 2025-02-05 | Browse mode, g-mode, z-mode |
 | 1.0.0 | 2025-02-05 | Initial release |

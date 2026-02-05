@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.1.0
+// @version        2.2.0
 // ==/UserScript==
 
 (function() {
@@ -30,6 +30,8 @@
   let browseMode = false;      // true when navigating with j/k
   let zMode = false;           // true after pressing 'z', waiting for z/t/b
   let gMode = false;           // true after pressing 'g', waiting for g or number
+  let markMode = false;        // true after pressing 'm', waiting for mark character
+  let gotoMarkMode = false;    // true after pressing "'", waiting for mark character
   let gNumberBuffer = '';      // accumulates digits for absolute tab positioning
   let gNumberTimeout = null;   // timeout for multi-digit number entry
   let leapModeTimeout = null;
@@ -42,6 +44,15 @@
 
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
+
+  // Jump list (like vim's Ctrl+O / Ctrl+I)
+  const MAX_JUMP_LIST_SIZE = 100;
+  let jumpList = [];           // Array of tab references
+  let jumpListIndex = -1;      // Current position in jump list
+  let recordingJumps = true;   // Flag to temporarily disable recording
+
+  // Marks (like vim marks)
+  let marks = new Map();       // character -> tab reference
 
   // Utility: Convert number to display character
   function numberToDisplay(num) {
@@ -60,6 +71,174 @@
     const specialIndex = SPECIAL_CHARS.indexOf(char);
     if (specialIndex !== -1) return 36 + specialIndex;
     return null;
+  }
+
+  // ============================================
+  // JUMP LIST (like vim's Ctrl+O / Ctrl+I)
+  // ============================================
+
+  // Record a jump to the jump list
+  function recordJump(tab) {
+    if (!recordingJumps || !tab) return;
+
+    // Clean up any closed tabs from the list
+    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+
+    // If we're not at the end of the list, truncate forward history
+    if (jumpListIndex >= 0 && jumpListIndex < jumpList.length - 1) {
+      jumpList = jumpList.slice(0, jumpListIndex + 1);
+    }
+
+    // Don't record if same as current position
+    if (jumpList.length > 0 && jumpList[jumpList.length - 1] === tab) {
+      return;
+    }
+
+    jumpList.push(tab);
+    jumpListIndex = jumpList.length - 1;
+
+    // Trim if too long
+    if (jumpList.length > MAX_JUMP_LIST_SIZE) {
+      jumpList.shift();
+      jumpListIndex--;
+    }
+
+    log(`Recorded jump, list size: ${jumpList.length}, index: ${jumpListIndex}`);
+  }
+
+  // Jump backward in the jump list (like vim Ctrl+O)
+  function jumpBack() {
+    // Clean up closed tabs
+    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+
+    if (jumpList.length === 0) {
+      log('Jump list is empty');
+      return false;
+    }
+
+    // If we haven't recorded current position yet, do it now
+    if (jumpListIndex === jumpList.length - 1 && gBrowser.selectedTab !== jumpList[jumpListIndex]) {
+      recordJump(gBrowser.selectedTab);
+    }
+
+    if (jumpListIndex > 0) {
+      jumpListIndex--;
+      recordingJumps = false;  // Don't record this navigation
+      gBrowser.selectedTab = jumpList[jumpListIndex];
+      recordingJumps = true;
+      log(`Jumped back to index ${jumpListIndex}`);
+      return true;
+    }
+
+    log('Already at beginning of jump list');
+    return false;
+  }
+
+  // Jump forward in the jump list (like vim Ctrl+I)
+  function jumpForward() {
+    // Clean up closed tabs
+    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+
+    if (jumpListIndex < jumpList.length - 1) {
+      jumpListIndex++;
+      recordingJumps = false;  // Don't record this navigation
+      gBrowser.selectedTab = jumpList[jumpListIndex];
+      recordingJumps = true;
+      log(`Jumped forward to index ${jumpListIndex}`);
+      return true;
+    }
+
+    log('Already at end of jump list');
+    return false;
+  }
+
+  // ============================================
+  // MARKS (like vim marks)
+  // ============================================
+
+  // Set a mark on the current tab (or toggle off if same mark on same tab)
+  function setMark(char, tab) {
+    if (!tab) tab = gBrowser.selectedTab;
+
+    // Check if this exact mark is already on this tab - if so, toggle it off
+    if (marks.get(char) === tab) {
+      marks.delete(char);
+      log(`Toggled off mark '${char}' from tab`);
+      updateRelativeNumbers();
+      return;
+    }
+
+    // Remove any existing mark on this tab (one tab = one mark)
+    for (const [key, markedTab] of marks) {
+      if (markedTab === tab) {
+        marks.delete(key);
+        log(`Removed existing mark '${key}' from tab`);
+        break;
+      }
+    }
+
+    // Set the new mark (overwrites if char already used on different tab)
+    marks.set(char, tab);
+    log(`Set mark '${char}' on tab`);
+
+    // Update display to show the mark
+    updateRelativeNumbers();
+  }
+
+  // Clear all marks
+  function clearAllMarks() {
+    const count = marks.size;
+    marks.clear();
+    log(`Cleared all marks (${count} marks removed)`);
+    updateRelativeNumbers();
+  }
+
+  // Go to a marked tab
+  function goToMark(char) {
+    const tab = marks.get(char);
+    if (!tab) {
+      log(`Mark '${char}' not found`);
+      return false;
+    }
+
+    if (tab.closing || !tab.parentNode) {
+      // Tab was closed, remove the mark
+      marks.delete(char);
+      log(`Mark '${char}' tab was closed, removing mark`);
+      return false;
+    }
+
+    // Record current position before jumping
+    recordJump(gBrowser.selectedTab);
+
+    // Jump to marked tab
+    gBrowser.selectedTab = tab;
+
+    // Record the destination
+    recordJump(tab);
+
+    log(`Jumped to mark '${char}'`);
+    return true;
+  }
+
+  // Get mark character for a tab (if it has one)
+  function getMarkForTab(tab) {
+    for (const [char, markedTab] of marks) {
+      if (markedTab === tab) {
+        return char;
+      }
+    }
+    return null;
+  }
+
+  // Clean up marks for closed tabs
+  function cleanupMarks() {
+    for (const [char, tab] of marks) {
+      if (!tab || tab.closing || !tab.parentNode) {
+        marks.delete(char);
+        log(`Cleaned up mark '${char}' for closed tab`);
+      }
+    }
   }
 
   // Get visible tabs
@@ -83,17 +262,33 @@
       return;
     }
 
+    // Clean up marks for closed tabs
+    cleanupMarks();
+
     tabs.forEach((tab, index) => {
       const relativeDistance = Math.abs(index - currentIndex);
       const direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
       const displayChar = numberToDisplay(relativeDistance);
+
+      // Check if this tab has a mark
+      const mark = getMarkForTab(tab);
 
       tab.setAttribute('data-zenleap-direction', direction);
       tab.setAttribute('data-zenleap-distance', relativeDistance);
 
       const tabContent = tab.querySelector('.tab-content');
       if (tabContent) {
-        tabContent.setAttribute('data-zenleap-rel', displayChar);
+        if (mark) {
+          // Show mark instead of relative number
+          tabContent.setAttribute('data-zenleap-rel', mark);
+          tabContent.setAttribute('data-zenleap-mark', mark);
+          tab.setAttribute('data-zenleap-has-mark', 'true');
+        } else {
+          // Show relative number
+          tabContent.setAttribute('data-zenleap-rel', displayChar);
+          tabContent.removeAttribute('data-zenleap-mark');
+          tab.removeAttribute('data-zenleap-has-mark');
+        }
       }
     });
 
@@ -350,6 +545,13 @@
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
 
+    // Set mark mode attribute for CSS styling
+    if (markMode || gotoMarkMode) {
+      document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
+    } else {
+      document.documentElement.removeAttribute('data-zenleap-mark-mode');
+    }
+
     if (browseMode) {
       // Browse mode
       leapOverlay.classList.add('leap-direction-set');
@@ -358,6 +560,16 @@
       const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
       overlayDirectionLabel.textContent = pos;
       overlayHintLabel.textContent = 'j/k/↑↓=move  Enter=open  x=close  Esc=cancel';
+    } else if (markMode) {
+      leapOverlay.classList.add('leap-direction-set');
+      overlayModeLabel.textContent = 'MARK';
+      overlayDirectionLabel.textContent = 'm';
+      overlayHintLabel.textContent = 'a-z/0-9 to set (same char toggles off)';
+    } else if (gotoMarkMode) {
+      leapOverlay.classList.add('leap-direction-set');
+      overlayModeLabel.textContent = 'GOTO';
+      overlayDirectionLabel.textContent = "'";
+      overlayHintLabel.textContent = 'press mark character to jump';
     } else if (gMode) {
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
@@ -377,7 +589,7 @@
       leapOverlay.classList.remove('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = '';
-      overlayHintLabel.textContent = 'j/k/↑↓=browse  g=goto  z=scroll';
+      overlayHintLabel.textContent = "j/k=browse  g=goto  m=mark  M=clear  '=jump  o/i=hist";
     }
   }
 
@@ -599,6 +811,8 @@
     browseMode = false;
     zMode = false;
     gMode = false;
+    markMode = false;
+    gotoMarkMode = false;
     gNumberBuffer = '';
     clearTimeout(gNumberTimeout);
     highlightedTabIndex = -1;
@@ -607,6 +821,7 @@
 
     clearTimeout(leapModeTimeout);
     document.documentElement.removeAttribute('data-zenleap-active');
+    document.documentElement.removeAttribute('data-zenleap-mark-mode');
     hideLeapOverlay();
 
     if (centerScroll) {
@@ -774,6 +989,23 @@
       return;
     }
 
+    // Check for quick mark jump: Ctrl+' (works outside leap mode)
+    if (event[CONFIG.triggerModifier] && (event.key === "'" || event.key === '`')) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (!leapMode) {
+        // Set mark mode state AND attribute BEFORE entering leap mode
+        // This ensures CSS sees mark-mode before leap-active is set
+        gotoMarkMode = true;
+        document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
+        enterLeapMode();
+        clearTimeout(leapModeTimeout);
+        log('Quick goto mark mode via Ctrl+\'');
+      }
+      return;
+    }
+
     // Handle keys when in leap mode
     if (!leapMode) return;
 
@@ -914,7 +1146,49 @@
       return;
     }
 
-    // === INITIAL LEAP MODE (waiting for j/k/g/z or direct jump) ===
+    // === MARK MODE HANDLING ===
+    if (markMode) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Accept a-z and 0-9 as mark characters
+      if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
+        setMark(key, gBrowser.selectedTab);
+        exitLeapMode(false);
+        return;
+      }
+
+      // Invalid key, exit mark mode but stay in leap mode
+      markMode = false;
+      updateLeapOverlayState();
+      log(`Invalid mark key: ${key}, exiting mark mode`);
+      return;
+    }
+
+    // === GOTO MARK MODE HANDLING ===
+    if (gotoMarkMode) {
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Accept a-z and 0-9 as mark characters
+      if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
+        if (goToMark(key)) {
+          exitLeapMode(true); // Center scroll on the marked tab
+        } else {
+          // Mark not found, stay in goto mark mode for retry
+          log(`Mark '${key}' not found`);
+        }
+        return;
+      }
+
+      // Invalid key, exit goto mark mode but stay in leap mode
+      gotoMarkMode = false;
+      updateLeapOverlayState();
+      log(`Invalid goto mark key: ${key}, exiting goto mark mode`);
+      return;
+    }
+
+    // === INITIAL LEAP MODE (waiting for j/k/g/z/m/'/o/i) ===
     event.preventDefault();
     event.stopPropagation();
 
@@ -947,6 +1221,42 @@
       log('Entered z-mode');
       return;
     }
+    if (key === 'm' && originalKey !== 'M') {
+      markMode = true;
+      document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
+      clearTimeout(leapModeTimeout); // No timeout in mark mode
+      updateLeapOverlayState();
+      log('Entered mark mode');
+      return;
+    }
+    // M (shift+m) - clear all marks
+    if (originalKey === 'M') {
+      clearAllMarks();
+      exitLeapMode(false);
+      return;
+    }
+    if (key === "'" || key === '`') {
+      gotoMarkMode = true;
+      document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
+      clearTimeout(leapModeTimeout); // No timeout in goto mark mode
+      updateLeapOverlayState();
+      log('Entered goto mark mode');
+      return;
+    }
+    if (key === 'o') {
+      // Jump back in history
+      if (jumpBack()) {
+        exitLeapMode(true); // Center scroll
+      }
+      return;
+    }
+    if (key === 'i') {
+      // Jump forward in history
+      if (jumpForward()) {
+        exitLeapMode(true); // Center scroll
+      }
+      return;
+    }
 
     // Any other key in initial leap mode - ignore (don't exit, just wait for valid command)
     log(`Unrecognized key in leap mode: ${key}`);
@@ -954,8 +1264,12 @@
 
   // Set up event listeners for tab changes
   function setupTabListeners() {
-    gBrowser.tabContainer.addEventListener('TabSelect', () => {
+    gBrowser.tabContainer.addEventListener('TabSelect', (event) => {
       updateRelativeNumbers();
+      // Record tab change to jump list
+      if (recordingJumps && event.target) {
+        recordJump(event.target);
+      }
     });
 
     gBrowser.tabContainer.addEventListener('TabOpen', () => {
@@ -1060,6 +1374,14 @@
           color: #1e1e1e !important;
           box-shadow: 0 0 8px rgba(97, 175, 239, 0.6);
         }
+
+        /* Marked tab badge - distinct red/magenta color */
+        tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
+          background-color: #e06c75 !important;
+          color: #1e1e1e !important;
+          font-weight: bold !important;
+          box-shadow: 0 0 6px rgba(224, 108, 117, 0.5);
+        }
       }
 
       /* Compact sidebar mode */
@@ -1085,9 +1407,16 @@
           color: #61afef !important;
           text-shadow: 0 0 6px rgba(97, 175, 239, 0.8);
         }
+
+        /* Marked tab in compact mode - distinct red/magenta color */
+        tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          color: #e06c75 !important;
+          text-shadow: 0 0 4px rgba(224, 108, 117, 0.8);
+          font-weight: bold !important;
+        }
       }
 
-      /* Leap mode active indicator */
+      /* Leap mode active indicator - green for up, yellow for down */
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after,
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
         color: #98c379 !important;
@@ -1098,6 +1427,30 @@
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
         color: #e5c07b !important;
         background-color: #4a4232 !important;
+      }
+
+      /* Mark mode - gray out all non-marked tabs (higher specificity via [data-zenleap-active]) */
+      :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab:not([data-zenleap-has-mark="true"]):not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
+        color: #666666 !important;
+        background-color: #505050 !important;
+        box-shadow: none !important;
+      }
+
+      :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab:not([data-zenleap-has-mark="true"]):not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
+        color: #666666 !important;
+        text-shadow: none !important;
+      }
+
+      /* Mark mode - keep marked tabs red with enhanced visibility */
+      :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
+        background-color: #e06c75 !important;
+        color: #1e1e1e !important;
+        box-shadow: 0 0 8px rgba(224, 108, 117, 0.7) !important;
+      }
+
+      :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
+        color: #e06c75 !important;
+        text-shadow: 0 0 6px rgba(224, 108, 117, 0.9) !important;
       }
     `;
     document.head.appendChild(style);
@@ -1113,7 +1466,7 @@
 
   // Initialize
   function init() {
-    log('Initializing ZenLeap v2.0...');
+    log('Initializing ZenLeap v2.2.0...');
 
     if (!gBrowser || !gBrowser.tabs) {
       log('gBrowser not ready, retrying in 500ms');
@@ -1128,9 +1481,12 @@
 
     log('ZenLeap initialized successfully!');
     log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
-    log('  j/k = browse mode (j/k=move, Enter=open, x=close, Esc=cancel)');
-    log('  gg = first tab | G = last tab | g{num} = go to tab #');
-    log('  z + z/t/b = scroll center/top/bottom');
+    log('  j/k/↑↓ = browse mode | Enter=open | x=close | Esc=cancel');
+    log('  g = goto (gg=first, G=last, g{num}=tab #)');
+    log('  z = scroll (zz=center, zt=top, zb=bottom)');
+    log('  m{char} = set/toggle mark | M = clear all marks');
+    log('  \'{char} = goto mark | Ctrl+\'{char} = quick goto');
+    log('  o = jump back | i = jump forward');
   }
 
   // Start initialization

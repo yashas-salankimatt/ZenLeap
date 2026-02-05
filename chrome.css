@@ -134,6 +134,35 @@
 }
 
 /* ============================================
+   MARK MODE STYLES
+   When in mark mode, gray out non-marked tabs and highlight marked tabs
+   ============================================ */
+
+/* Mark mode: gray out all non-marked tabs */
+:root[data-zenleap-mark-mode="true"] tab:not([data-zenleap-has-mark="true"]):not([zen-glance-tab="true"]) > .tab-stack > .tab-content::after {
+  color: #666666 !important;
+  background-color: #505050 !important;
+  box-shadow: none !important;
+}
+
+:root[data-zenleap-mark-mode="true"] tab:not([data-zenleap-has-mark="true"]):not([zen-glance-tab="true"]) > .tab-stack > .tab-content::before {
+  color: #666666 !important;
+  text-shadow: none !important;
+}
+
+/* Mark mode: keep marked tabs red with enhanced visibility */
+:root[data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content::after {
+  background-color: #e06c75 !important;
+  color: #1e1e1e !important;
+  box-shadow: 0 0 8px rgba(224, 108, 117, 0.7) !important;
+}
+
+:root[data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content::before {
+  color: #e06c75 !important;
+  text-shadow: 0 0 6px rgba(224, 108, 117, 0.9) !important;
+}
+
+/* ============================================
    LEAP MODE OVERLAY
    The overlay is created by JavaScript, but we can style it here
    ============================================ */

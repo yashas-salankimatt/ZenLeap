@@ -165,6 +165,12 @@ cd claude-code/ZenLeap
 | **Z-Mode** | `zz` | Center current tab |
 | | `zt` | Scroll to top |
 | | `zb` | Scroll to bottom |
+| **Marks** | `m{a-z,0-9}` | Set mark (repeat to toggle off) |
+| | `M` | Clear all marks |
+| | `'{a-z,0-9}` | Jump to marked tab |
+| | `Ctrl+'{char}` | Quick jump (no leap mode) |
+| **Jump History** | `o` | Jump back (like vim Ctrl+O) |
+| | `i` | Jump forward (like vim Ctrl+I) |
 
 ### Examples
 
@@ -192,6 +198,21 @@ Ctrl+Space → g → 1 → 2 → Enter     (go to tab #12)
 **Center current tab in view:**
 ```
 Ctrl+Space → zz
+```
+
+**Set and jump to marks:**
+```
+Ctrl+Space → m → a             (mark current tab as 'a')
+Ctrl+Space → m → a             (repeat same mark to remove it)
+Ctrl+Space → M                  (clear all marks)
+Ctrl+Space → ' → a             (jump to tab marked 'a')
+Ctrl+' → a                      (quick jump without leap mode)
+```
+
+**Navigate jump history:**
+```
+Ctrl+Space → o                  (go back to previous tab)
+Ctrl+Space → i                  (go forward in history)
 ```
 
 ## Customization
