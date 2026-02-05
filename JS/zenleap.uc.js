@@ -3029,7 +3029,7 @@
 
   // Initialize
   function init() {
-    log('Initializing ZenLeap v2.3.0...');
+    log(`Initializing ZenLeap v${VERSION}...`);
 
     if (!gBrowser || !gBrowser.tabs) {
       log('gBrowser not ready, retrying in 500ms');
@@ -3042,7 +3042,7 @@
     setupKeyboardListener();
     updateRelativeNumbers();
 
-    log('ZenLeap v2.3.0 initialized successfully!');
+    log(`ZenLeap v${VERSION} initialized successfully!`);
     log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
     log('  j/k/↑↓ = browse mode | Enter=open | x=close | Esc=cancel');
     log('  g = goto (gg=first, G=last, g{num}=tab #)');
