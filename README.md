@@ -19,8 +19,14 @@ Navigate tabs visually with j/k or arrow keys:
 - `Ctrl+Space` → `j` or `↓` — Start browsing down
 - `Ctrl+Space` → `k` or `↑` — Start browsing up
 - Continue with `j/k/↑/↓` to move selection
+- `gg` — Jump to first tab
+- `G` — Jump to last tab
 - `Enter` — Open selected tab
-- `x` — Close selected tab
+- `x` — Close selected tab (or all selected tabs)
+- `Space` — Toggle multi-select on highlighted tab
+- `y` — Yank (copy) selected tabs
+- `p` — Paste yanked tabs after highlighted tab
+- `P` — Paste yanked tabs before highlighted tab
 - `1-9, a-z` — Jump directly to tab N positions away
 - `Escape` — Cancel and return to original tab
 
@@ -179,8 +185,13 @@ cd claude-code/ZenLeap
 | **Browse Mode** | `j` / `↓` | Start browsing down |
 | | `k` / `↑` | Start browsing up |
 | | `j/k/↑/↓` | Move selection |
+| | `gg` | Jump to first tab |
+| | `G` | Jump to last tab |
 | | `Enter` | Open selected tab |
-| | `x` | Close selected tab |
+| | `x` | Close selected/highlighted tab |
+| | `Space` | Toggle multi-select |
+| | `y` | Yank selected tabs |
+| | `p` / `P` | Paste after/before highlighted |
 | | `1-9, a-z` | Jump N tabs from origin |
 | | `Escape` | Cancel, return to original |
 | **G-Mode** | `gg` | First tab |
@@ -224,6 +235,18 @@ Ctrl+Space → G                     (last tab)
 **Go to specific tab number:**
 ```
 Ctrl+Space → g → 1 → 2 → Enter     (go to tab #12)
+```
+
+**Multi-select and move tabs:**
+```
+Ctrl+Space → j → Space → j → Space → y   (select 2 tabs, yank them)
+k → k → p                                  (move up, paste after current)
+```
+
+**Jump to first/last tab in browse mode:**
+```
+Ctrl+Space → j → gg                       (browse down, then jump to first)
+Ctrl+Space → k → G                        (browse up, then jump to last)
 ```
 
 **Center current tab in view:**

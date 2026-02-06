@@ -5,6 +5,27 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2026-02-05
+
+### Added
+- **Browse Mode Multi-Select** - Select, yank, and move tabs with vim-style keys
+  - `Space` = toggle selection on highlighted tab
+  - `y` = yank (copy) selected tabs
+  - `p` = paste yanked tabs after highlighted tab
+  - `P` = paste yanked tabs before highlighted tab
+  - `x` = close all selected tabs (or single highlighted tab if none selected)
+  - Visual highlighting for selected tabs (purple outline)
+- **Browse Mode gg/G Navigation**
+  - `gg` = jump highlight to first tab
+  - `G` = jump highlight to last tab
+  - Single `g` falls back to relative distance jump after 500ms timeout
+
+### Fixed
+- Tab paste positioning now uses Zen's built-in `moveTabBefore`/`moveTabAfter` APIs instead of `moveTabTo` with global indices, which failed due to Zen's per-workspace DOM containers
+- Various bug fixes and security improvements from code review
+- Installer now works correctly when piped from curl (`curl | bash`)
+- Help modal displays dynamic version from VERSION constant
+
 ## [2.4.0] - 2025-02-05
 
 ### Added
@@ -125,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.4.1 | 2026-02-05 | Browse mode multi-select (Space/y/p/P), gg/G navigation, paste fix |
 | 2.4.0 | 2025-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |
 | 2.3.0 | 2025-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |
 | 2.2.0 | 2025-02-05 | Jump history (o/i), marks (m/') |
