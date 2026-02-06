@@ -14,7 +14,7 @@
 
   // Configuration (defaults, overridden by preferences if set)
   const CONFIG = {
-    debug: false,  // Set to true to enable console logging
+    debug: true,  // Set to true to enable console logging
     currentTabIndicator: '·',  // What to show on current tab
     overflowIndicator: '+',    // For positions > 45
     leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds (not used in browse mode)
@@ -59,6 +59,8 @@
   let highlightedTabIndex = -1;
   let originalTabIndex = -1;
   let browseDirection = null;  // 'up' or 'down' - initial direction
+  let selectedTabs = new Set();  // Set of tab references for multi-select
+  let yankBuffer = [];           // Array of tab references for yank/paste
 
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
@@ -2117,8 +2119,19 @@
       overlayModeLabel.textContent = 'BROWSE';
       const tabs = getVisibleTabs();
       const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
-      overlayDirectionLabel.textContent = pos;
-      overlayHintLabel.textContent = 'j/k/↑↓=move  Enter=open  x=close  Esc=cancel';
+      let statusParts = [pos];
+      if (selectedTabs.size > 0) statusParts.push(`${selectedTabs.size} sel`);
+      if (yankBuffer.length > 0) statusParts.push(`${yankBuffer.length} yanked`);
+      overlayDirectionLabel.textContent = statusParts.join(' | ');
+
+      // Show contextual hints
+      if (yankBuffer.length > 0) {
+        overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
+      } else if (selectedTabs.size > 0) {
+        overlayHintLabel.textContent = 'y=yank  x=close sel  Space=toggle  j/k=move  Esc=cancel';
+      } else {
+        overlayHintLabel.textContent = 'j/k=move  Space=select  Enter=open  x=close  Esc=cancel';
+      }
     } else if (markMode) {
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'MARK';
@@ -2220,9 +2233,14 @@
   function updateHighlight() {
     const tabs = getVisibleTabs();
 
-    // Remove highlight from all tabs
+    // Remove highlight from all tabs, update selection markers
     tabs.forEach(tab => {
       tab.removeAttribute('data-zenleap-highlight');
+      if (selectedTabs.has(tab)) {
+        tab.setAttribute('data-zenleap-selected', 'true');
+      } else {
+        tab.removeAttribute('data-zenleap-selected');
+      }
     });
 
     // Add highlight to the current browsed tab
@@ -2235,11 +2253,12 @@
     }
   }
 
-  // Clear all highlights
+  // Clear all highlights and selections
   function clearHighlight() {
     const tabs = getVisibleTabs();
     tabs.forEach(tab => {
       tab.removeAttribute('data-zenleap-highlight');
+      tab.removeAttribute('data-zenleap-selected');
     });
   }
 
@@ -2304,10 +2323,34 @@
     exitLeapMode(true); // true = center scroll on new tab
   }
 
-  // Close the highlighted tab
+  // Close the highlighted tab (or all selected tabs if any are selected)
   function closeHighlightedTab() {
     const tabs = getVisibleTabs();
 
+    // If there are selected tabs, close all of them
+    if (selectedTabs.size > 0) {
+      const tabsToClose = [...selectedTabs].filter(t => t && !t.closing && t.parentNode);
+      log(`Closing ${tabsToClose.length} selected tabs`);
+      for (const tab of tabsToClose) {
+        gBrowser.removeTab(tab);
+      }
+      selectedTabs.clear();
+
+      const newTabs = getVisibleTabs();
+      if (newTabs.length === 0) {
+        exitLeapMode(false);
+        return;
+      }
+      // Clamp highlight index
+      if (highlightedTabIndex >= newTabs.length) {
+        highlightedTabIndex = newTabs.length - 1;
+      }
+      updateHighlight();
+      updateLeapOverlayState();
+      return;
+    }
+
+    // Single tab close (no selection)
     if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) {
       log('No valid tab to close');
       return;
@@ -2316,26 +2359,133 @@
     const tabToClose = tabs[highlightedTabIndex];
     const wasLastTab = highlightedTabIndex === tabs.length - 1;
 
-    // Close the tab
     gBrowser.removeTab(tabToClose);
     log(`Closed tab at index ${highlightedTabIndex}`);
 
-    // Update tabs list after close
     const newTabs = getVisibleTabs();
 
     if (newTabs.length === 0) {
-      // All tabs closed, exit
       exitLeapMode(false);
       return;
     }
 
-    // Adjust highlight index
     if (wasLastTab || highlightedTabIndex >= newTabs.length) {
-      // Was last tab or index now out of bounds, move to previous
       highlightedTabIndex = newTabs.length - 1;
     }
-    // Otherwise keep same index (which now points to the next tab)
 
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
+  // Toggle selection on the highlighted tab
+  function toggleTabSelection() {
+    const tabs = getVisibleTabs();
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) return;
+
+    const tab = tabs[highlightedTabIndex];
+    if (selectedTabs.has(tab)) {
+      selectedTabs.delete(tab);
+      log(`Deselected tab at index ${highlightedTabIndex}`);
+    } else {
+      selectedTabs.add(tab);
+      log(`Selected tab at index ${highlightedTabIndex} (${selectedTabs.size} total)`);
+    }
+
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
+  // Yank selected tabs into buffer
+  function yankSelectedTabs() {
+    if (selectedTabs.size === 0) {
+      log('No tabs selected to yank');
+      return;
+    }
+
+    // Store references in order of their current position
+    const tabs = getVisibleTabs();
+    yankBuffer = tabs.filter(t => selectedTabs.has(t));
+    const count = yankBuffer.length;
+
+    // Clear selection visuals
+    selectedTabs.clear();
+
+    updateHighlight();
+    updateLeapOverlayState();
+    log(`Yanked ${count} tabs`);
+  }
+
+  // Paste yanked tabs after or before the highlighted tab
+  function pasteTabs(position) {
+    if (yankBuffer.length === 0) {
+      log('No tabs in yank buffer');
+      return;
+    }
+
+    const tabs = getVisibleTabs();
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) return;
+
+    const anchorTab = tabs[highlightedTabIndex];
+
+    // Filter out any yanked tabs that have been closed since yanking
+    yankBuffer = yankBuffer.filter(t => t && !t.closing && t.parentNode);
+    if (yankBuffer.length === 0) {
+      log('All yanked tabs have been closed');
+      return;
+    }
+
+    // Use direct DOM manipulation instead of gBrowser.moveTabTo().
+    // Zen Browser uses per-workspace DOM containers for tabs, and moveTabTo
+    // operates on workspace-aware indices with post-move hooks that can
+    // override positions. Direct insertBefore within the container is reliable.
+    const container = anchorTab.parentNode;
+    log(`Paste: position=${position}, anchor="${anchorTab.label}", container=${container?.id || container?.tagName}, yankCount=${yankBuffer.length}`);
+
+    if (position === 'after') {
+      // Insert each tab after the anchor, maintaining order.
+      // We track the "insert before" reference: start with anchor's next sibling,
+      // then after each insertion the next tab goes after the one we just inserted.
+      let refNode = anchorTab.nextElementSibling;
+      for (const tab of yankBuffer) {
+        log(`  DOM insert after: "${tab.label}" before ref="${refNode?.label || '(end)'}"`);
+        container.insertBefore(tab, refNode);
+        // Next tab should go after this one, so refNode = tab.nextElementSibling
+        refNode = tab.nextElementSibling;
+      }
+    } else {
+      // Insert each tab before the anchor, maintaining order.
+      // All tabs go before the anchor, so the reference stays the anchor itself.
+      for (const tab of yankBuffer) {
+        log(`  DOM insert before: "${tab.label}" before anchor="${anchorTab.label}"`);
+        container.insertBefore(tab, anchorTab);
+      }
+    }
+
+    // Invalidate Zen's cached tab lists so gBrowser.tabs reflects the new order
+    try {
+      if (gBrowser.tabContainer._invalidateCachedTabs) {
+        gBrowser.tabContainer._invalidateCachedTabs();
+      }
+    } catch (e) {
+      log(`Warning: _invalidateCachedTabs failed: ${e}`);
+    }
+
+    log(`Pasted ${yankBuffer.length} tabs ${position} anchor "${anchorTab.label}"`);
+
+    // Verify final positions
+    const verifyTabs = getVisibleTabs();
+    const anchorNewIdx = verifyTabs.indexOf(anchorTab);
+    log(`Paste verify: anchor now at visibleIdx=${anchorNewIdx}`);
+    for (const yt of yankBuffer) {
+      const ytNewIdx = verifyTabs.indexOf(yt);
+      log(`  yanked tab "${yt.label}" now at visibleIdx=${ytNewIdx}`);
+    }
+
+    // Clear yank buffer
+    yankBuffer = [];
+
+    // Refresh visible tabs and update display
+    updateRelativeNumbers();
     updateHighlight();
     updateLeapOverlayState();
   }
@@ -2377,6 +2527,8 @@
     highlightedTabIndex = -1;
     originalTabIndex = -1;
     browseDirection = null;
+    selectedTabs.clear();
+    yankBuffer = [];
 
     clearTimeout(leapModeTimeout);
     document.documentElement.removeAttribute('data-zenleap-active');
@@ -2634,6 +2786,26 @@
       }
       if (key === 'x') {
         closeHighlightedTab();
+        return;
+      }
+      // Space = toggle selection on highlighted tab
+      if (key === ' ') {
+        toggleTabSelection();
+        return;
+      }
+      // y = yank selected tabs
+      if (key === 'y') {
+        yankSelectedTabs();
+        return;
+      }
+      // p = paste yanked tabs after highlighted tab
+      if (key === 'p' && originalKey === 'p') {
+        pasteTabs('after');
+        return;
+      }
+      // P = paste yanked tabs before highlighted tab
+      if (originalKey === 'P') {
+        pasteTabs('before');
         return;
       }
 
@@ -2912,6 +3084,27 @@
 
       tab[data-zenleap-highlight="true"] > .tab-stack > .tab-content {
         background-color: rgba(97, 175, 239, 0.15) !important;
+      }
+
+      /* Selected tabs in browse mode (multi-select with Space) */
+      tab[data-zenleap-selected="true"] {
+        outline: 2px solid #c678dd !important;
+        outline-offset: -2px;
+        background-color: rgba(198, 120, 221, 0.2) !important;
+      }
+
+      tab[data-zenleap-selected="true"] > .tab-stack > .tab-content {
+        background-color: rgba(198, 120, 221, 0.15) !important;
+      }
+
+      /* Tab that is both highlighted and selected */
+      tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] {
+        outline: 2px solid #e5c07b !important;
+        background-color: rgba(229, 192, 123, 0.25) !important;
+      }
+
+      tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] > .tab-stack > .tab-content {
+        background-color: rgba(229, 192, 123, 0.2) !important;
       }
 
       /* Expanded sidebar mode */

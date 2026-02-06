@@ -134,6 +134,31 @@
 }
 
 /* ============================================
+   BROWSE MODE MULTI-SELECT STYLES
+   ============================================ */
+
+/* Selected tabs (Space to toggle) */
+tab[data-zenleap-selected="true"] {
+  outline: 2px solid #c678dd !important;
+  outline-offset: -2px;
+  background-color: rgba(198, 120, 221, 0.2) !important;
+}
+
+tab[data-zenleap-selected="true"] > .tab-stack > .tab-content {
+  background-color: rgba(198, 120, 221, 0.15) !important;
+}
+
+/* Tab that is both highlighted and selected */
+tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] {
+  outline: 2px solid #e5c07b !important;
+  background-color: rgba(229, 192, 123, 0.25) !important;
+}
+
+tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] > .tab-stack > .tab-content {
+  background-color: rgba(229, 192, 123, 0.2) !important;
+}
+
+/* ============================================
    MARK MODE STYLES
    When in mark mode, gray out non-marked tabs and highlight marked tabs
    ============================================ */
