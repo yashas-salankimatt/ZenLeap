@@ -14,7 +14,7 @@
 
   // Configuration (defaults, overridden by preferences if set)
   const CONFIG = {
-    debug: true,  // Set to true to enable console logging
+    debug: false,  // Set to true to enable console logging
     currentTabIndicator: '·',  // What to show on current tab
     overflowIndicator: '+',    // For positions > 45
     leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds (not used in browse mode)
