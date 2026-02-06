@@ -2434,40 +2434,71 @@
       return;
     }
 
-    // Use direct DOM manipulation instead of gBrowser.moveTabTo().
-    // Zen Browser uses per-workspace DOM containers for tabs, and moveTabTo
-    // operates on workspace-aware indices with post-move hooks that can
-    // override positions. Direct insertBefore within the container is reliable.
-    const container = anchorTab.parentNode;
-    log(`Paste: position=${position}, anchor="${anchorTab.label}", container=${container?.id || container?.tagName}, yankCount=${yankBuffer.length}`);
+    // Use Zen/Firefox's built-in moveTabBefore/moveTabAfter APIs.
+    // These are workspace-aware, handle all Zen edge cases (essentials,
+    // glance tabs, split-view), fire TabMove events, invalidate caches,
+    // and call _updateTabsAfterInsert. Falls back to zenHandleTabMove
+    // with raw DOM if moveTabBefore/moveTabAfter aren't available.
+    log(`Paste: position=${position}, anchor="${anchorTab.label}", yankCount=${yankBuffer.length}`);
+
+    const hasMoveTabBefore = typeof gBrowser.moveTabBefore === 'function';
+    const hasMoveTabAfter = typeof gBrowser.moveTabAfter === 'function';
+    log(`  APIs available: moveTabBefore=${hasMoveTabBefore}, moveTabAfter=${hasMoveTabAfter}`);
 
     if (position === 'after') {
-      // Insert each tab after the anchor, maintaining order.
-      // We track the "insert before" reference: start with anchor's next sibling,
-      // then after each insertion the next tab goes after the one we just inserted.
-      let refNode = anchorTab.nextElementSibling;
-      for (const tab of yankBuffer) {
-        log(`  DOM insert after: "${tab.label}" before ref="${refNode?.label || '(end)'}"`);
-        container.insertBefore(tab, refNode);
-        // Next tab should go after this one, so refNode = tab.nextElementSibling
-        refNode = tab.nextElementSibling;
+      if (hasMoveTabAfter) {
+        // Use built-in API: move each tab after the previous one to maintain order
+        let afterTarget = anchorTab;
+        for (const tab of yankBuffer) {
+          log(`  moveTabAfter: "${tab.label}" after "${afterTarget.label}"`);
+          gBrowser.moveTabAfter(tab, afterTarget);
+          afterTarget = tab;
+        }
+      } else {
+        // Fallback: use zenHandleTabMove with DOM insertBefore
+        let afterTarget = anchorTab;
+        for (const tab of yankBuffer) {
+          const ref = afterTarget;
+          log(`  fallback insertAfter: "${tab.label}" after "${ref.label}"`);
+          if (typeof gBrowser.zenHandleTabMove === 'function') {
+            gBrowser.zenHandleTabMove(tab, () => { ref.after(tab); });
+          } else {
+            ref.after(tab);
+          }
+          afterTarget = tab;
+        }
       }
     } else {
-      // Insert each tab before the anchor, maintaining order.
-      // All tabs go before the anchor, so the reference stays the anchor itself.
-      for (const tab of yankBuffer) {
-        log(`  DOM insert before: "${tab.label}" before anchor="${anchorTab.label}"`);
-        container.insertBefore(tab, anchorTab);
+      if (hasMoveTabBefore) {
+        // Use built-in API: insert each tab before the anchor to maintain order
+        for (const tab of yankBuffer) {
+          log(`  moveTabBefore: "${tab.label}" before "${anchorTab.label}"`);
+          gBrowser.moveTabBefore(tab, anchorTab);
+        }
+      } else {
+        // Fallback: use zenHandleTabMove with DOM insertBefore
+        for (const tab of yankBuffer) {
+          log(`  fallback insertBefore: "${tab.label}" before "${anchorTab.label}"`);
+          if (typeof gBrowser.zenHandleTabMove === 'function') {
+            gBrowser.zenHandleTabMove(tab, () => {
+              anchorTab.parentNode.insertBefore(tab, anchorTab);
+            });
+          } else {
+            anchorTab.parentNode.insertBefore(tab, anchorTab);
+          }
+        }
       }
     }
 
-    // Invalidate Zen's cached tab lists so gBrowser.tabs reflects the new order
-    try {
-      if (gBrowser.tabContainer._invalidateCachedTabs) {
-        gBrowser.tabContainer._invalidateCachedTabs();
+    // If we used the raw fallback without zenHandleTabMove, invalidate manually
+    if (!hasMoveTabBefore && !hasMoveTabAfter && typeof gBrowser.zenHandleTabMove !== 'function') {
+      try {
+        if (gBrowser.tabContainer._invalidateCachedTabs) {
+          gBrowser.tabContainer._invalidateCachedTabs();
+        }
+      } catch (e) {
+        log(`Warning: _invalidateCachedTabs failed: ${e}`);
       }
-    } catch (e) {
-      log(`Warning: _invalidateCachedTabs failed: ${e}`);
     }
 
     log(`Pasted ${yankBuffer.length} tabs ${position} anchor "${anchorTab.label}"`);
