@@ -58,6 +58,7 @@
   // Browse mode state
   let highlightedTabIndex = -1;
   let originalTabIndex = -1;
+  let originalTab = null;      // direct reference to the tab that triggered browse mode
   let browseDirection = null;  // 'up' or 'down' - initial direction
   let browseGPending = false;  // true after pressing 'g' in browse mode, waiting for second 'g'
   let browseGTimeout = null;   // timeout to cancel pending 'g' in browse mode
@@ -2215,6 +2216,7 @@
     browseMode = true;
     browseDirection = direction;
     originalTabIndex = currentIndex;
+    originalTab = tabs[currentIndex];
 
     // Move highlight one step in the initial direction
     if (direction === 'down') {
@@ -2525,11 +2527,18 @@
 
   // Cancel browse mode - return to original tab
   function cancelBrowseMode() {
-    const tabs = getVisibleTabs();
-
-    if (originalTabIndex >= 0 && originalTabIndex < tabs.length) {
-      gBrowser.selectedTab = tabs[originalTabIndex];
-      log(`Cancelled, returned to original tab ${originalTabIndex}`);
+    // Use the direct tab reference to return to the original tab,
+    // since tab indices may have shifted after yank/paste operations
+    if (originalTab && !originalTab.closing && originalTab.parentNode) {
+      gBrowser.selectedTab = originalTab;
+      log(`Cancelled, returned to original tab "${originalTab.label}"`);
+    } else {
+      // Fallback to index if the tab reference is gone
+      const tabs = getVisibleTabs();
+      if (originalTabIndex >= 0 && originalTabIndex < tabs.length) {
+        gBrowser.selectedTab = tabs[originalTabIndex];
+        log(`Cancelled, returned to original tab by index ${originalTabIndex}`);
+      }
     }
 
     exitLeapMode(true); // Center scroll on original tab
@@ -2559,6 +2568,7 @@
     clearTimeout(gNumberTimeout);
     highlightedTabIndex = -1;
     originalTabIndex = -1;
+    originalTab = null;
     browseDirection = null;
     browseGPending = false;
     clearTimeout(browseGTimeout);
