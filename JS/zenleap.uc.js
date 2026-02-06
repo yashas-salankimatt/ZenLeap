@@ -59,6 +59,8 @@
   let highlightedTabIndex = -1;
   let originalTabIndex = -1;
   let browseDirection = null;  // 'up' or 'down' - initial direction
+  let browseGPending = false;  // true after pressing 'g' in browse mode, waiting for second 'g'
+  let browseGTimeout = null;   // timeout to cancel pending 'g' in browse mode
   let selectedTabs = new Set();  // Set of tab references for multi-select
   let yankBuffer = [];           // Array of tab references for yank/paste
 
@@ -2558,6 +2560,9 @@
     highlightedTabIndex = -1;
     originalTabIndex = -1;
     browseDirection = null;
+    browseGPending = false;
+    clearTimeout(browseGTimeout);
+    browseGTimeout = null;
     selectedTabs.clear();
     yankBuffer = [];
 
@@ -2838,6 +2843,51 @@
       if (originalKey === 'P') {
         pasteTabs('before');
         return;
+      }
+
+      // G = move highlight to last tab
+      if (originalKey === 'G') {
+        const tabs = getVisibleTabs();
+        highlightedTabIndex = tabs.length - 1;
+        updateHighlight();
+        updateLeapOverlayState();
+        log(`Browse: jumped to last tab (index ${highlightedTabIndex})`);
+        return;
+      }
+
+      // g = pending gg (move highlight to first tab)
+      if (key === 'g' && originalKey === 'g') {
+        if (browseGPending) {
+          // Second g pressed - move to first tab
+          clearTimeout(browseGTimeout);
+          browseGPending = false;
+          browseGTimeout = null;
+          highlightedTabIndex = 0;
+          updateHighlight();
+          updateLeapOverlayState();
+          log(`Browse: jumped to first tab (index 0)`);
+          return;
+        }
+        // First g pressed - wait for second g
+        browseGPending = true;
+        browseGTimeout = setTimeout(() => {
+          browseGPending = false;
+          browseGTimeout = null;
+          // Timeout expired without second g - perform the normal jump for 'g' (distance 16)
+          const gDistance = displayToNumber('g');
+          if (gDistance !== null && gDistance >= 1) {
+            log(`Browse: g timed out, jumping distance ${gDistance}`);
+            jumpAndOpenTab(gDistance);
+          }
+        }, 500);
+        return;
+      }
+
+      // If g was pending but another key was pressed, cancel it
+      if (browseGPending) {
+        clearTimeout(browseGTimeout);
+        browseGPending = false;
+        browseGTimeout = null;
       }
 
       // Number/letter to jump N tabs from ORIGINAL tab and open it
