@@ -102,6 +102,7 @@
   let commandSubFlowStack = [];   // breadcrumb stack for nested sub-flows
   let commandMatchedTabs = [];    // tabs matched during select-matching-tabs flow
   let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
+  let commandEnteredFromSearch = false; // true if entered via '>' from search, false if via Ctrl+Shift+/
 
   // Help modal
   let helpMode = false;
@@ -1730,17 +1731,22 @@
     exitSearchMode();
   }
 
+  // Sort tabs by their current sidebar position to preserve relative order
+  function sortTabsBySidebarPosition(tabs) {
+    const visibleTabs = getVisibleTabs();
+    const positionMap = new Map();
+    visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
+    return [...tabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
+  }
+
   function moveMatchedTabsToPosition(tabs, position) {
     const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
     if (validTabs.length === 0) { exitSearchMode(); return; }
 
-    // Sort tabs by their current sidebar position to preserve relative order
-    const visibleTabs = getVisibleTabs();
-    const positionMap = new Map();
-    visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
-    const sortedTabs = [...validTabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
+    const sortedTabs = sortTabsBySidebarPosition(validTabs);
 
     const sortedSet = new Set(sortedTabs);
+    const visibleTabs = getVisibleTabs();
     try {
       if (position === 'top') {
         // Find the first non-pinned, non-essential tab that is NOT being moved
@@ -1796,6 +1802,9 @@
     const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
     if (validTabs.length === 0) { exitSearchMode(); return; }
 
+    // Sort tabs by sidebar position to preserve relative order
+    const sortedTabs = sortTabsBySidebarPosition(validTabs);
+
     try {
       // Re-fetch folder by ID to avoid stale DOM references
       const targetFolder = folderResult.folder ?
@@ -1804,7 +1813,7 @@
 
       // Handle workspace and pin for each tab
       const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
-      for (const t of validTabs) {
+      for (const t of sortedTabs) {
         if (targetWorkspaceId && window.gZenWorkspaces) {
           const currentWsId = t.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
           if (currentWsId !== targetWorkspaceId) {
@@ -1813,8 +1822,8 @@
         }
         if (!t.pinned) gBrowser.pinTab(t);
       }
-      targetFolder.addTabs(validTabs);
-      log(`Added ${validTabs.length} tabs to folder: ${targetFolder.label}`);
+      targetFolder.addTabs(sortedTabs);
+      log(`Added ${sortedTabs.length} tabs to folder: ${targetFolder.label}`);
     } catch (e) { log(`Add to folder failed: ${e}`); }
     exitSearchMode();
   }
@@ -1823,6 +1832,9 @@
     const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
     if (validTabs.length === 0) { exitSearchMode(); return; }
 
+    // Sort tabs by sidebar position to preserve relative order
+    const sortedTabs = sortTabsBySidebarPosition(validTabs);
+
     try {
       if (!window.gZenFolders) {
         log('gZenFolders not available');
@@ -1830,11 +1842,11 @@
         return;
       }
       // gZenFolders.createFolder handles pinning tabs internally
-      gZenFolders.createFolder(validTabs, {
+      gZenFolders.createFolder(sortedTabs, {
         label: folderName,
         renameFolder: false,
       });
-      log(`Created folder "${folderName}" with ${validTabs.length} tabs`);
+      log(`Created folder "${folderName}" with ${sortedTabs.length} tabs`);
     } catch (e) { log(`Create folder with name failed: ${e}`); }
     exitSearchMode();
   }
@@ -2072,6 +2084,7 @@
     commandSubFlowStack = [];
     commandMatchedTabs = [];
     commandResults = [];
+    commandEnteredFromSearch = false;
     searchSelectedIndex = 0;
 
     // Restore to insert mode for normal search
@@ -2169,6 +2182,7 @@
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Enter browse mode (down/up)</span></div>
             <div class="zenleap-help-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>Enter browse mode (arrows)</span></div>
+            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Browse + switch workspace (prev/next)</span></div>
             <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
             <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
             <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
@@ -2510,6 +2524,7 @@
     commandSubFlowStack = [];
     commandMatchedTabs = [];
     commandResults = [];
+    commandEnteredFromSearch = false;
 
     // Reset input value
     searchInput.value = '';
@@ -2518,7 +2533,8 @@
     searchModal.classList.add('active');
 
     if (asCommand) {
-      // Enter command mode directly
+      // Enter command mode directly (Ctrl+Shift+/) — escape exits entirely
+      commandEnteredFromSearch = false;
       enterCommandMode();
     } else {
       // Render results (shows all tabs when query is empty)
@@ -2549,6 +2565,7 @@
     commandSubFlowStack = [];
     commandMatchedTabs = [];
     commandResults = [];
+    commandEnteredFromSearch = false;
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -2751,7 +2768,13 @@
             searchVimMode = 'insert';
             updateSearchVimIndicator();
           } else {
-            exitCommandMode();
+            // If entered from search (via '>'), go back to search mode
+            // If entered directly (Ctrl+Shift+/), exit entirely
+            if (commandEnteredFromSearch) {
+              exitCommandMode();
+            } else {
+              exitSearchMode();
+            }
           }
         }
         return true;
@@ -2767,11 +2790,15 @@
       }
 
       // ---- COMMAND INSERT MODE ----
-      // Backspace when input is empty and no sub-flow: exit command mode
+      // Backspace when input is empty and no sub-flow: go back
       if (key === 'Backspace' && (searchInput?.value || '') === '' && !commandSubFlow) {
         event.preventDefault();
         event.stopPropagation();
-        exitCommandMode();
+        if (commandEnteredFromSearch) {
+          exitCommandMode();
+        } else {
+          exitSearchMode();
+        }
         return true;
       }
 
@@ -3234,6 +3261,7 @@
     // Detect > prefix to enter command mode
     if (value === '>') {
       searchInput.value = '';
+      commandEnteredFromSearch = true;
       enterCommandMode();
       return;
     }
@@ -3720,6 +3748,45 @@
     log(`Moved highlight ${direction} to ${highlightedTabIndex}`);
   }
 
+  // Switch workspace in browse mode (h = prev, l = next)
+  async function browseWorkspaceSwitch(direction) {
+    try {
+      if (!window.gZenWorkspaces) { log('Workspaces not available'); return; }
+      const workspaces = window.gZenWorkspaces.getWorkspaces();
+      if (!Array.isArray(workspaces) || workspaces.length < 2) { log('Not enough workspaces'); return; }
+
+      const currentId = window.gZenWorkspaces.activeWorkspace;
+      const currentIdx = workspaces.findIndex(ws => ws.uuid === currentId);
+      if (currentIdx < 0) return;
+
+      let newIdx;
+      if (direction === 'prev') {
+        newIdx = currentIdx > 0 ? currentIdx - 1 : workspaces.length - 1;
+      } else {
+        newIdx = currentIdx < workspaces.length - 1 ? currentIdx + 1 : 0;
+      }
+
+      const newWorkspace = workspaces[newIdx];
+      log(`Browse: switching workspace ${direction} to "${newWorkspace.name || newWorkspace.uuid}"`);
+
+      // Switch workspace — this changes which tabs are visible
+      await window.gZenWorkspaces.changeWorkspaceWithID(newWorkspace.uuid);
+
+      // After workspace switch, highlight the active tab in the new workspace
+      setTimeout(() => {
+        const newTabs = getVisibleTabs();
+        const activeIdx = newTabs.indexOf(gBrowser.selectedTab);
+        highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
+        if (newTabs.length > 0) {
+          updateHighlight();
+          updateRelativeNumbers();
+          updateLeapOverlayState();
+        }
+        log(`Browse: workspace switched, ${newTabs.length} tabs visible, highlight=${highlightedTabIndex}`);
+      }, 100);
+    } catch (e) { log(`Workspace switch failed: ${e}`); }
+  }
+
   // Jump directly to a tab N positions from original and open it
   // Direction is determined by where the highlight currently is relative to original
   function jumpAndOpenTab(distance) {
@@ -3859,6 +3926,7 @@
   }
 
   // Paste yanked tabs after or before the highlighted tab
+  // Handles cross-pinned/unpinned, cross-folder, and cross-workspace moves
   function pasteTabs(position) {
     if (yankBuffer.length === 0) {
       log('No tabs in yank buffer');
@@ -3877,83 +3945,67 @@
       return;
     }
 
-    // Use Zen/Firefox's built-in moveTabBefore/moveTabAfter APIs.
-    // These are workspace-aware, handle all Zen edge cases (essentials,
-    // glance tabs, split-view), fire TabMove events, invalidate caches,
-    // and call _updateTabsAfterInsert. Falls back to zenHandleTabMove
-    // with raw DOM if moveTabBefore/moveTabAfter aren't available.
     log(`Paste: position=${position}, anchor="${anchorTab.label}", yankCount=${yankBuffer.length}`);
 
-    const hasMoveTabBefore = typeof gBrowser.moveTabBefore === 'function';
-    const hasMoveTabAfter = typeof gBrowser.moveTabAfter === 'function';
-    log(`  APIs available: moveTabBefore=${hasMoveTabBefore}, moveTabAfter=${hasMoveTabAfter}`);
+    // Determine anchor context for cross-boundary moves
+    const anchorPinned = anchorTab.pinned;
+    const anchorFolder = anchorTab.group?.isZenFolder ? anchorTab.group : null;
+    const anchorWorkspaceId = anchorTab.getAttribute('zen-workspace-id') || window.gZenWorkspaces?.activeWorkspace;
 
-    if (position === 'after') {
-      if (hasMoveTabAfter) {
-        // Use built-in API: move each tab after the previous one to maintain order
-        let afterTarget = anchorTab;
-        for (const tab of yankBuffer) {
-          log(`  moveTabAfter: "${tab.label}" after "${afterTarget.label}"`);
-          gBrowser.moveTabAfter(tab, afterTarget);
-          afterTarget = tab;
-        }
-      } else {
-        // Fallback: use zenHandleTabMove with DOM insertBefore
-        let afterTarget = anchorTab;
-        for (const tab of yankBuffer) {
-          const ref = afterTarget;
-          log(`  fallback insertAfter: "${tab.label}" after "${ref.label}"`);
-          if (typeof gBrowser.zenHandleTabMove === 'function') {
-            gBrowser.zenHandleTabMove(tab, () => { ref.after(tab); });
-          } else {
-            ref.after(tab);
-          }
-          afterTarget = tab;
+    // Prepare each yanked tab: match workspace, pinned state, folder membership
+    for (const tab of yankBuffer) {
+      // 1. Cross-workspace: move tab to anchor's workspace if different
+      if (window.gZenWorkspaces) {
+        const tabWsId = tab.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
+        if (tabWsId !== anchorWorkspaceId) {
+          window.gZenWorkspaces.moveTabToWorkspace(tab, anchorWorkspaceId);
+          log(`  Moved "${tab.label}" to workspace ${anchorWorkspaceId}`);
         }
       }
-    } else {
-      if (hasMoveTabBefore) {
-        // Use built-in API: insert each tab before the anchor to maintain order
-        for (const tab of yankBuffer) {
-          log(`  moveTabBefore: "${tab.label}" before "${anchorTab.label}"`);
-          gBrowser.moveTabBefore(tab, anchorTab);
-        }
-      } else {
-        // Fallback: use zenHandleTabMove with DOM insertBefore
-        for (const tab of yankBuffer) {
-          log(`  fallback insertBefore: "${tab.label}" before "${anchorTab.label}"`);
-          if (typeof gBrowser.zenHandleTabMove === 'function') {
-            gBrowser.zenHandleTabMove(tab, () => {
-              anchorTab.parentNode.insertBefore(tab, anchorTab);
-            });
-          } else {
-            anchorTab.parentNode.insertBefore(tab, anchorTab);
-          }
-        }
+
+      // 2. Cross-folder: remove from old folder if needed
+      const tabFolder = tab.group?.isZenFolder ? tab.group : null;
+      if (tabFolder && tabFolder !== anchorFolder) {
+        try { gBrowser.ungroupTab(tab); } catch(e) { log(`  Ungroup failed: ${e}`); }
+      }
+
+      // 3. Cross-pinned: match pinned state to anchor's area
+      //    Don't unpin if we'll be adding to a folder (folders require pinned tabs)
+      if (anchorPinned && !tab.pinned) {
+        gBrowser.pinTab(tab);
+        log(`  Pinned "${tab.label}" to match anchor`);
+      } else if (!anchorPinned && !anchorFolder && tab.pinned) {
+        gBrowser.unpinTab(tab);
+        log(`  Unpinned "${tab.label}" to match anchor`);
       }
     }
 
-    // If we used the raw fallback without zenHandleTabMove, invalidate manually
-    if (!hasMoveTabBefore && !hasMoveTabAfter && typeof gBrowser.zenHandleTabMove !== 'function') {
-      try {
-        if (gBrowser.tabContainer._invalidateCachedTabs) {
-          gBrowser.tabContainer._invalidateCachedTabs();
-        }
-      } catch (e) {
-        log(`Warning: _invalidateCachedTabs failed: ${e}`);
+    // Now position the tabs using moveTabBefore/moveTabAfter
+    if (position === 'after') {
+      let afterTarget = anchorTab;
+      for (const tab of yankBuffer) {
+        gBrowser.moveTabAfter(tab, afterTarget);
+        afterTarget = tab;
+      }
+    } else {
+      // Use chaining: first before anchor, rest after previous
+      gBrowser.moveTabBefore(yankBuffer[0], anchorTab);
+      for (let i = 1; i < yankBuffer.length; i++) {
+        gBrowser.moveTabAfter(yankBuffer[i], yankBuffer[i - 1]);
+      }
+    }
+
+    // 4. Add to anchor's folder if it has one
+    if (anchorFolder) {
+      const tabsToAdd = yankBuffer.filter(t => t.group !== anchorFolder);
+      if (tabsToAdd.length > 0) {
+        for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
+        anchorFolder.addTabs(tabsToAdd);
+        log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
       }
     }
 
     log(`Pasted ${yankBuffer.length} tabs ${position} anchor "${anchorTab.label}"`);
-
-    // Verify final positions
-    const verifyTabs = getVisibleTabs();
-    const anchorNewIdx = verifyTabs.indexOf(anchorTab);
-    log(`Paste verify: anchor now at visibleIdx=${anchorNewIdx}`);
-    for (const yt of yankBuffer) {
-      const ytNewIdx = verifyTabs.indexOf(yt);
-      log(`  yanked tab "${yt.label}" now at visibleIdx=${ytNewIdx}`);
-    }
 
     // Clear yank buffer
     yankBuffer = [];
@@ -4332,6 +4384,12 @@
         return;
       }
 
+      // h = switch to previous workspace, l = switch to next workspace
+      if (key === 'h' || key === 'l') {
+        browseWorkspaceSwitch(key === 'h' ? 'prev' : 'next');
+        return;
+      }
+
       // G = move highlight to last tab
       if (originalKey === 'G') {
         const tabs = getVisibleTabs();
@@ -4586,6 +4644,23 @@
       if (jumpForward()) {
         exitLeapMode(true); // Center scroll
       }
+      return;
+    }
+    // h = enter browse mode + switch to previous workspace
+    // l = enter browse mode + switch to next workspace
+    if (key === 'h' || key === 'l') {
+      // Set browse state directly without highlighting in current workspace —
+      // browseWorkspaceSwitch will reset highlight after the workspace switch
+      browseMode = true;
+      browseDirection = key === 'h' ? 'up' : 'down';
+      const tabs = getVisibleTabs();
+      const currentTab = gBrowser.selectedTab;
+      originalTabIndex = tabs.indexOf(currentTab);
+      originalTab = currentTab;
+      highlightedTabIndex = 0;
+      clearTimeout(leapModeTimeout);
+      updateLeapOverlayState();
+      browseWorkspaceSwitch(key === 'h' ? 'prev' : 'next');
       return;
     }
     // ? - open help modal
