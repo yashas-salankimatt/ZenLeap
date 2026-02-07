@@ -10,7 +10,7 @@
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.6.0';
+  const VERSION = '2.7.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -79,12 +79,14 @@
     'timing.browseGTimeout':       { default: 500, type: 'number', label: 'Browse gg Timeout', description: 'Wait for second g (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 3000, step: 50 },
     'timing.workspaceSwitchDelay': { default: 100, type: 'number', label: 'Workspace Switch Delay', description: 'UI update delay after switch (ms)', category: 'Timing', group: 'Delays', min: 50, max: 1000, step: 10 },
     'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
+    'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
 
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
+    'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
     'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
 
@@ -231,6 +233,15 @@
   let browseGTimeout = null;   // timeout to cancel pending 'g' in browse mode
   let selectedTabs = new Set();  // Set of tab references for multi-select
   let yankBuffer = [];           // Array of tab references for yank/paste
+
+  // Tab preview state (browse mode)
+  let previewPanel = null;
+  let previewDebounceTimer = null;
+  let previewCurrentTab = null;
+  let previewCaptureId = 0;        // Monotonic counter to cancel stale async captures
+  let previewCache = new Map();    // tab -> { dataUrl, timestamp }
+  const PREVIEW_CACHE_TTL = 30000; // 30 seconds
+  const PREVIEW_CAPTURE_DEBOUNCE_MS = 150; // Internal debounce for screenshot capture after panel shows
 
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
@@ -1381,6 +1392,9 @@
 
       // --- Tab Selection (Multi-Step) ---
       { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch'], subFlow: 'tab-search' },
+      { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique'], command: () => {
+        deduplicateTabs();
+      }},
 
       // --- Tab Movement ---
       { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning'], command: () => {
@@ -1549,6 +1563,12 @@
       }},
 
       // --- ZenLeap Meta ---
+      { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
+        S['display.browsePreview'] = !S['display.browsePreview'];
+        saveSettings();
+        if (!S['display.browsePreview']) hidePreviewPanel();
+        log(`Browse preview ${S['display.browsePreview'] ? 'enabled' : 'disabled'}`);
+      }},
       { key: 'toggle-debug', label: 'Toggle Debug Logging', icon: '🐛', tags: ['debug', 'log', 'zenleap'], command: () => {
         S['advanced.debug'] = !S['advanced.debug'];
         saveSettings();
@@ -1903,6 +1923,7 @@
       { key: 'action:add-folder', label: `Add ${count} tabs to folder...`, icon: '📂', tags: ['folder', 'add', 'group'], subFlow: 'folder-picker' },
       { key: 'action:move-to-top', label: `Move ${count} tabs to top`, icon: '⤒', tags: ['move', 'top', 'first', 'beginning'] },
       { key: 'action:move-to-bottom', label: `Move ${count} tabs to bottom`, icon: '⤓', tags: ['move', 'bottom', 'last', 'end'] },
+      { key: 'action:unload-all', label: `Unload ${count} matching tabs`, icon: '💤', tags: ['unload', 'discard', 'memory', 'suspend'] },
     ];
     if (!query) return actions;
     return actions.filter(a => {
@@ -1997,6 +2018,8 @@
           moveMatchedTabsToPosition(commandMatchedTabs, 'top');
         } else if (result.key === 'action:move-to-bottom') {
           moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
+        } else if (result.key === 'action:unload-all') {
+          unloadMatchedTabs(commandMatchedTabs);
         }
         break;
 
@@ -2061,6 +2084,48 @@
     const count = validTabs.length;
     for (const t of validTabs) gBrowser.removeTab(t);
     log(`Closed ${count} matching tabs`);
+    exitSearchMode();
+  }
+
+  // Unload (discard) matched tabs to save memory
+  function unloadMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t =>
+      t && !t.closing && t.parentNode && !t.hasAttribute('pending')
+    );
+    if (validTabs.length === 0) {
+      log('No tabs to unload (all already unloaded or invalid)');
+      exitSearchMode();
+      return;
+    }
+
+    const currentTab = gBrowser.selectedTab;
+    const currentIsMatched = validTabs.includes(currentTab);
+
+    if (currentIsMatched) {
+      // Switch to the most recently accessed non-matched, non-pending tab
+      const matchedSet = new Set(validTabs);
+      const alternates = Array.from(gBrowser.tabs)
+        .filter(t => t && !t.closing && t.parentNode && !matchedSet.has(t) &&
+                      !t.hasAttribute('pending') && !t.hidden);
+      alternates.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+      if (alternates[0]) {
+        gBrowser.selectedTab = alternates[0];
+      }
+    }
+
+    const count = validTabs.length;
+    // Discard after delay to let any tab switch complete
+    setTimeout(() => {
+      for (const tab of validTabs) {
+        try {
+          gBrowser.discardBrowser(tab);
+        } catch (e) {
+          log(`Failed to unload tab: ${e}`);
+        }
+      }
+      log(`Unloaded ${count} matching tabs`);
+    }, S['timing.unloadTabDelay']);
+
     exitSearchMode();
   }
 
@@ -2209,6 +2274,56 @@
       }
     } catch (e) { log(`Split failed: ${e}`); }
     exitSearchMode();
+  }
+
+  // Deduplicate tabs: find tabs with same URL, keep most recent, close the rest
+  function deduplicateTabs() {
+    // Get ALL tabs across all workspaces
+    let allTabs;
+    try {
+      if (window.gZenWorkspaces?.allStoredTabs) {
+        allTabs = Array.from(gZenWorkspaces.allStoredTabs);
+      } else {
+        allTabs = Array.from(gBrowser.tabs);
+      }
+    } catch (e) {
+      allTabs = Array.from(gBrowser.tabs);
+    }
+
+    // Filter to valid, non-essential, non-pinned tabs
+    const validTabs = allTabs.filter(t =>
+      t && !t.closing && t.parentNode &&
+      !t.pinned &&
+      !t.hasAttribute('zen-essential') &&
+      !t.hasAttribute('zen-glance-tab') &&
+      !t.hasAttribute('zen-empty-tab')
+    );
+
+    // Group by URL
+    const urlGroups = new Map();
+    for (const tab of validTabs) {
+      const url = tab.linkedBrowser?.currentURI?.spec;
+      if (!url || url === 'about:blank' || url === 'about:newtab') continue;
+      if (!urlGroups.has(url)) urlGroups.set(url, []);
+      urlGroups.get(url).push(tab);
+    }
+
+    // For each group with >1 tab, keep the most recently accessed, close the rest
+    let closedCount = 0;
+    for (const [url, tabs] of urlGroups) {
+      if (tabs.length < 2) continue;
+      tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+      for (let i = 1; i < tabs.length; i++) {
+        try {
+          gBrowser.removeTab(tabs[i]);
+          closedCount++;
+        } catch (e) {
+          log(`Failed to close duplicate tab: ${e}`);
+        }
+      }
+    }
+
+    log(`Deduplicated: closed ${closedCount} duplicate tab(s)`);
   }
 
   // Render search results
@@ -4442,6 +4557,288 @@
     }
   }
 
+  // === TAB PREVIEW PANEL (Browse Mode) ===
+
+  function createPreviewPanel() {
+    if (previewPanel) return;
+
+    previewPanel = document.createElement('div');
+    previewPanel.id = 'zenleap-preview-panel';
+
+    // Build internal structure with createElement (Firefox strips <img> from innerHTML in chrome context)
+    const thumbContainer = document.createElement('div');
+    thumbContainer.id = 'zenleap-preview-thumb-container';
+
+    const thumbImg = document.createElement('img');
+    thumbImg.id = 'zenleap-preview-thumb';
+    thumbContainer.appendChild(thumbImg);
+
+    const placeholder = document.createElement('div');
+    placeholder.id = 'zenleap-preview-placeholder';
+    placeholder.textContent = 'Tab not loaded';
+    thumbContainer.appendChild(placeholder);
+
+    const info = document.createElement('div');
+    info.id = 'zenleap-preview-info';
+
+    const titleRow = document.createElement('div');
+    titleRow.id = 'zenleap-preview-title-row';
+
+    const favicon = document.createElement('img');
+    favicon.id = 'zenleap-preview-favicon';
+    titleRow.appendChild(favicon);
+
+    const titleSpan = document.createElement('span');
+    titleSpan.id = 'zenleap-preview-title';
+    titleRow.appendChild(titleSpan);
+
+    info.appendChild(titleRow);
+
+    const urlDiv = document.createElement('div');
+    urlDiv.id = 'zenleap-preview-url';
+    info.appendChild(urlDiv);
+
+    previewPanel.appendChild(thumbContainer);
+    previewPanel.appendChild(info);
+
+    const style = document.createElement('style');
+    style.id = 'zenleap-preview-styles';
+    style.textContent = `
+      #zenleap-preview-panel {
+        position: fixed;
+        z-index: 10001;
+        width: 320px;
+        background: rgba(30, 30, 30, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 10px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(8px);
+        overflow: hidden;
+        display: none;
+        pointer-events: none;
+        animation: zenleap-preview-appear 0.12s ease-out;
+      }
+      @keyframes zenleap-preview-appear {
+        from { opacity: 0; transform: translateY(4px) scale(0.97); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      #zenleap-preview-thumb-container {
+        width: 100%;
+        height: 180px;
+        background: #1a1a1a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+      }
+      #zenleap-preview-thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: none;
+      }
+      #zenleap-preview-placeholder {
+        color: #666;
+        font-family: monospace;
+        font-size: 12px;
+        display: none;
+      }
+      #zenleap-preview-info {
+        padding: 10px 12px;
+      }
+      #zenleap-preview-title-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+      #zenleap-preview-favicon {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+      }
+      #zenleap-preview-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #e0e0e0;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #zenleap-preview-url {
+        font-size: 11px;
+        color: #888;
+        font-family: monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    `;
+    document.head.appendChild(style);
+    document.documentElement.appendChild(previewPanel);
+    log('Preview panel created');
+  }
+
+  function showPreviewForTab(tab) {
+    if (!S['display.browsePreview']) return;
+    if (!previewPanel) createPreviewPanel();
+
+    // Clean expired cache entries
+    cleanPreviewCache();
+
+    previewCurrentTab = tab;
+    const captureId = ++previewCaptureId;
+
+    const titleEl = document.getElementById('zenleap-preview-title');
+    const urlEl = document.getElementById('zenleap-preview-url');
+    const faviconEl = document.getElementById('zenleap-preview-favicon');
+    const thumbEl = document.getElementById('zenleap-preview-thumb');
+    const placeholderEl = document.getElementById('zenleap-preview-placeholder');
+
+    // Immediately show title + URL + favicon (sync)
+    const title = tab.label || 'Untitled';
+    const url = tab.linkedBrowser?.currentURI?.spec || '';
+    let faviconSrc = tab.image;
+    if (!faviconSrc || typeof faviconSrc !== 'string' || faviconSrc.trim() === '') {
+      faviconSrc = 'chrome://branding/content/icon32.png';
+    }
+
+    titleEl.textContent = title;
+    urlEl.textContent = url;
+    faviconEl.src = faviconSrc;
+
+    // Position and show the panel
+    positionPreviewPanel(tab);
+    previewPanel.style.display = 'block';
+
+    // If tab is unloaded (pending), show placeholder
+    if (tab.hasAttribute('pending')) {
+      thumbEl.style.display = 'none';
+      placeholderEl.style.display = 'block';
+      placeholderEl.textContent = 'Tab not loaded';
+      return;
+    }
+
+    // Check cache
+    const cached = previewCache.get(tab);
+    if (cached && (Date.now() - cached.timestamp) < PREVIEW_CACHE_TTL) {
+      thumbEl.src = cached.dataUrl;
+      thumbEl.style.display = 'block';
+      placeholderEl.style.display = 'none';
+      return;
+    }
+
+    // Show loading state and capture async
+    thumbEl.style.display = 'none';
+    placeholderEl.style.display = 'block';
+    placeholderEl.textContent = 'Loading preview...';
+    captureTabThumbnail(tab, captureId);
+  }
+
+  async function captureTabThumbnail(tab, captureId) {
+    try {
+      const browser = tab.linkedBrowser;
+      if (!browser?.browsingContext?.currentWindowGlobal) {
+        if (captureId === previewCaptureId) {
+          const el = document.getElementById('zenleap-preview-placeholder');
+          if (el) { el.textContent = 'Preview unavailable'; el.style.display = 'block'; }
+        }
+        return;
+      }
+
+      const w = browser.clientWidth || 1280;
+      const h = browser.clientHeight || 720;
+      const rect = new DOMRect(0, 0, w, h);
+      const scale = 320 / w;
+      const imageBitmap = await browser.browsingContext.currentWindowGlobal
+        .drawSnapshot(rect, scale, 'white');
+
+      // Check if this capture is still relevant
+      if (captureId !== previewCaptureId) {
+        imageBitmap.close();
+        return;
+      }
+
+      // Convert to data URL via canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = imageBitmap.width;
+      canvas.height = imageBitmap.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(imageBitmap, 0, 0);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      imageBitmap.close();
+
+      // Cache it
+      previewCache.set(tab, { dataUrl, timestamp: Date.now() });
+
+      // Update UI if still relevant
+      if (captureId === previewCaptureId) {
+        const thumbEl = document.getElementById('zenleap-preview-thumb');
+        const placeholderEl = document.getElementById('zenleap-preview-placeholder');
+        if (thumbEl && placeholderEl) {
+          thumbEl.src = dataUrl;
+          thumbEl.style.display = 'block';
+          placeholderEl.style.display = 'none';
+        }
+      }
+    } catch (e) {
+      log(`Preview capture failed: ${e}`);
+      if (captureId === previewCaptureId) {
+        const el = document.getElementById('zenleap-preview-placeholder');
+        if (el) { el.textContent = 'Preview unavailable'; el.style.display = 'block'; }
+      }
+    }
+  }
+
+  function positionPreviewPanel(tab) {
+    if (!previewPanel) return;
+
+    const sidebar = document.getElementById('navigator-toolbox');
+    let leftPos;
+
+    if (sidebar) {
+      const sidebarRect = sidebar.getBoundingClientRect();
+      leftPos = sidebarRect.right + 12;
+    } else {
+      const tabRect = tab.getBoundingClientRect();
+      leftPos = tabRect.right + 12;
+    }
+
+    // Vertically center near the highlighted tab
+    const tabRect = tab.getBoundingClientRect();
+    const panelHeight = 250;
+    let topPos = tabRect.top + (tabRect.height / 2) - (panelHeight / 2);
+
+    // Clamp to viewport
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    topPos = Math.max(8, Math.min(topPos, viewportHeight - panelHeight - 8));
+    leftPos = Math.min(leftPos, viewportWidth - 340);
+
+    previewPanel.style.left = `${leftPos}px`;
+    previewPanel.style.top = `${topPos}px`;
+  }
+
+  function hidePreviewPanel() {
+    if (previewPanel) {
+      previewPanel.style.display = 'none';
+    }
+    clearTimeout(previewDebounceTimer);
+    previewCaptureId++;
+    previewCurrentTab = null;
+    previewCache.clear();
+  }
+
+  function cleanPreviewCache() {
+    const now = Date.now();
+    for (const [tab, entry] of previewCache) {
+      if ((now - entry.timestamp) > PREVIEW_CACHE_TTL || tab.closing || !tab.parentNode) {
+        previewCache.delete(tab);
+      }
+    }
+  }
+
   // Check if we're in compact mode (sidebar CAN be hidden)
   function isCompactModeEnabled() {
     // Check for compact mode attribute on root
@@ -4743,6 +5140,18 @@
 
       // Scroll the highlighted tab into view
       scrollTabToView(highlightedTab, 'center');
+
+      // Trigger preview panel update (debounced by configurable delay)
+      if (S['display.browsePreview'] && browseMode) {
+        clearTimeout(previewDebounceTimer);
+        previewCaptureId++; // Cancel any in-flight capture
+        hidePreviewPanel();
+        previewDebounceTimer = setTimeout(() => {
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < getVisibleTabs().length) {
+            showPreviewForTab(getVisibleTabs()[highlightedTabIndex]);
+          }
+        }, S['timing.previewDelay']);
+      }
     }
   }
 
@@ -5060,6 +5469,7 @@
   // Exit leap mode
   function exitLeapMode(centerScroll = false) {
     clearHighlight();
+    hidePreviewPanel();
 
     // Hide sidebar if we expanded it on entry
     if (sidebarWasExpanded) {

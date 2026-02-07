@@ -27,6 +27,8 @@ Like vim's relative line numbers, shows distance from current tab:
 | `m{char}` | Set mark on current tab |
 | `M` | Clear all marks |
 | `'{char}` | Jump to marked tab |
+| `0` | Jump to first unpinned tab |
+| `$` | Jump to last tab |
 | `o` / `i` | Jump back / forward in history |
 | `?` | Open help modal |
 | `/` | Open tab search |
@@ -38,7 +40,7 @@ Navigate and manipulate tabs visually:
 | Keys | Action |
 |------|--------|
 | `j` / `k` / `↑` / `↓` | Move highlight |
-| `gg` | Jump to first tab |
+| `gg` | Jump to first unpinned tab (configurable) |
 | `G` | Jump to last tab |
 | `h` / `l` | Switch workspace (prev/next) |
 | `Enter` | Open highlighted tab |
@@ -52,6 +54,8 @@ Navigate and manipulate tabs visually:
 | `Escape` | Cancel, return to original tab |
 
 Yank/paste works across workspaces — yank tabs in one workspace, switch with `h`/`l`, paste in another.
+
+**Tab Preview:** A floating thumbnail preview appears when you pause on a tab in browse mode, showing the page screenshot, title, and URL. Configurable delay in Settings > Timing.
 
 #### G-Mode (Absolute Positioning)
 Jump to specific tab positions:
@@ -108,10 +112,10 @@ A searchable command palette for quick access to any action:
 - `Ctrl+Shift+/` — Open command palette directly
 - `Ctrl+/` → type `>` — Switch to command mode from search
 
-Available commands include: close/duplicate/pin/mute/unload tabs, switch/move to workspace, add to folder, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more.
+Available commands include: close/duplicate/pin/mute/unload/deduplicate tabs, switch/move to workspace, add to folder, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more.
 
 **Multi-step commands:** Some commands open sub-flows:
-- "Select matching tabs" → search tabs → pick action (close, move to workspace, add to folder)
+- "Select matching tabs" → search tabs → pick action (close, unload, move to workspace, add to folder)
 - "Split with tab" → pick a tab to split with
 - "Move to workspace" → pick destination workspace
 - "Add to folder" → pick folder or create new

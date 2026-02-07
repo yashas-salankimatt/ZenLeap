@@ -5,6 +5,39 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-02-07
+
+### Added
+- **Tab Deduplication** - Close duplicate tabs across all workspaces
+  - Command palette: "Deduplicate Tabs (Close Duplicates)"
+  - Groups tabs by URL, keeps the most recently accessed, closes the rest
+  - Skips pinned, essential, and special tabs
+- **Unload Matching Tabs** - Bulk unload tabs from the select-matching flow
+  - New action in Select Matching Tabs: "Unload N matching tabs"
+  - Switches away from current tab if it would be unloaded
+  - Skips already-unloaded tabs
+- **Browse Mode Tab Preview** - Floating thumbnail preview while navigating
+  - Shows tab screenshot, title, URL, and favicon to the right of the sidebar
+  - Captures via `drawSnapshot` API with debounced async loading
+  - Configurable delay (Settings > Timing > Browse Preview Delay, default 500ms)
+  - Toggle in Settings > Display > Browse Preview or command palette
+  - Handles unloaded tabs with placeholder text
+  - Cached thumbnails for fast re-display
+- **Leap Mode 0 / $ Keys** - Jump to first unpinned tab / last tab
+- **gg Skips Pinned Tabs** - Configurable in Settings > Display > Navigation
+
+### Fixed
+- Workspace badge clipped by long tab titles (now uses flexbox layout)
+- Cross-workspace tab selection not focusing after workspace switch (async/await fix)
+- WS/All toggle incorrectly shown in command mode
+- Missing workspace badges in select-matching and split-tab-picker sub-flows
+- Hardcoded CSS colors overriding theme variables in leap-active and highlight+selected states
+- `0` key jumping to invisible `zen-empty-tab` placeholder
+- Tab key in select-matching sub-flow acting as Enter instead of toggling workspace search
+- Move-to-top/bottom not pulling tabs from other workspaces into current workspace
+- Pinned tabs failing silently in move-to-top/bottom (now unpins before moving)
+- Search scoring: exact substring matches now strongly favored over fuzzy matches
+
 ## [2.6.0] - 2026-02-05
 
 ### Added
@@ -193,6 +226,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.7.0 | 2026-02-07 | Tab deduplication, bulk unload, browse preview, 0/$ keys, bug fixes |
 | 2.6.0 | 2026-02-05 | Cross-workspace search, exact match quotes, appearance customization |
 | 2.5.0 | 2026-02-05 | Settings modal, h/l workspace switching, configurable keybindings |
 | 2.4.1 | 2026-02-05 | Browse mode multi-select (Space/y/p/P), gg/G navigation, paste fix |
