@@ -63,6 +63,12 @@ The target profile is **eumr3k85.Default (release)** — this is the profile wit
 - For the MCP server (Python), write proper pytest tests covering tool handlers, WebSocket communication, edge cases, and error paths.
 - Tests should cover happy paths, error cases, and boundary conditions.
 
+## Commit Policy
+
+- **Commit frequently** — after each logical unit of work (a new feature, a bug fix, a batch of tests) is reviewed and verified working.
+- Only commit code that has passed code review and testing. Do not commit broken or untested code.
+- Use descriptive commit messages summarizing the "why" of the change.
+
 ## Code Review Requirement
 
 **Before returning any code changes to the user**, run a comprehensive code review via a sub-agent. The review must check:
