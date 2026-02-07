@@ -80,6 +80,16 @@ Keep this file concise — only record things that save future time. Prune aggre
 - Console capture requires `Cu.exportFunction` + `wrappedJSObject` to cross Xray boundary.
 - `contentWindow.eval()` runs at content principal (no privilege escalation).
 
+## Phase 5 Status
+
+- Added `wait_for_load` command (polls `webProgress.isLoadingDocument` with timeout).
+- Added `browser_save_screenshot` MCP tool (saves PNG to disk).
+- Created `.mcp.json` for Claude Code auto-discovery.
+- Workspace scoping: `create_tab` moves tabs to "ZenLeap AI" workspace, `list_tabs` returns workspace-scoped results.
+- `gZenWorkspaces.createAndSaveWorkspace(name, undefined, true)` — `dontChange=true` avoids UI blocking.
+- Zen creates a default "New Tab" when switching to a new workspace — this shows in `list_tabs`.
+- 67 pytest tests pass, code review passes all 8 criteria.
+
 ## Xray Wrapper Gotcha — Console Override
 
 Setting `win.console.log = fn` from a JSWindowActorChild does NOT work — the Xray wrapper prevents content code from seeing the chrome-scope assignment. Must use:

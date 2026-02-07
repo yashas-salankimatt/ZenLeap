@@ -44,7 +44,7 @@ async def main():
     print("1. Ping")
     r = await send_command(ws, "ping")
     check("pong received", r.get("pong") is True)
-    check("version is 0.4.0", r.get("version") == "0.4.0", f"got {r.get('version')}")
+    check("version is 0.5.0", r.get("version") == "0.5.0", f"got {r.get('version')}")
 
     # --- 2. Create tab ---
     print("\n2. Create tab → example.com")

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "zenleap-browser": {
+      "command": "/Users/yashas/Documents/scratch/zenleap_scratch/zenleap-ai/mcp/.venv/bin/python",
+      "args": ["/Users/yashas/Documents/scratch/zenleap_scratch/zenleap-ai/mcp/zenleap_mcp_server.py"]
+    }
+  }
+}

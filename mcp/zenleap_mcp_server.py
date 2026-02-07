@@ -389,6 +389,41 @@ async def browser_wait(seconds: float = 2.0) -> str:
     return text_result(await browser_command("wait", {"seconds": seconds}))
 
 
+@mcp.tool()
+async def browser_wait_for_load(tab_id: str = "", timeout: int = 15) -> str:
+    """Wait for the current page to finish loading (up to timeout seconds).
+    More reliable than browser_wait for navigation — polls the browser's loading state.
+    Returns the final URL and title once loaded."""
+    return text_result(
+        await browser_command(
+            "wait_for_load",
+            {"tab_id": tab_id or None, "timeout": timeout},
+        )
+    )
+
+
+@mcp.tool()
+async def browser_save_screenshot(file_path: str, tab_id: str = "") -> str:
+    """Take a screenshot and save it as a PNG file to the given path.
+    Use this to save visual evidence of page state to disk.
+    The file_path can be absolute or relative to the server's working directory."""
+    result = await browser_command("screenshot", {"tab_id": tab_id or None})
+    data_url = result.get("image", "")
+    if data_url.startswith("data:"):
+        b64 = data_url.split(",", 1)[1]
+    else:
+        b64 = data_url
+    raw = base64.b64decode(b64)
+    # Ensure parent directory exists
+    parent = os.path.dirname(os.path.abspath(file_path))
+    os.makedirs(parent, exist_ok=True)
+    with open(file_path, "wb") as f:
+        f.write(raw)
+    width = result.get("width", "?")
+    height = result.get("height", "?")
+    return f"Screenshot saved to {file_path} ({len(raw)} bytes, {width}x{height})"
+
+
 # ── Entry Point ─────────────────────────────────────────────────
 
 if __name__ == "__main__":

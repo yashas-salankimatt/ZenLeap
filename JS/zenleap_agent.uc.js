@@ -3,13 +3,13 @@
 // @description    WebSocket server exposing browser control via MCP for AI agents
 // @include        main
 // @author         ZenLeap
-// @version        0.4.0
+// @version        0.5.0
 // ==/UserScript==
 
 (function() {
   'use strict';
 
-  const VERSION = '0.4.0';
+  const VERSION = '0.5.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'ZenLeap AI';
@@ -424,8 +424,68 @@
   // WORKSPACE MANAGEMENT
   // ============================================
 
-  // Track tabs created by the agent (WeakSet so closed tabs are GC'd)
+  let agentWorkspaceId = null;
+  let _ensureWorkspacePromise = null;
+
+  // Track tabs created by the agent
   const agentTabs = new Set();
+
+  async function ensureAgentWorkspace() {
+    // Prevent concurrent calls from creating duplicate workspaces
+    if (_ensureWorkspacePromise) return _ensureWorkspacePromise;
+    _ensureWorkspacePromise = _doEnsureAgentWorkspace();
+    try {
+      return await _ensureWorkspacePromise;
+    } finally {
+      _ensureWorkspacePromise = null;
+    }
+  }
+
+  async function _doEnsureAgentWorkspace() {
+    // Return cached ID if workspace still exists
+    if (agentWorkspaceId) {
+      const ws = gZenWorkspaces?.getWorkspaceFromId(agentWorkspaceId);
+      if (ws) return agentWorkspaceId;
+      agentWorkspaceId = null;
+    }
+
+    if (!gZenWorkspaces) {
+      log('gZenWorkspaces not available — workspace scoping disabled');
+      return null;
+    }
+
+    // Look for existing workspace by name
+    const workspaces = gZenWorkspaces.getWorkspaces();
+    if (workspaces) {
+      const existing = workspaces.find(ws => ws.name === AGENT_WORKSPACE_NAME);
+      if (existing) {
+        agentWorkspaceId = existing.uuid;
+        log('Found workspace: ' + AGENT_WORKSPACE_NAME + ' (' + agentWorkspaceId + ')');
+        return agentWorkspaceId;
+      }
+    }
+
+    // Create new workspace (dontChange=true to avoid UI blocking)
+    try {
+      const created = await gZenWorkspaces.createAndSaveWorkspace(
+        AGENT_WORKSPACE_NAME, undefined, true
+      );
+      agentWorkspaceId = created.uuid;
+      log('Created workspace: ' + AGENT_WORKSPACE_NAME + ' (' + agentWorkspaceId + ')');
+      return agentWorkspaceId;
+    } catch (e) {
+      log('Failed to create workspace: ' + e);
+      return null;
+    }
+  }
+
+  function getWorkspaceTabs(workspaceId) {
+    if (!workspaceId) return [];
+    return Array.from(gBrowser.tabs).filter(
+      tab => tab.getAttribute('zen-workspace-id') === workspaceId
+        && tab.linkedBrowser && tab.parentNode
+    );
+  }
 
   function resolveTab(tabId) {
     if (!tabId) return gBrowser.selectedTab;
@@ -439,16 +499,6 @@
       if (tab.linkedBrowser?.currentURI?.spec === tabId) return tab;
     }
     return null;
-  }
-
-  function getAgentTabs() {
-    // Clean up closed tabs
-    for (const tab of agentTabs) {
-      if (!tab.linkedBrowser || !tab.parentNode) {
-        agentTabs.delete(tab);
-      }
-    }
-    return [...agentTabs];
   }
 
   // ============================================
@@ -560,12 +610,19 @@
 
     // --- Tab Management ---
     create_tab: async ({ url }) => {
+      const wsId = await ensureAgentWorkspace();
       const tab = gBrowser.addTab(url || 'about:blank', {
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
       });
-      gBrowser.selectedTab = tab;
       agentTabs.add(tab);
-      log('Created tab: ' + tab.linkedPanel + ' -> ' + (url || 'about:blank'));
+
+      // Move tab to agent workspace and switch to it
+      if (wsId && gZenWorkspaces) {
+        gZenWorkspaces.moveTabToWorkspace(tab, wsId);
+        await gZenWorkspaces.changeWorkspaceWithID(wsId);
+      }
+      gBrowser.selectedTab = tab;
+      log('Created tab: ' + tab.linkedPanel + ' -> ' + (url || 'about:blank') + (wsId ? ' [ws:' + wsId + ']' : ''));
 
       return {
         tab_id: tab.linkedPanel,
@@ -584,12 +641,22 @@
     switch_tab: async ({ tab_id }) => {
       const tab = resolveTab(tab_id);
       if (!tab) throw new Error('Tab not found');
+      // Switch to the tab's workspace if needed
+      const tabWsId = tab.getAttribute('zen-workspace-id');
+      if (tabWsId && gZenWorkspaces) {
+        const active = gZenWorkspaces.getActiveWorkspace?.();
+        if (active?.uuid !== tabWsId) {
+          await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
+        }
+      }
       gBrowser.selectedTab = tab;
       return { success: true };
     },
 
     list_tabs: async () => {
-      const tabs = getAgentTabs();
+      // List all tabs in the agent workspace, falling back to tracked tabs
+      const wsId = await ensureAgentWorkspace();
+      const tabs = wsId ? getWorkspaceTabs(wsId) : [...agentTabs].filter(t => t.linkedBrowser && t.parentNode);
       return tabs.map(t => ({
         tab_id: t.linkedPanel,
         title: t.label || '',
@@ -745,6 +812,22 @@
     wait: async ({ seconds = 2 }) => {
       await new Promise(r => setTimeout(r, seconds * 1000));
       return { success: true };
+    },
+
+    wait_for_load: async ({ tab_id, timeout = 15 }) => {
+      const tab = resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      const browser = tab.linkedBrowser;
+      const deadline = Date.now() + timeout * 1000;
+      while (browser.webProgress?.isLoadingDocument && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+      return {
+        success: true,
+        url: browser.currentURI?.spec || '',
+        title: tab.label || '',
+        loading: browser.webProgress?.isLoadingDocument || false,
+      };
     },
   };
 

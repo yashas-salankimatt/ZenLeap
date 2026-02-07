@@ -7,6 +7,7 @@ and error handling. Uses a mock WebSocket server to simulate the browser.
 import asyncio
 import base64
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -749,6 +750,95 @@ class TestConsoleErrors:
             await server.browser_console_errors("panel1")
         msg = json.loads(fake_ws.sent[0])
         assert msg["params"]["tab_id"] == "panel1"
+
+
+class TestWaitForLoad:
+    @pytest.mark.asyncio
+    async def test_wait_for_load(self):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "url": "https://example.com", "title": "Example", "loading": False}}
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_wait_for_load()
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["loading"] is False
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "wait_for_load"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_load_with_tab_id(self):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "url": "https://example.com", "title": "Example", "loading": False}}
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_wait_for_load("panel1", timeout=10)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+        assert msg["params"]["timeout"] == 10
+
+    @pytest.mark.asyncio
+    async def test_wait_for_load_still_loading(self):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "url": "https://example.com", "title": "", "loading": True}}
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_wait_for_load(timeout=1)
+        data = json.loads(result)
+        assert data["loading"] is True
+
+
+class TestSaveScreenshot:
+    @pytest.mark.asyncio
+    async def test_save_screenshot(self, tmp_path):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}}
+            ]
+        )
+        file_path = str(tmp_path / "test.png")
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_save_screenshot(file_path)
+        assert "Screenshot saved" in result
+        assert "test.png" in result
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "screenshot"
+        # Verify the file was written with correct PNG data
+        with open(file_path, "rb") as f:
+            data = f.read()
+        assert data == _TINY_PNG
+
+    @pytest.mark.asyncio
+    async def test_save_screenshot_with_tab_id(self, tmp_path):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}}
+            ]
+        )
+        file_path = str(tmp_path / "tab.png")
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_save_screenshot(file_path, "panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+
+    @pytest.mark.asyncio
+    async def test_save_screenshot_creates_dirs(self, tmp_path):
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}}
+            ]
+        )
+        file_path = str(tmp_path / "subdir" / "nested" / "shot.png")
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_save_screenshot(file_path)
+        assert "Screenshot saved" in result
+        assert os.path.exists(file_path)
 
 
 class TestConsoleEval:

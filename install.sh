@@ -41,7 +41,7 @@ else
 fi
 
 # Configuration
-FXAUTOCONFIG_REPO="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
+FXAUTOCONFIG_REPO="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip"
 ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
@@ -191,14 +191,17 @@ detect_os() {
         Darwin)
             OS="macos"
             # Try both possible app names
-            if [ -d "/Applications/Zen.app" ]; then
-                ZEN_APP="/Applications/Zen.app"
-            elif [ -d "/Applications/Zen Browser.app" ]; then
-                ZEN_APP="/Applications/Zen Browser.app"
-            else
+            # Detect all Zen-family apps
+            ZEN_APPS=()
+            for app in "/Applications/Zen.app" "/Applications/Zen Browser.app" "/Applications/Twilight.app"; do
+                [ -d "$app" ] && ZEN_APPS+=("$app")
+            done
+            if [ ${#ZEN_APPS[@]} -eq 0 ]; then
                 echo -e "${RED}Error: Could not find Zen Browser in /Applications${NC}"
                 exit 1
             fi
+            # Default to first found; resolve_zen_app will pick the right one after profile selection
+            ZEN_APP="${ZEN_APPS[0]}"
             ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
             PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
             ;;
@@ -284,15 +287,32 @@ find_profile() {
     JS_DIR="$CHROME_DIR/JS"
 }
 
+# After profile selection, resolve which Zen app to target
+resolve_zen_app() {
+    if [ "$OS" != "macos" ]; then
+        return
+    fi
+    local profile_name
+    profile_name=$(basename "$PROFILE_DIR" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$profile_name" == *"twilight"* ]] && [ -d "/Applications/Twilight.app" ]; then
+        ZEN_APP="/Applications/Twilight.app"
+    elif [[ "$profile_name" == *"alpha"* ]] && [ -d "/Applications/Zen.app" ]; then
+        ZEN_APP="/Applications/Zen.app"
+    fi
+    ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
+    echo -e "${GREEN}✓${NC} Target app: $(basename "$ZEN_APP")"
+}
+
 # Check if Zen Browser is running
 check_zen_running() {
-    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1 || pgrep -x "Twilight" > /dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Zen Browser is running${NC}"
         echo -n "Close Zen Browser to continue? (y/n): "
         read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
-                osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
+                osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || osascript -e 'quit app "Twilight"' 2>/dev/null || true
             else
                 pkill -x "zen" 2>/dev/null || true
             fi
@@ -334,7 +354,7 @@ install_fxautoconfig() {
     unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR"
 
     # Find the extracted directory
-    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "user-chrome-scripts*" | head -1)
+    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "fx-autoconfig*" -o -name "user-chrome-scripts*" | head -1)
 
     if [ -z "$EXTRACTED_DIR" ]; then
         echo -e "${RED}Error: Could not find extracted fx-autoconfig files${NC}"
@@ -488,6 +508,7 @@ clear_cache() {
 do_install() {
     detect_os
     find_profile
+    resolve_zen_app
     check_zen_running
 
     if ! check_fxautoconfig; then
@@ -531,10 +552,11 @@ do_install() {
 do_uninstall() {
     detect_os
     find_profile
+    resolve_zen_app
 
     # Track if Zen was running before we closed it
     ZEN_WAS_RUNNING=false
-    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1; then
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1 || pgrep -x "Twilight" > /dev/null 2>&1; then
         ZEN_WAS_RUNNING=true
     fi
 
