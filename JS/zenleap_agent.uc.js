@@ -528,7 +528,8 @@
           }
           const ctx = canvas.getContext('2d');
           ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/png');
+          // JPEG is 5-10x smaller than PNG for web page screenshots
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
           return { image: dataUrl, width: canvas.width, height: canvas.height };
         } finally {
           bitmap.close(); // Prevent memory leak

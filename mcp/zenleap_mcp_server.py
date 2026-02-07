@@ -41,7 +41,9 @@ async def get_ws():
             except Exception:
                 _ws_connection = None
 
-        _ws_connection = await websockets.connect(BROWSER_WS_URL)
+        _ws_connection = await websockets.connect(
+            BROWSER_WS_URL, max_size=10 * 1024 * 1024  # 10MB — screenshots can exceed 1MB default
+        )
         return _ws_connection
 
 
@@ -146,13 +148,15 @@ async def browser_screenshot(tab_id: str = "") -> Image:
     Use this to verify page state, understand layouts, or see visual content."""
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
-    # Strip data URL prefix: "data:image/png;base64,..."
+    # Strip data URL prefix: "data:image/jpeg;base64,..." or "data:image/png;base64,..."
     if data_url.startswith("data:"):
-        b64 = data_url.split(",", 1)[1]
+        header, b64 = data_url.split(",", 1)
+        fmt = "jpeg" if "jpeg" in header else "png"
     else:
         b64 = data_url
+        fmt = "jpeg"
     raw_bytes = base64.b64decode(b64)
-    return Image(data=raw_bytes, format="png")
+    return Image(data=raw_bytes, format=fmt)
 
 
 @mcp.tool()
@@ -404,7 +408,7 @@ async def browser_wait_for_load(tab_id: str = "", timeout: int = 15) -> str:
 
 @mcp.tool()
 async def browser_save_screenshot(file_path: str, tab_id: str = "") -> str:
-    """Take a screenshot and save it as a PNG file to the given path.
+    """Take a screenshot and save it as an image file to the given path.
     Use this to save visual evidence of page state to disk.
     The file_path can be absolute or relative to the server's working directory."""
     result = await browser_command("screenshot", {"tab_id": tab_id or None})

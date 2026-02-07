@@ -39,7 +39,7 @@ def check(name, condition, detail=""):
 async def main():
     global PASS, FAIL
     print("Connecting to browser WebSocket...")
-    ws = await websockets.connect(WS_URL)
+    ws = await websockets.connect(WS_URL, max_size=10 * 1024 * 1024)
     print(f"Connected.\n")
 
     # --- 1. Ping ---
