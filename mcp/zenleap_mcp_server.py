@@ -302,6 +302,83 @@ async def browser_hover(index: int, tab_id: str = "") -> str:
     )
 
 
+# ── Console / Eval ─────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_console_setup(tab_id: str = "") -> str:
+    """Start capturing console output (log/warn/error/info) and uncaught errors on a tab.
+    Must be called before browser_console_logs or browser_console_errors will return data.
+    Capture persists until the page navigates away."""
+    return text_result(
+        await browser_command(
+            "console_setup", {"tab_id": tab_id or None}
+        )
+    )
+
+
+@mcp.tool()
+async def browser_console_logs(tab_id: str = "") -> str:
+    """Get captured console messages (log/warn/info/error) from the current page.
+    Call browser_console_setup first to start capturing. Returns up to 500 most recent entries."""
+    result = await browser_command(
+        "console_get_logs", {"tab_id": tab_id or None}
+    )
+    if isinstance(result, dict) and "logs" in result:
+        if not result["logs"]:
+            return "(no console logs captured)"
+        lines = []
+        for log in result["logs"]:
+            ts = log.get("timestamp", "")
+            level = log.get("level", "log")
+            msg = log.get("message", "")
+            lines.append(f"[{level}] {ts} {msg}")
+        return "\n".join(lines)
+    return text_result(result)
+
+
+@mcp.tool()
+async def browser_console_errors(tab_id: str = "") -> str:
+    """Get captured errors: console.error calls, uncaught exceptions, and unhandled promise rejections.
+    Call browser_console_setup first to start capturing. Returns up to 100 most recent entries."""
+    result = await browser_command(
+        "console_get_errors", {"tab_id": tab_id or None}
+    )
+    if isinstance(result, dict) and "errors" in result:
+        if not result["errors"]:
+            return "(no errors captured)"
+        lines = []
+        for err in result["errors"]:
+            ts = err.get("timestamp", "")
+            etype = err.get("type", "error")
+            msg = err.get("message", "")
+            stack = err.get("stack", "")
+            entry = f"[{etype}] {ts} {msg}"
+            if stack:
+                entry += "\n" + stack
+            lines.append(entry)
+        return "\n\n".join(lines)
+    return text_result(result)
+
+
+@mcp.tool()
+async def browser_console_eval(expression: str, tab_id: str = "") -> str:
+    """Execute JavaScript in the current page and return the result.
+    Runs in the page's global scope — can access page variables, DOM, etc.
+    May be blocked by Content Security Policy on some pages."""
+    result = await browser_command(
+        "console_evaluate",
+        {"tab_id": tab_id or None, "expression": expression},
+    )
+    if isinstance(result, dict):
+        if "error" in result:
+            stack = result.get("stack", "")
+            return f"Error: {result['error']}" + (f"\n{stack}" if stack else "")
+        if "result" in result:
+            return str(result["result"])
+    return text_result(result)
+
+
 # ── Control ─────────────────────────────────────────────────────
 
 

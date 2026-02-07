@@ -643,6 +643,158 @@ class TestHover:
         assert msg["params"]["index"] == 0
 
 
+# ── Console / Eval (Phase 4) ────────────────────────────────────
+
+
+class TestConsoleSetup:
+    @pytest.mark.asyncio
+    async def test_setup(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_setup()
+        data = json.loads(result)
+        assert data["success"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "console_setup"
+
+    @pytest.mark.asyncio
+    async def test_setup_with_tab_id(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_console_setup("panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+
+
+class TestConsoleLogs:
+    @pytest.mark.asyncio
+    async def test_formats_logs(self):
+        logs = [
+            {"level": "log", "message": "hello world", "timestamp": "2025-01-01T00:00:00.000Z"},
+            {"level": "warn", "message": "be careful", "timestamp": "2025-01-01T00:00:01.000Z"},
+        ]
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"logs": logs}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_logs()
+        assert "[log]" in result
+        assert "hello world" in result
+        assert "[warn]" in result
+        assert "be careful" in result
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "console_get_logs"
+
+    @pytest.mark.asyncio
+    async def test_empty_logs(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"logs": []}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_logs()
+        assert "no console logs" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_sends_tab_id(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"logs": []}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_console_logs("panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+
+
+class TestConsoleErrors:
+    @pytest.mark.asyncio
+    async def test_formats_errors(self):
+        errors = [
+            {
+                "type": "uncaught_error",
+                "message": "x is not defined",
+                "filename": "script.js",
+                "lineno": 42,
+                "stack": "ReferenceError: x is not defined\n    at script.js:42",
+                "timestamp": "2025-01-01T00:00:00.000Z",
+            },
+        ]
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"errors": errors}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_errors()
+        assert "[uncaught_error]" in result
+        assert "x is not defined" in result
+        assert "script.js:42" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_errors(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"errors": []}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_errors()
+        assert "no errors" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_sends_tab_id(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"errors": []}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_console_errors("panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+
+
+class TestConsoleEval:
+    @pytest.mark.asyncio
+    async def test_eval_success(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"result": "2"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_eval("1+1")
+        assert result == "2"
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "console_evaluate"
+        assert msg["params"]["expression"] == "1+1"
+
+    @pytest.mark.asyncio
+    async def test_eval_error(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"error": "x is not defined", "stack": "ReferenceError..."}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_eval("x.y.z")
+        assert "Error:" in result
+        assert "x is not defined" in result
+
+    @pytest.mark.asyncio
+    async def test_eval_with_tab_id(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"result": "hello"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_console_eval("'hello'", "panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+        assert msg["params"]["expression"] == "'hello'"
+
+    @pytest.mark.asyncio
+    async def test_eval_returns_string(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"result": "Example Domain"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_console_eval("document.title")
+        assert result == "Example Domain"
+
+
 # ── Error Paths ─────────────────────────────────────────────────
 
 

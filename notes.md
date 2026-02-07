@@ -73,6 +73,22 @@ Keep this file concise — only record things that save future time. Prune aggre
 - `#selectOption` matches by value or visible text, lists available options on mismatch.
 - `#getElement` validates WeakRef deref + isConnected to catch stale elements.
 
+## Phase 4 Status
+
+- All Phase 4 commands working: console_setup, console_get_logs, console_get_errors, console_evaluate.
+- 61 pytest tests pass, 23 e2e tests pass, code review passes all 8 criteria.
+- Console capture requires `Cu.exportFunction` + `wrappedJSObject` to cross Xray boundary.
+- `contentWindow.eval()` runs at content principal (no privilege escalation).
+
+## Xray Wrapper Gotcha — Console Override
+
+Setting `win.console.log = fn` from a JSWindowActorChild does NOT work — the Xray wrapper prevents content code from seeing the chrome-scope assignment. Must use:
+```js
+const unwrapped = win.console.wrappedJSObject;
+unwrapped.log = Cu.exportFunction(wrapperFn, win);
+```
+`Cu.exportFunction` makes chrome functions callable from content scope. `wrappedJSObject` accesses the content object directly. Both are required.
+
 ## JSWindowActor Trusted Events — CRITICAL
 
 **KeyboardEvent dispatched from a JSWindowActorChild is TRUSTED** (system-privileged context). Special keys (Escape, Tab, Enter) trigger browser-level handlers that can crash/navigate tabs. Fix: defer dispatch via `win.setTimeout(() => { ... }, 0)` so `sendQuery` response returns before side effects. The `actorInteraction` wrapper in the parent also catches "actor destroyed" errors as a fallback.

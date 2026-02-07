@@ -3,13 +3,13 @@
 // @description    WebSocket server exposing browser control via MCP for AI agents
 // @include        main
 // @author         ZenLeap
-// @version        0.3.0
+// @version        0.4.0
 // ==/UserScript==
 
 (function() {
   'use strict';
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'ZenLeap AI';
@@ -718,6 +718,27 @@
     hover: async ({ tab_id, index }) => {
       if (index === undefined || index === null) throw new Error('index is required');
       return await actorInteraction(tab_id, 'ZenLeapAgent:Hover', { index });
+    },
+
+    // --- Console / Eval ---
+    console_setup: async ({ tab_id }) => {
+      return await actorInteraction(tab_id, 'ZenLeapAgent:SetupConsoleCapture');
+    },
+
+    console_get_logs: async ({ tab_id }) => {
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:GetConsoleLogs');
+    },
+
+    console_get_errors: async ({ tab_id }) => {
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:GetConsoleErrors');
+    },
+
+    console_evaluate: async ({ tab_id, expression }) => {
+      if (!expression) throw new Error('expression is required');
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:EvalJS', { expression });
     },
 
     // --- Control ---

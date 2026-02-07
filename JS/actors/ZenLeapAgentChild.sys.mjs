@@ -15,6 +15,9 @@ const INTERACTIVE_ROLES = new Set([
 
 export class ZenLeapAgentChild extends JSWindowActorChild {
   #elementMap = new Map(); // index → WeakRef(element)
+  #consoleLogs = [];
+  #consoleErrors = [];
+  #captureSetup = false;
 
   receiveMessage(message) {
     const data = message.data || {};
@@ -41,6 +44,14 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         return this.#hover(data.index);
       case 'ZenLeapAgent:ClickCoordinates':
         return this.#clickCoordinates(data.x, data.y);
+      case 'ZenLeapAgent:SetupConsoleCapture':
+        return this.#setupConsoleCapture();
+      case 'ZenLeapAgent:GetConsoleLogs':
+        return { logs: [...this.#consoleLogs] };
+      case 'ZenLeapAgent:GetConsoleErrors':
+        return { errors: [...this.#consoleErrors] };
+      case 'ZenLeapAgent:EvalJS':
+        return this.#evalInContent(data.expression);
       default:
         return { error: 'Unknown message: ' + message.name };
     }
@@ -322,5 +333,98 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     el.dispatchEvent(new this.contentWindow.MouseEvent('mouseup', opts));
     el.dispatchEvent(new this.contentWindow.MouseEvent('click', opts));
     return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
+  }
+
+  // --- Console Capture ---
+
+  #formatArg(value) {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value instanceof this.contentWindow.Error) {
+      return value.message + (value.stack ? '\n' + value.stack : '');
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  #setupConsoleCapture() {
+    if (this.#captureSetup) return { success: true, note: 'already setup' };
+    const win = this.contentWindow;
+    if (!win) throw new Error('No content window');
+
+    const self = this;
+    // Access unwrapped console to get originals and set content-visible wrappers.
+    // Xray wrappers prevent chrome-scope assignments from being visible to content
+    // code, so we must use wrappedJSObject + Cu.exportFunction.
+    const unwrapped = win.console.wrappedJSObject;
+    const origLog = unwrapped.log.bind(unwrapped);
+    const origWarn = unwrapped.warn.bind(unwrapped);
+    const origError = unwrapped.error.bind(unwrapped);
+    const origInfo = unwrapped.info.bind(unwrapped);
+
+    const makeWrapper = (level, origFn, isError) => {
+      return Cu.exportFunction(function(...args) {
+        const message = Array.from(args).map(a => self.#formatArg(a)).join(' ');
+        self.#consoleLogs.push({ level, message, timestamp: new Date().toISOString() });
+        if (self.#consoleLogs.length > 500) self.#consoleLogs.shift();
+        if (isError) {
+          self.#consoleErrors.push({ type: 'console.error', message, timestamp: new Date().toISOString() });
+          if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
+        }
+        origFn(...args);
+      }, win);
+    };
+
+    unwrapped.log = makeWrapper('log', origLog, false);
+    unwrapped.warn = makeWrapper('warn', origWarn, false);
+    unwrapped.error = makeWrapper('error', origError, true);
+    unwrapped.info = makeWrapper('info', origInfo, false);
+
+    // Capture uncaught errors
+    win.addEventListener('error', (event) => {
+      self.#consoleErrors.push({
+        type: 'uncaught_error',
+        message: event.message || '',
+        filename: event.filename || '',
+        lineno: event.lineno || 0,
+        colno: event.colno || 0,
+        stack: event.error?.stack || '',
+        timestamp: new Date().toISOString(),
+      });
+      if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
+    });
+
+    // Capture unhandled promise rejections
+    win.addEventListener('unhandledrejection', (event) => {
+      const reason = event.reason;
+      self.#consoleErrors.push({
+        type: 'unhandled_rejection',
+        message: reason?.message || String(reason),
+        stack: reason?.stack || '',
+        timestamp: new Date().toISOString(),
+      });
+      if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
+    });
+
+    this.#captureSetup = true;
+    return { success: true };
+  }
+
+  // --- JS Evaluation ---
+
+  #evalInContent(expression) {
+    const win = this.contentWindow;
+    if (!win) throw new Error('No content window');
+    try {
+      const result = win.eval(expression);
+      return { result: this.#formatArg(result) };
+    } catch (e) {
+      return { error: e.message, stack: e.stack || '' };
+    }
   }
 }
