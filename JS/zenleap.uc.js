@@ -92,6 +92,16 @@
   let searchResultsList = null;
   let searchHintBar = null;       // Hint bar below results
   let searchVimIndicator = null;
+  let searchBreadcrumb = null;    // Breadcrumb for command sub-flows
+
+  // Command mode state
+  let commandMode = false;        // true when in command palette mode
+  let commandQuery = '';           // search query within command mode
+  let commandResults = [];         // filtered command list
+  let commandSubFlow = null;      // current sub-flow: { type, data, label }
+  let commandSubFlowStack = [];   // breadcrumb stack for nested sub-flows
+  let commandMatchedTabs = [];    // tabs matched during select-matching-tabs flow
+  let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
 
   // Help modal
   let helpMode = false;
@@ -465,11 +475,13 @@
   // Search tabs and return sorted results
   // Combines fuzzy match score with recency bonus for ranking
   // Omits the current tab from results (you don't need to search for where you already are)
-  function searchTabs(query) {
+  function searchTabs(query, { includeCurrent = false } = {}) {
     const currentTab = gBrowser.selectedTab;
 
-    // Get visible tabs, excluding the current tab
-    const tabs = getVisibleTabs().filter(tab => tab !== currentTab);
+    // Get visible tabs, optionally excluding the current tab
+    const tabs = includeCurrent
+      ? getVisibleTabs()
+      : getVisibleTabs().filter(tab => tab !== currentTab);
     const totalTabs = tabs.length;
 
     // Empty query: return tabs sorted purely by recency
@@ -516,25 +528,6 @@
 
     // Sort by combined score descending
     results.sort((a, b) => b.score - a.score);
-
-    // Log all results for debugging
-    if (results.length > 0 && CONFIG.debug) {
-      const debugLines = [`\n=== Search Results for "${query}" ===`];
-      const topResults = results.slice(0, 15); // Show top 15
-      topResults.forEach((r, i) => {
-        const tab = r.tab;
-        const lastAccessed = tab.lastAccessed;
-        const ageMs = lastAccessed ? Date.now() - lastAccessed : 0;
-        const ageMins = (ageMs / 60000).toFixed(1);
-        debugLines.push(
-          `#${i + 1}: "${tab.label.substring(0, 50)}"` +
-          `\n    total=${r.score.toFixed(1)} | match=${r.matchScore.toFixed(1)} | mult=${r.recencyMultiplier.toFixed(2)}x` +
-          `\n    lastAccessed=${ageMins}min ago`
-        );
-      });
-      debugLines.push(`=== End Results ===\n`);
-      log(debugLines.join('\n'));
-    }
 
     // Return top 100 results (1-9 have quick jump labels)
     return results.slice(0, 100);
@@ -583,6 +576,10 @@
     inputWrapper.appendChild(searchInputDisplay);
     inputWrapper.appendChild(searchVimIndicator);
 
+    searchBreadcrumb = document.createElement('div');
+    searchBreadcrumb.id = 'zenleap-search-breadcrumb';
+    searchBreadcrumb.style.display = 'none';
+
     searchResultsList = document.createElement('div');
     searchResultsList.id = 'zenleap-search-results';
 
@@ -590,6 +587,7 @@
     searchHintBar.id = 'zenleap-search-hint-bar';
 
     container.appendChild(inputWrapper);
+    container.appendChild(searchBreadcrumb);
     container.appendChild(searchResultsList);
     container.appendChild(searchHintBar);
 
@@ -839,6 +837,119 @@
         font-family: monospace;
         font-size: 10px;
       }
+
+      /* Command mode styles */
+      #zenleap-search-breadcrumb {
+        display: flex;
+        align-items: center;
+        padding: 8px 20px;
+        gap: 6px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 12px;
+        color: #888;
+        font-family: monospace;
+      }
+
+      .zenleap-breadcrumb-item {
+        color: #61afef;
+      }
+
+      .zenleap-breadcrumb-sep {
+        color: #555;
+      }
+
+      .zenleap-command-result {
+        display: flex;
+        align-items: center;
+        padding: 10px 20px;
+        cursor: pointer;
+        transition: background 0.1s ease;
+        gap: 12px;
+      }
+
+      .zenleap-command-result:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .zenleap-command-result.selected {
+        background: rgba(97, 175, 239, 0.2);
+      }
+
+      .zenleap-command-icon {
+        width: 28px;
+        height: 28px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        flex-shrink: 0;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+
+      .zenleap-command-info {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      .zenleap-command-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: #e0e0e0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .zenleap-command-label .match {
+        color: #61afef;
+        font-weight: 600;
+      }
+
+      .zenleap-command-sublabel {
+        font-size: 12px;
+        color: #888;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .zenleap-command-sublabel .match {
+        color: #61afef;
+        font-weight: 600;
+      }
+
+      .zenleap-command-result-label {
+        font-size: 12px;
+        font-weight: 600;
+        font-family: monospace;
+        padding: 4px 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.1);
+        color: #888;
+        flex-shrink: 0;
+      }
+
+      .zenleap-command-result.selected .zenleap-command-result-label {
+        background: #61afef;
+        color: #1e1e1e;
+      }
+
+      .zenleap-command-prefix {
+        color: #e5c07b;
+        font-weight: 700;
+        font-size: 18px;
+        flex-shrink: 0;
+      }
+
+      .zenleap-command-count {
+        padding: 6px 20px;
+        font-size: 12px;
+        color: #61afef;
+        font-family: monospace;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
     `;
 
     document.head.appendChild(style);
@@ -849,11 +960,20 @@
 
     // Handle keydown on input for insert mode navigation
     searchInput.addEventListener('keydown', (e) => {
-      // In insert mode, let navigation keys be handled by our main handler
+      // Let navigation/action keys propagate to handleSearchKeyDown
       if ((e.ctrlKey && (e.key === 'j' || e.key === 'k')) ||
           e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
-          e.key === 'Enter' || e.key === 'Escape') {
+          e.key === 'Enter' || e.key === 'Escape' ||
+          e.key === 'Tab') {
         return; // Let handleSearchKeyDown handle these
+      }
+      // In command mode, let Backspace propagate when input is empty (to exit command mode)
+      if (commandMode && e.key === 'Backspace' && searchInput.value === '') {
+        return; // Let handleSearchKeyDown handle this
+      }
+      // In command normal mode, let ALL keys propagate (handled by handleSearchKeyDown)
+      if (commandMode && searchVimMode === 'normal') {
+        return;
       }
       // Stop propagation for normal typing (but allow default behavior)
       e.stopPropagation();
@@ -893,6 +1013,840 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  // ============================================
+  // COMMAND PALETTE
+  // ============================================
+
+  // Static commands registry
+  function getStaticCommands() {
+    return [
+      // --- Tab Management ---
+      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open'], command: () => { gBrowser.addTab('about:newtab', { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); } },
+      { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
+      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other'], command: () => {
+        const current = gBrowser.selectedTab;
+        const tabs = getVisibleTabs().filter(t => t !== current && !t.pinned);
+        for (const t of tabs) gBrowser.removeTab(t);
+      }},
+      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right'], command: () => {
+        const tabs = getVisibleTabs();
+        const idx = tabs.indexOf(gBrowser.selectedTab);
+        if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+      }},
+      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left'], command: () => {
+        const tabs = getVisibleTabs();
+        const idx = tabs.indexOf(gBrowser.selectedTab);
+        if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+      }},
+      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone'], command: () => { gBrowser.duplicateTab(gBrowser.selectedTab); } },
+      { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
+        const tab = gBrowser.selectedTab;
+        if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
+      }},
+      { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
+      { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'], command: () => {
+        const current = gBrowser.selectedTab;
+        // Find the most recently accessed tab to switch to
+        const tabs = Array.from(gBrowser.tabs)
+          .filter(t => t !== current && !t.hasAttribute('pending') && !t.hidden);
+        tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+        const target = tabs[0];
+        if (target) {
+          gBrowser.selectedTab = target;
+        }
+        // Discard after a short delay to let the tab switch complete
+        setTimeout(() => {
+          try { gBrowser.discardBrowser(current); } catch(e) { log(`Unload tab failed: ${e}`); }
+        }, 500);
+      }},
+
+      // --- Tab Selection (Multi-Step) ---
+      { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch'], subFlow: 'tab-search' },
+
+      // --- Tab Movement ---
+      { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning'], command: () => {
+        const tab = gBrowser.selectedTab;
+        const tabs = getVisibleTabs();
+        // Find the first non-pinned, non-essential tab position
+        const firstRegularIdx = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+        if (firstRegularIdx >= 0 && tabs[firstRegularIdx] !== tab) {
+          gBrowser.moveTabBefore(tab, tabs[firstRegularIdx]);
+          log('Moved tab to top (below pinned/essential)');
+        }
+      }},
+      { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end'], command: () => {
+        const tab = gBrowser.selectedTab;
+        const tabs = getVisibleTabs();
+        if (tabs.length > 0 && tabs[tabs.length - 1] !== tab) {
+          gBrowser.moveTabAfter(tab, tabs[tabs.length - 1]);
+          log('Moved tab to bottom');
+        }
+      }},
+
+      // --- Navigation ---
+      { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg'], command: () => {
+        const tabs = getVisibleTabs();
+        if (tabs.length > 0) gBrowser.selectedTab = tabs[0];
+      }},
+      { key: 'go-last-tab', label: 'Go to Last Tab', icon: '⇥', tags: ['navigate', 'last', 'bottom', 'end'], command: () => {
+        const tabs = getVisibleTabs();
+        if (tabs.length > 0) gBrowser.selectedTab = tabs[tabs.length - 1];
+      }},
+      { key: 'browse-mode-down', label: 'Enter Browse Mode (Down)', icon: '↓', tags: ['browse', 'navigate', 'down'], command: () => {
+        exitSearchMode();
+        setTimeout(() => { enterLeapMode(); enterBrowseMode('down'); }, 100);
+      }},
+      { key: 'browse-mode-up', label: 'Enter Browse Mode (Up)', icon: '↑', tags: ['browse', 'navigate', 'up'], command: () => {
+        exitSearchMode();
+        setTimeout(() => { enterLeapMode(); enterBrowseMode('up'); }, 100);
+      }},
+      { key: 'open-tab-search', label: 'Open Tab Search', icon: '🔍', tags: ['search', 'find', 'tab'], command: () => {
+        exitCommandMode();
+      }},
+
+      // --- View & Browser ---
+      { key: 'toggle-fullscreen', label: 'Toggle Fullscreen', icon: '⛶', tags: ['view', 'fullscreen', 'screen'], command: () => { window.fullScreen = !window.fullScreen; } },
+      { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle'], command: () => {
+        try {
+          const current = Services.prefs.getBoolPref('zen.view.sidebar-expanded');
+          Services.prefs.setBoolPref('zen.view.sidebar-expanded', !current);
+        } catch (e) { log(`Toggle sidebar failed: ${e}`); }
+      }},
+      { key: 'zoom-in', label: 'Zoom In', icon: '🔍+', tags: ['zoom', 'in', 'bigger'], command: () => { ZoomManager.enlarge(); } },
+      { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => { ZoomManager.reduce(); } },
+      { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => { ZoomManager.reset(); } },
+
+      // --- Split View ---
+      { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close'], command: () => {
+        try { if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView(); } catch (e) { log(`Unsplit failed: ${e}`); }
+      }, condition: () => { try { return window.gZenViewSplitter?.splitViewActive; } catch(e) { return false; } } },
+      { key: 'split-with-tab', label: 'Split View with Tab...', icon: '◫', tags: ['split', 'view', 'side'], subFlow: 'split-tab-picker' },
+      { key: 'split-rotate-tabs', label: 'Split View: Rotate Tabs', icon: '🔄', tags: ['split', 'view', 'swap', 'rotate', 'tabs', 'panes'], command: () => {
+        try {
+          const splitter = window.gZenViewSplitter;
+          if (!splitter?.splitViewActive) return;
+          const viewData = splitter._data[splitter.currentView];
+          if (!viewData || !viewData.tabs || viewData.tabs.length < 2) return;
+
+          if (viewData.tabs.length === 2) {
+            // For 2 tabs: simple swap
+            const node1 = splitter.getSplitNodeFromTab(viewData.tabs[0]);
+            const node2 = splitter.getSplitNodeFromTab(viewData.tabs[1]);
+            splitter.swapNodes(node1, node2);
+            splitter.applyGridLayout(viewData.layoutTree);
+          } else {
+            // For 3+ tabs: rotate positions (shift each tab to the next position)
+            const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
+            if (nodes.length > 0 && nodes.every(n => n)) {
+              // Rotate: last goes to first position, everything shifts right
+              const lastNode = nodes[nodes.length - 1];
+              for (let i = nodes.length - 1; i > 0; i--) {
+                splitter.swapNodes(nodes[i], nodes[i - 1]);
+              }
+              splitter.applyGridLayout(viewData.layoutTree);
+            }
+          }
+        } catch (e) { log(`Split rotate tabs failed: ${e}`); }
+      }, condition: () => {
+        try {
+          return window.gZenViewSplitter?.splitViewActive &&
+            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
+        } catch(e) { return false; }
+      }},
+      { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '⟳', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
+        try {
+          const splitter = window.gZenViewSplitter;
+          if (!splitter?.splitViewActive) return;
+          const viewData = splitter._data[splitter.currentView];
+          if (!viewData || !viewData.layoutTree) return;
+
+          const layoutTree = viewData.layoutTree;
+
+          // Check if layout is rotatable (must have a simple direction to toggle)
+          function canRotateTree(node) {
+            if (!node) return false;
+            // A leaf node (no children) can't be rotated
+            if (!node.children || node.children.length === 0) return false;
+            return node.direction === 'row' || node.direction === 'column';
+          }
+
+          function rotateTree(node) {
+            if (!node) return;
+            if (node.direction === 'row') {
+              node.direction = 'column';
+            } else if (node.direction === 'column') {
+              node.direction = 'row';
+            }
+            // Recursively rotate nested layouts
+            if (node.children) {
+              for (const child of node.children) {
+                rotateTree(child);
+              }
+            }
+          }
+
+          if (!canRotateTree(layoutTree)) {
+            log('Layout is not rotatable');
+            return;
+          }
+
+          rotateTree(layoutTree);
+          splitter.activateSplitView(viewData, true);
+        } catch (e) { log(`Split rotate layout failed: ${e}`); }
+      }, condition: () => {
+        try {
+          const splitter = window.gZenViewSplitter;
+          if (!splitter?.splitViewActive) return false;
+          const viewData = splitter._data[splitter.currentView];
+          if (!viewData?.layoutTree) return false;
+          const lt = viewData.layoutTree;
+          return lt.direction === 'row' || lt.direction === 'column';
+        } catch(e) { return false; }
+      }},
+
+      // --- Workspace Management ---
+      { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'], command: () => {
+        try { document.getElementById('cmd_zenOpenWorkspaceCreation')?.doCommand(); } catch(e) { log(`Create workspace failed: ${e}`); }
+      }},
+
+      // --- Folder Management ---
+      { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add'],
+        condition: () => !!window.gZenFolders,
+        command: () => {
+          try {
+            const tab = gBrowser.selectedTab;
+            gZenFolders.createFolder([tab], { renameFolder: true });
+          } catch(e) { log(`Create folder failed: ${e}`); }
+      }},
+
+      // --- ZenLeap Meta ---
+      { key: 'toggle-debug', label: 'Toggle Debug Logging', icon: '🐛', tags: ['debug', 'log', 'zenleap'], command: () => {
+        CONFIG.debug = !CONFIG.debug;
+        console.log(`[ZenLeap] Debug logging ${CONFIG.debug ? 'enabled' : 'disabled'}`);
+      }},
+      { key: 'open-help', label: 'Open Help Modal', icon: '❓', tags: ['help', 'zenleap', 'keybindings'], command: () => {
+        exitSearchMode();
+        setTimeout(() => enterHelpMode(), 100);
+      }},
+    ];
+  }
+
+  // Generate dynamic commands based on current state
+  function getDynamicCommands() {
+    const commands = [];
+
+    // Workspace switch commands
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        if (workspaces && Array.isArray(workspaces)) {
+          const activeId = window.gZenWorkspaces.activeWorkspace;
+          for (const ws of workspaces) {
+            const icon = ws.icon || '🗂';
+            const name = ws.name || 'Unnamed';
+            const isActive = ws.uuid === activeId;
+            commands.push({
+              key: `switch-workspace:${ws.uuid}`,
+              label: `Switch to Workspace: ${name}${isActive ? ' (current)' : ''}`,
+              icon: icon,
+              tags: ['workspace', 'switch', name.toLowerCase()],
+              command: () => { window.gZenWorkspaces.changeWorkspaceWithID(ws.uuid); },
+            });
+            if (!isActive) {
+              commands.push({
+                key: `move-to-workspace:${ws.uuid}`,
+                label: `Move Tab to Workspace: ${name}`,
+                icon: icon,
+                tags: ['workspace', 'move', 'tab', name.toLowerCase()],
+                command: () => {
+                  window.gZenWorkspaces.moveTabToWorkspace(gBrowser.selectedTab, ws.uuid);
+                },
+              });
+            }
+          }
+        }
+      }
+    } catch (e) { log(`Error generating workspace commands: ${e}`); }
+
+    // Folder commands
+    try {
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        const folderId = folder.id;
+        const activeTab = gBrowser.selectedTab;
+        // Skip if tab is already in this folder
+        if (activeTab && activeTab.group === folder) continue;
+
+        commands.push({
+          key: `add-to-folder:${folderId}`,
+          label: `Add Tab to Folder: ${name}`,
+          icon: '📂',
+          tags: ['folder', 'add', 'move', 'tab', 'group', name.toLowerCase()],
+          command: () => {
+            try {
+              const tabToMove = gBrowser.selectedTab;
+              if (!tabToMove) return;
+              // Re-fetch folder by ID to avoid stale DOM references
+              const targetFolder = document.getElementById(folderId);
+              if (!targetFolder) { log(`Folder not found: ${folderId}`); return; }
+
+              // Handle cross-workspace moves
+              const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+              if (targetWorkspaceId && window.gZenWorkspaces) {
+                const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
+                if (currentWorkspaceId !== targetWorkspaceId) {
+                  window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
+                }
+              }
+
+              // Pin tab if not already pinned (Zen folders require pinned tabs)
+              if (!tabToMove.pinned) {
+                gBrowser.pinTab(tabToMove);
+              }
+
+              targetFolder.addTabs([tabToMove]);
+              log(`Added tab to folder: ${name}`);
+            } catch(e) { log(`Add to folder failed: ${e}`); }
+          },
+        });
+      }
+    } catch (e) { log(`Error generating folder commands: ${e}`); }
+
+    return commands;
+  }
+
+  // Get all available commands (static + dynamic)
+  function getAllCommands() {
+    const statics = getStaticCommands();
+    const dynamics = getDynamicCommands();
+    const all = [...statics, ...dynamics];
+    // Filter by condition
+    return all.filter(cmd => !cmd.condition || cmd.condition());
+  }
+
+  // Filter commands by query using fuzzy match
+  function calculateCommandRecencyMultiplier(cmdKey) {
+    const lastUsed = commandRecency.get(cmdKey);
+    if (!lastUsed) return 1.0; // No recency data, neutral
+    const ageMs = Math.max(0, Date.now() - lastUsed);
+    const ageMinutes = ageMs / (1000 * 60);
+    // Aggressive recency: floor=0.8, range=2.2, halflife=30 minutes
+    // Recently used commands get up to 3.0x boost
+    return 0.8 + 2.2 * Math.exp(-ageMinutes / 30);
+  }
+
+  function filterCommands(query) {
+    const all = getAllCommands();
+
+    if (!query || query.trim() === '') {
+      // No query: sort by recency, then alphabetical
+      const sorted = [...all];
+      sorted.sort((a, b) => {
+        const aRecency = commandRecency.get(a.key) || 0;
+        const bRecency = commandRecency.get(b.key) || 0;
+        if (aRecency !== bRecency) return bRecency - aRecency; // Most recent first
+        return a.label.localeCompare(b.label);
+      });
+      return sorted;
+    }
+
+    // Multi-word fuzzy match: split query into words, ALL must match in label+tags
+    const words = query.trim().split(/\s+/).filter(w => w.length > 0);
+    const results = [];
+
+    for (const cmd of all) {
+      const searchTarget = `${cmd.label} ${(cmd.tags || []).join(' ')}`;
+      let totalScore = 0;
+      let allIndices = [];
+      let allMatched = true;
+
+      for (const word of words) {
+        const match = fuzzyMatchSingle(word.toLowerCase(), searchTarget.toLowerCase());
+        if (!match) {
+          allMatched = false;
+          break;
+        }
+        totalScore += match.score;
+        // Only collect indices that fall within the label (for highlighting)
+        const labelLen = cmd.label.length;
+        allIndices.push(...match.indices.filter(i => i < labelLen));
+      }
+
+      if (!allMatched) continue;
+
+      // Bonus for more words matched
+      totalScore += words.length * 5;
+
+      // Apply recency multiplier
+      const recencyMult = calculateCommandRecencyMultiplier(cmd.key);
+      totalScore *= recencyMult;
+
+      results.push({
+        ...cmd,
+        score: totalScore,
+        labelIndices: [...new Set(allIndices)].sort((a, b) => a - b),
+      });
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    return results;
+  }
+
+  // Execute a command or enter its sub-flow
+  function executeCommand(cmd) {
+    // Track recency for all commands (including sub-flow commands)
+    commandRecency.set(cmd.key, Date.now());
+
+    if (cmd.subFlow) {
+      enterSubFlow(cmd.subFlow, cmd.label);
+      return;
+    }
+    if (typeof cmd.command === 'function') {
+      exitSearchMode();
+      try {
+        cmd.command();
+        log(`Executed command: ${cmd.key}`);
+      } catch (e) {
+        log(`Command failed: ${cmd.key}: ${e}`);
+      }
+    }
+  }
+
+  // ============================================
+  // COMMAND SUB-FLOW SYSTEM
+  // ============================================
+
+  function enterSubFlow(type, label) {
+    commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery });
+    commandSubFlow = { type, label, data: null };
+    commandQuery = '';
+    // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
+    if (type === 'tab-search' || type === 'split-tab-picker') {
+      commandMatchedTabs = [];
+    }
+    searchSelectedIndex = 0;
+    searchCursorPos = 0;
+
+    // Always enter insert mode when entering a sub-flow
+    searchVimMode = 'insert';
+
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.placeholder = getSubFlowPlaceholder(type);
+    }
+    renderCommandResults();
+    updateBreadcrumb();
+    updateSearchVimIndicator();
+  }
+
+  function exitSubFlow() {
+    searchSelectedIndex = 0;
+    const currentType = commandSubFlow?.type;
+
+    if (commandSubFlowStack.length === 0) {
+      // Back to command list root
+      commandSubFlow = null;
+      commandQuery = '';
+      commandMatchedTabs = [];
+      if (searchInput) {
+        searchInput.value = '';
+        searchInput.placeholder = 'Type a command...';
+      }
+      renderCommandResults();
+      updateBreadcrumb();
+      updateSearchHintBar();
+      return;
+    }
+    const prev = commandSubFlowStack.pop();
+    if (prev.type === 'commands') {
+      commandSubFlow = null;
+      commandQuery = prev.query || '';
+    } else {
+      commandSubFlow = { type: prev.type, label: prev.label, data: null };
+      commandQuery = prev.query || '';
+    }
+    // Only clear matched tabs when going back to tab-search or to root
+    // Preserve them when going back to action-picker (needs the count)
+    if (!commandSubFlow || commandSubFlow.type === 'tab-search') {
+      commandMatchedTabs = [];
+    }
+    if (searchInput) {
+      searchInput.value = commandQuery;
+      searchInput.placeholder = commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...';
+    }
+    renderCommandResults();
+    updateBreadcrumb();
+    updateSearchHintBar();
+  }
+
+  function getSubFlowPlaceholder(type) {
+    switch (type) {
+      case 'tab-search': return 'Search tabs to select...';
+      case 'action-picker': return 'Choose an action...';
+      case 'workspace-picker': return 'Choose a workspace...';
+      case 'folder-picker': return 'Choose a folder...';
+      case 'split-tab-picker': return 'Search for a tab to split with...';
+      case 'folder-name-input': return 'Enter folder name...';
+      default: return 'Type a command...';
+    }
+  }
+
+  function updateBreadcrumb() {
+    if (!searchBreadcrumb) return;
+    if (!commandMode) {
+      searchBreadcrumb.style.display = 'none';
+      return;
+    }
+    const parts = [];
+    for (const item of commandSubFlowStack) {
+      if (item.label && item.type !== 'commands') parts.push(item.label);
+    }
+    if (commandSubFlow) parts.push(commandSubFlow.label);
+
+    if (parts.length === 0) {
+      searchBreadcrumb.style.display = 'none';
+    } else {
+      searchBreadcrumb.style.display = 'flex';
+      searchBreadcrumb.innerHTML = parts.map(p => `<span class="zenleap-breadcrumb-item">${escapeHtml(p)}</span>`).join('<span class="zenleap-breadcrumb-sep">›</span>');
+    }
+  }
+
+  // Get sub-flow results based on type
+  function getSubFlowResults() {
+    if (!commandSubFlow) return [];
+    const query = commandQuery;
+
+    switch (commandSubFlow.type) {
+      case 'tab-search':
+        return getTabSearchSubFlowResults(query);
+      case 'action-picker':
+        return getActionPickerResults(query);
+      case 'workspace-picker':
+        return getWorkspacePickerResults(query);
+      case 'folder-picker':
+        return getFolderPickerResults(query);
+      case 'split-tab-picker':
+        return getSplitTabPickerResults(query);
+      case 'folder-name-input':
+        return getFolderNameInputResults(query);
+      default:
+        return [];
+    }
+  }
+
+  function getFolderNameInputResults(query) {
+    const name = (query || '').trim();
+    if (!name) {
+      return [{ key: 'folder-name:prompt', label: 'Type a name for the new folder and press Enter', icon: '📁', tags: [] }];
+    }
+    return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
+  }
+
+  function getTabSearchSubFlowResults(query) {
+    // Search tabs including current tab (for batch selection)
+    const results = searchTabs(query, { includeCurrent: true });
+    commandMatchedTabs = results.map(r => r.tab);
+    return results.map(r => ({
+      key: `matched-tab:${r.tab._tPos}`,
+      label: r.tab.label || 'Untitled',
+      sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
+      icon: '☑',
+      isTab: true,
+      tab: r.tab,
+      titleIndices: r.titleIndices,
+      urlIndices: r.urlIndices,
+    }));
+  }
+
+  function getActionPickerResults(query) {
+    const count = commandMatchedTabs.length;
+    const actions = [
+      { key: 'action:browse-select', label: `Select ${count} tabs in Browse Mode`, icon: '👁', tags: ['select', 'browse'] },
+      { key: 'action:close-all', label: `Close ${count} matching tabs`, icon: '✕', tags: ['close', 'delete', 'remove'] },
+      { key: 'action:move-workspace', label: `Move ${count} tabs to workspace...`, icon: '🗂', tags: ['move', 'workspace'], subFlow: 'workspace-picker' },
+      { key: 'action:add-folder', label: `Add ${count} tabs to folder...`, icon: '📂', tags: ['folder', 'add', 'group'], subFlow: 'folder-picker' },
+      { key: 'action:move-to-top', label: `Move ${count} tabs to top`, icon: '⤒', tags: ['move', 'top', 'first', 'beginning'] },
+      { key: 'action:move-to-bottom', label: `Move ${count} tabs to bottom`, icon: '⤓', tags: ['move', 'bottom', 'last', 'end'] },
+    ];
+    if (!query) return actions;
+    return actions.filter(a => {
+      const target = `${a.label} ${(a.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getWorkspacePickerResults(query) {
+    const results = [];
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        if (workspaces && Array.isArray(workspaces)) {
+          for (const ws of workspaces) {
+            const name = ws.name || 'Unnamed';
+            results.push({
+              key: `ws:${ws.uuid}`,
+              label: name,
+              icon: ws.icon || '🗂',
+              tags: ['workspace', name.toLowerCase()],
+              workspaceId: ws.uuid,
+            });
+          }
+        }
+      }
+    } catch (e) { log(`Error getting workspaces: ${e}`); }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getFolderPickerResults(query) {
+    const results = [];
+    try {
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        results.push({
+          key: `folder:${folder.id}`,
+          label: name,
+          icon: '📂',
+          tags: ['folder', name.toLowerCase()],
+          folder: folder,
+        });
+      }
+    } catch (e) { log(`Error getting folders: ${e}`); }
+    results.push({ key: 'folder:new', label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getSplitTabPickerResults(query) {
+    // Reuse tab search for split view picker
+    const results = searchTabs(query);
+    return results.map(r => ({
+      key: `split-tab:${r.tab._tPos}`,
+      label: r.tab.label || 'Untitled',
+      sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
+      icon: '◫',
+      isTab: true,
+      tab: r.tab,
+      titleIndices: r.titleIndices,
+      urlIndices: r.urlIndices,
+    }));
+  }
+
+  // Handle sub-flow selection (Enter on a result)
+  function handleSubFlowSelect(result) {
+    if (!commandSubFlow) return;
+
+    switch (commandSubFlow.type) {
+      case 'tab-search':
+        // Move to action picker
+        enterSubFlow('action-picker', `${commandMatchedTabs.length} tabs`);
+        break;
+
+      case 'action-picker':
+        if (result.subFlow) {
+          enterSubFlow(result.subFlow, result.label);
+        } else if (result.key === 'action:browse-select') {
+          selectTabsInBrowseMode(commandMatchedTabs);
+        } else if (result.key === 'action:close-all') {
+          closeMatchedTabs(commandMatchedTabs);
+        } else if (result.key === 'action:move-to-top') {
+          moveMatchedTabsToPosition(commandMatchedTabs, 'top');
+        } else if (result.key === 'action:move-to-bottom') {
+          moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
+        }
+        break;
+
+      case 'workspace-picker':
+        moveTabsToWorkspace(commandMatchedTabs, result.workspaceId);
+        break;
+
+      case 'folder-picker':
+        if (result.key === 'folder:new') {
+          // Enter name input sub-flow instead of using Zen's broken rename UI
+          enterSubFlow('folder-name-input', 'Name new folder');
+        } else {
+          addTabsToFolder(commandMatchedTabs, result);
+        }
+        break;
+
+      case 'folder-name-input': {
+        const folderName = (commandQuery || '').trim();
+        if (folderName) {
+          createFolderWithName(commandMatchedTabs, folderName);
+        }
+        break;
+      }
+
+      case 'split-tab-picker':
+        splitWithTab(result.tab);
+        break;
+    }
+  }
+
+  // Action executors for sub-flows
+  function selectTabsInBrowseMode(tabs) {
+    exitSearchMode();
+    setTimeout(() => {
+      enterLeapMode();
+      // Enter browse mode at the first matched tab
+      const visibleTabs = getVisibleTabs();
+      const firstMatchIdx = tabs.length > 0 ? visibleTabs.indexOf(tabs[0]) : -1;
+
+      browseMode = true;
+      browseDirection = 'down';
+      const currentTab = gBrowser.selectedTab;
+      const currentIdx = visibleTabs.indexOf(currentTab);
+      originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
+      originalTab = currentTab;
+      highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
+
+      // Pre-select the matched tabs
+      selectedTabs.clear();
+      for (const t of tabs) {
+        if (t && !t.closing && t.parentNode) selectedTabs.add(t);
+      }
+
+      updateHighlight();
+      updateLeapOverlayState();
+      log(`Browse mode with ${selectedTabs.size} pre-selected tabs`);
+    }, 100);
+  }
+
+  function closeMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const count = validTabs.length;
+    for (const t of validTabs) gBrowser.removeTab(t);
+    log(`Closed ${count} matching tabs`);
+    exitSearchMode();
+  }
+
+  function moveMatchedTabsToPosition(tabs, position) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    if (validTabs.length === 0) { exitSearchMode(); return; }
+
+    // Sort tabs by their current sidebar position to preserve relative order
+    const visibleTabs = getVisibleTabs();
+    const positionMap = new Map();
+    visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
+    const sortedTabs = [...validTabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
+
+    const sortedSet = new Set(sortedTabs);
+    try {
+      if (position === 'top') {
+        // Find the first non-pinned, non-essential tab that is NOT being moved
+        const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t));
+        if (anchor && sortedTabs.length > 0) {
+          // Move first tab before the anchor, then chain each subsequent tab after the previous
+          // This guarantees the order: sorted[0], sorted[1], ..., anchor
+          gBrowser.moveTabBefore(sortedTabs[0], anchor);
+          for (let i = 1; i < sortedTabs.length; i++) {
+            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
+          }
+        } else if (sortedTabs.length > 1) {
+          // All regular tabs are being moved — chain them in order starting from the first
+          const firstRegular = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
+          if (firstRegular) {
+            gBrowser.moveTabBefore(sortedTabs[0], firstRegular);
+            for (let i = 1; i < sortedTabs.length; i++) {
+              gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
+            }
+          }
+        }
+      } else {
+        // Move to bottom - chain each tab after the previous, starting after the last visible tab
+        if (sortedTabs.length > 0) {
+          const lastVisible = getVisibleTabs();
+          const lastTab = lastVisible[lastVisible.length - 1];
+          if (lastTab && lastTab !== sortedTabs[0]) {
+            gBrowser.moveTabAfter(sortedTabs[0], lastTab);
+          }
+          for (let i = 1; i < sortedTabs.length; i++) {
+            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
+          }
+        }
+      }
+      log(`Moved ${sortedTabs.length} tabs to ${position}`);
+    } catch (e) { log(`Move to ${position} failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function moveTabsToWorkspace(tabs, workspaceId) {
+    try {
+      for (const t of tabs) {
+        if (t && !t.closing && t.parentNode) {
+          window.gZenWorkspaces.moveTabToWorkspace(t, workspaceId);
+        }
+      }
+      log(`Moved ${tabs.length} tabs to workspace ${workspaceId}`);
+    } catch (e) { log(`Move to workspace failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function addTabsToFolder(tabs, folderResult) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    if (validTabs.length === 0) { exitSearchMode(); return; }
+
+    try {
+      // Re-fetch folder by ID to avoid stale DOM references
+      const targetFolder = folderResult.folder ?
+        document.getElementById(folderResult.folder.id) : null;
+      if (!targetFolder) { log('Target folder not found'); exitSearchMode(); return; }
+
+      // Handle workspace and pin for each tab
+      const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+      for (const t of validTabs) {
+        if (targetWorkspaceId && window.gZenWorkspaces) {
+          const currentWsId = t.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
+          if (currentWsId !== targetWorkspaceId) {
+            window.gZenWorkspaces.moveTabToWorkspace(t, targetWorkspaceId);
+          }
+        }
+        if (!t.pinned) gBrowser.pinTab(t);
+      }
+      targetFolder.addTabs(validTabs);
+      log(`Added ${validTabs.length} tabs to folder: ${targetFolder.label}`);
+    } catch (e) { log(`Add to folder failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function createFolderWithName(tabs, folderName) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    if (validTabs.length === 0) { exitSearchMode(); return; }
+
+    try {
+      if (!window.gZenFolders) {
+        log('gZenFolders not available');
+        exitSearchMode();
+        return;
+      }
+      // gZenFolders.createFolder handles pinning tabs internally
+      gZenFolders.createFolder(validTabs, {
+        label: folderName,
+        renameFolder: false,
+      });
+      log(`Created folder "${folderName}" with ${validTabs.length} tabs`);
+    } catch (e) { log(`Create folder with name failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function splitWithTab(tab) {
+    try {
+      if (window.gZenViewSplitter && tab) {
+        window.gZenViewSplitter.splitTabs([gBrowser.selectedTab, tab]);
+        log(`Split view with tab: ${tab.label}`);
+      }
+    } catch (e) { log(`Split failed: ${e}`); }
+    exitSearchMode();
   }
 
   // Render search results
@@ -974,9 +1928,196 @@
     }
   }
 
+  // Render command palette results
+  function renderCommandResults() {
+    if (!searchResultsList) return;
+
+    let results;
+    if (commandSubFlow) {
+      results = getSubFlowResults();
+    } else {
+      results = filterCommands(commandQuery);
+    }
+    commandResults = results;
+
+    if (results.length === 0) {
+      const emptyMsg = commandSubFlow ? 'No results found' : 'No matching commands';
+      searchResultsList.innerHTML = `<div class="zenleap-search-empty">${emptyMsg}</div>`;
+      updateSearchHintBar();
+      return;
+    }
+
+    // Clamp selected index
+    if (searchSelectedIndex >= results.length) searchSelectedIndex = results.length - 1;
+    if (searchSelectedIndex < 0) searchSelectedIndex = 0;
+
+    let html = '';
+
+    // Show tab count for tab-search sub-flow
+    if (commandSubFlow?.type === 'tab-search' && commandQuery) {
+      html += `<div class="zenleap-command-count">${commandMatchedTabs.length} tab${commandMatchedTabs.length !== 1 ? 's' : ''} match${commandMatchedTabs.length === 1 ? 'es' : ''} — press Enter to choose action</div>`;
+    }
+
+    results.forEach((cmd, idx) => {
+      const isSelected = idx === searchSelectedIndex;
+      const label = idx < 9 ? idx + 1 : '';
+
+      if (cmd.isTab) {
+        // Tab result (for sub-flows like tab-search, split-tab-picker)
+        const title = cmd.label || 'Untitled';
+        const url = cmd.sublabel || '';
+        let favicon = cmd.tab?.image;
+        if (!favicon || typeof favicon !== 'string' || favicon.trim() === '') {
+          favicon = 'chrome://branding/content/icon32.png';
+        }
+        const highlightedTitle = highlightMatches(title, cmd.titleIndices);
+        const highlightedUrl = highlightMatches(url, cmd.urlIndices);
+
+        html += `
+          <div class="zenleap-command-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
+            <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
+            <div class="zenleap-command-info">
+              <div class="zenleap-command-label">${highlightedTitle}</div>
+              <div class="zenleap-command-sublabel">${highlightedUrl}</div>
+            </div>
+            ${label ? `<span class="zenleap-command-result-label">${label}</span>` : ''}
+          </div>`;
+      } else {
+        // Command result
+        const highlightedLabel = cmd.labelIndices ? highlightMatches(cmd.label, cmd.labelIndices) : escapeHtml(cmd.label);
+        const hasArrow = cmd.subFlow ? ' →' : '';
+
+        html += `
+          <div class="zenleap-command-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
+            <div class="zenleap-command-icon">${cmd.icon || '⚡'}</div>
+            <div class="zenleap-command-info">
+              <div class="zenleap-command-label">${highlightedLabel}${hasArrow}</div>
+              ${cmd.sublabel ? `<div class="zenleap-command-sublabel">${escapeHtml(cmd.sublabel)}</div>` : ''}
+            </div>
+            ${label ? `<span class="zenleap-command-result-label">${label}</span>` : ''}
+          </div>`;
+      }
+    });
+
+    searchResultsList.innerHTML = html;
+    updateSearchHintBar();
+
+    // Add click handlers and favicon error handlers
+    searchResultsList.querySelectorAll('.zenleap-command-result').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.index);
+        searchSelectedIndex = idx;
+        handleCommandSelect();
+      });
+      const img = el.querySelector('.zenleap-search-result-favicon');
+      if (img) {
+        img.addEventListener('error', () => { img.src = 'chrome://branding/content/icon32.png'; });
+      }
+    });
+
+    // Scroll selected into view
+    const selectedEl = searchResultsList.querySelector('.zenleap-command-result.selected');
+    if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  // Handle selecting a command result (Enter or click)
+  function handleCommandSelect() {
+    if (commandResults.length === 0) return;
+    if (searchSelectedIndex < 0 || searchSelectedIndex >= commandResults.length) return;
+
+    const result = commandResults[searchSelectedIndex];
+
+    if (commandSubFlow) {
+      handleSubFlowSelect(result);
+    } else {
+      executeCommand(result);
+    }
+  }
+
+  // Enter command mode
+  function enterCommandMode() {
+    commandMode = true;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    searchSelectedIndex = 0;
+
+    // Force insert mode so input is visible and focusable
+    searchVimMode = 'insert';
+
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.placeholder = 'Type a command...';
+    }
+
+    // Update icon to show > prefix
+    const icon = document.getElementById('zenleap-search-icon');
+    if (icon) {
+      icon.textContent = '>';
+      icon.classList.add('zenleap-command-prefix');
+    }
+
+    updateBreadcrumb();
+    renderCommandResults();
+    updateSearchVimIndicator();
+    log('Entered command mode');
+  }
+
+  // Exit command mode (back to search)
+  function exitCommandMode() {
+    commandMode = false;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    commandResults = [];
+    searchSelectedIndex = 0;
+
+    // Restore to insert mode for normal search
+    searchVimMode = 'insert';
+
+    if (searchInput) {
+      searchInput.value = '';
+      searchInput.placeholder = 'Search tabs...';
+    }
+
+    // Restore search icon
+    const icon = document.getElementById('zenleap-search-icon');
+    if (icon) {
+      icon.textContent = '🔍';
+      icon.classList.remove('zenleap-command-prefix');
+    }
+
+    if (searchBreadcrumb) searchBreadcrumb.style.display = 'none';
+
+    renderSearchResults();
+    updateSearchVimIndicator();
+    log('Exited command mode');
+  }
+
   // Update the hint bar content based on current mode
   function updateSearchHintBar() {
     if (!searchHintBar) return;
+
+    if (commandMode) {
+      if (searchVimMode === 'normal') {
+        searchHintBar.innerHTML = `
+          <span><kbd>j/k</kbd> navigate</span>
+          <span><kbd>1-9</kbd> jump</span>
+          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
+          <span><kbd>i</kbd> insert</span>
+          <span><kbd>Esc</kbd> ${commandSubFlow ? 'back' : 'exit'}</span>
+        `;
+      } else {
+        searchHintBar.innerHTML = `
+          <span><kbd>↑↓</kbd> navigate</span>
+          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
+          <span><kbd>Esc</kbd> normal mode</span>
+        `;
+      }
+      return;
+    }
 
     if (searchVimMode === 'normal') {
       searchHintBar.innerHTML = `
@@ -991,6 +2132,7 @@
         <span><kbd>↑↓</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
         <span><kbd>Ctrl+x</kbd> close tab</span>
+        <span><kbd>></kbd> commands</span>
         <span><kbd>Esc</kbd> normal mode</span>
       `;
     }
@@ -1344,7 +2486,7 @@
   }
 
   // Enter search mode
-  function enterSearchMode() {
+  function enterSearchMode(asCommand = false) {
     if (searchMode) return;
 
     // Exit leap mode if active
@@ -1361,20 +2503,33 @@
     searchVimMode = 'insert';
     searchCursorPos = 0;
 
+    // Reset command state
+    commandMode = false;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    commandResults = [];
+
     // Reset input value
     searchInput.value = '';
 
     // Show modal
     searchModal.classList.add('active');
 
-    // Render results (shows all tabs when query is empty)
-    renderSearchResults();
+    if (asCommand) {
+      // Enter command mode directly
+      enterCommandMode();
+    } else {
+      // Render results (shows all tabs when query is empty)
+      renderSearchResults();
+    }
 
     // Use updateSearchVimIndicator to properly set up input/display visibility
     // This ensures input is shown and display is hidden for insert mode
     updateSearchVimIndicator();
 
-    log('Entered search mode');
+    log(`Entered search mode${asCommand ? ' (command)' : ''}`);
   }
 
   // Exit search mode
@@ -1387,9 +2542,26 @@
     // Reset vim mode to insert for next time
     searchVimMode = 'insert';
 
+    // Reset command state
+    commandMode = false;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    commandResults = [];
+
+    // Restore search icon and placeholder
+    const icon = document.getElementById('zenleap-search-icon');
+    if (icon) {
+      icon.textContent = '🔍';
+      icon.classList.remove('zenleap-command-prefix');
+    }
+    if (searchBreadcrumb) searchBreadcrumb.style.display = 'none';
+
     // Ensure input is visible and display is hidden for next open
     if (searchInput) {
       searchInput.style.display = '';
+      searchInput.placeholder = 'Search tabs...';
       searchInput.blur();
     }
     if (searchInputDisplay) {
@@ -1452,15 +2624,20 @@
 
   // Move search selection
   function moveSearchSelection(direction) {
-    if (searchResults.length === 0) return;
+    const results = commandMode ? commandResults : searchResults;
+    if (results.length === 0) return;
 
     if (direction === 'down') {
-      searchSelectedIndex = (searchSelectedIndex + 1) % searchResults.length;
+      searchSelectedIndex = (searchSelectedIndex + 1) % results.length;
     } else {
-      searchSelectedIndex = (searchSelectedIndex - 1 + searchResults.length) % searchResults.length;
+      searchSelectedIndex = (searchSelectedIndex - 1 + results.length) % results.length;
     }
 
-    renderSearchResults();
+    if (commandMode) {
+      renderCommandResults();
+    } else {
+      renderSearchResults();
+    }
   }
 
   // Update search vim indicator and handle focus/display based on mode
@@ -1468,7 +2645,7 @@
     if (!searchVimIndicator) return;
 
     if (searchVimMode === 'insert') {
-      searchVimIndicator.textContent = 'INSERT';
+      searchVimIndicator.textContent = commandMode ? 'COMMAND I' : 'INSERT';
       searchVimIndicator.classList.remove('normal');
 
       // Show input, hide display
@@ -1477,6 +2654,10 @@
       }
       if (searchInput) {
         searchInput.style.display = '';
+        // Sync input value when returning to insert mode from normal mode
+        if (commandMode) {
+          searchInput.value = commandQuery;
+        }
 
         // Focus with retry mechanism (max 30 attempts ~500ms)
         let focusRetries = 0;
@@ -1499,7 +2680,7 @@
         requestAnimationFrame(focusInput);
       }
     } else {
-      searchVimIndicator.textContent = 'NORMAL';
+      searchVimIndicator.textContent = commandMode ? 'COMMAND N' : 'NORMAL';
       searchVimIndicator.classList.add('normal');
 
       // Hide input, show display with block cursor
@@ -1520,6 +2701,85 @@
   // Handle search mode keyboard input
   function handleSearchKeyDown(event) {
     const key = event.key;
+
+    // ---- COMMAND MODE HANDLING ----
+    if (commandMode) {
+      // Navigation keys (work in both insert and normal)
+      if ((event.ctrlKey && key === 'j') || key === 'ArrowDown') {
+        event.preventDefault();
+        event.stopPropagation();
+        moveSearchSelection('down');
+        return true;
+      }
+      if ((event.ctrlKey && key === 'k') || key === 'ArrowUp') {
+        event.preventDefault();
+        event.stopPropagation();
+        moveSearchSelection('up');
+        return true;
+      }
+
+      // Enter to execute/select (both modes)
+      if (key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCommandSelect();
+        return true;
+      }
+
+      // Tab key (both modes)
+      if (key === 'Tab') {
+        event.preventDefault();
+        event.stopPropagation();
+        handleCommandSelect();
+        return true;
+      }
+
+      // Escape handling: insert → normal → back/exit
+      if (key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (searchVimMode === 'insert') {
+          // Switch to normal mode
+          searchCursorPos = searchInput?.selectionStart || 0;
+          searchVimMode = 'normal';
+          updateSearchVimIndicator();
+        } else {
+          // In normal mode: go back or exit
+          if (commandSubFlow) {
+            exitSubFlow();
+            // Re-enter insert mode for the previous sub-flow
+            searchVimMode = 'insert';
+            updateSearchVimIndicator();
+          } else {
+            exitCommandMode();
+          }
+        }
+        return true;
+      }
+
+      // ---- COMMAND NORMAL MODE ----
+      if (searchVimMode === 'normal') {
+        event.preventDefault();
+        event.stopPropagation();
+
+        handleCommandVimNormalMode(key, event);
+        return true;
+      }
+
+      // ---- COMMAND INSERT MODE ----
+      // Backspace when input is empty and no sub-flow: exit command mode
+      if (key === 'Backspace' && (searchInput?.value || '') === '' && !commandSubFlow) {
+        event.preventDefault();
+        event.stopPropagation();
+        exitCommandMode();
+        return true;
+      }
+
+      // Let all other keys pass through to input for typing
+      return false;
+    }
+
+    // ---- NORMAL SEARCH MODE HANDLING ----
 
     // Navigation keys work in both modes
     if ((event.ctrlKey && key === 'j') || key === 'ArrowDown') {
@@ -1729,6 +2989,165 @@
     }
   }
 
+  // Handle vim normal mode commands in command bar
+  function handleCommandVimNormalMode(key, event) {
+    const text = commandQuery || '';
+    const len = text.length;
+
+    // Quick jump with numbers 1-9
+    if (key >= '1' && key <= '9') {
+      const idx = parseInt(key) - 1;
+      if (idx < commandResults.length) {
+        searchSelectedIndex = idx;
+        handleCommandSelect();
+      }
+      return;
+    }
+
+    // Result navigation with j/k
+    if (key === 'j') { moveSearchSelection('down'); return; }
+    if (key === 'k') { moveSearchSelection('up'); return; }
+
+    // G to go to last result, g to first
+    if (key === 'G') {
+      if (commandResults.length > 0) {
+        searchSelectedIndex = commandResults.length - 1;
+        renderCommandResults();
+      }
+      return;
+    }
+    if (key === 'g') {
+      searchSelectedIndex = 0;
+      renderCommandResults();
+      return;
+    }
+
+    // Cursor movement commands
+    switch (key) {
+      case 'h': // Left
+        searchCursorPos = Math.max(0, searchCursorPos - 1);
+        renderSearchDisplay();
+        break;
+
+      case 'l': // Right
+        searchCursorPos = Math.min(len > 0 ? len - 1 : 0, searchCursorPos + 1);
+        renderSearchDisplay();
+        break;
+
+      case '0': // Beginning of line
+        searchCursorPos = 0;
+        renderSearchDisplay();
+        break;
+
+      case '$': // End of line
+        searchCursorPos = Math.max(0, len - 1);
+        renderSearchDisplay();
+        break;
+
+      case 'w': // Word forward
+        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'forward');
+        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
+        renderSearchDisplay();
+        break;
+
+      case 'b': // Word backward
+        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'backward');
+        renderSearchDisplay();
+        break;
+
+      case 'e': // End of word
+        searchCursorPos = findWordEnd(text, searchCursorPos);
+        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
+        renderSearchDisplay();
+        break;
+
+      // Insert mode switches
+      case 'i':
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'a': // Insert after cursor
+        searchCursorPos = Math.min(len, searchCursorPos + 1);
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'I': // Insert at beginning
+        searchCursorPos = 0;
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'A': // Insert at end
+        searchCursorPos = len;
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      // Editing commands
+      case 'x': // Delete character at cursor
+        if (searchCursorPos < len) {
+          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          if (searchInput) searchInput.value = commandQuery;
+          if (searchCursorPos >= commandQuery.length && commandQuery.length > 0) {
+            searchCursorPos = commandQuery.length - 1;
+          }
+          renderCommandResults();
+          renderSearchDisplay();
+        }
+        break;
+
+      case 's': // Substitute (delete char and enter insert)
+        if (searchCursorPos < len) {
+          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          if (searchInput) searchInput.value = commandQuery;
+          renderCommandResults();
+        }
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'S': // Substitute entire line
+        commandQuery = '';
+        if (searchInput) searchInput.value = '';
+        searchCursorPos = 0;
+        searchSelectedIndex = 0;
+        renderCommandResults();
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'D': // Delete to end of line
+        commandQuery = text.slice(0, searchCursorPos);
+        if (searchInput) searchInput.value = commandQuery;
+        if (searchCursorPos > 0) searchCursorPos = commandQuery.length > 0 ? commandQuery.length - 1 : 0;
+        renderCommandResults();
+        renderSearchDisplay();
+        break;
+
+      case 'C': // Change to end of line (delete to end + insert mode)
+        commandQuery = text.slice(0, searchCursorPos);
+        if (searchInput) searchInput.value = commandQuery;
+        renderCommandResults();
+        searchVimMode = 'insert';
+        updateSearchVimIndicator();
+        break;
+
+      case 'd': // Delete character (like x for simplicity)
+        if (searchCursorPos < len) {
+          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
+          if (searchInput) searchInput.value = commandQuery;
+          if (searchCursorPos >= commandQuery.length && commandQuery.length > 0) {
+            searchCursorPos = commandQuery.length - 1;
+          }
+          renderCommandResults();
+          renderSearchDisplay();
+        }
+        break;
+    }
+  }
+
   // Find next word boundary
   function findNextWordBoundary(text, pos, direction) {
     const len = text.length;
@@ -1774,12 +3193,15 @@
   function renderSearchDisplay() {
     if (!searchInputDisplay) return;
 
-    const text = searchQuery;
+    const text = commandMode ? commandQuery : searchQuery;
     const pos = searchCursorPos;
+    const placeholder = commandMode
+      ? (commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...')
+      : 'Search tabs...';
 
     if (text.length === 0) {
       // Empty - show placeholder with cursor
-      searchInputDisplay.innerHTML = '<span class="cursor-empty"></span><span class="placeholder">Search tabs...</span>';
+      searchInputDisplay.innerHTML = `<span class="cursor-empty"></span><span class="placeholder">${placeholder}</span>`;
       return;
     }
 
@@ -1799,7 +3221,24 @@
 
   // Handle search input changes
   function handleSearchInput(event) {
-    searchQuery = searchInput.value;
+    const value = searchInput.value;
+
+    if (commandMode) {
+      // In command mode, update command query and re-render
+      commandQuery = value;
+      searchSelectedIndex = 0;
+      renderCommandResults();
+      return;
+    }
+
+    // Detect > prefix to enter command mode
+    if (value === '>') {
+      searchInput.value = '';
+      enterCommandMode();
+      return;
+    }
+
+    searchQuery = value;
     searchCursorPos = searchInput.selectionStart;
     searchSelectedIndex = 0; // Reset selection on query change
     renderSearchResults();
@@ -2757,6 +4196,14 @@
       return;
     }
 
+    // Check for command mode trigger: Ctrl+Shift+/
+    if (event.ctrlKey && event.shiftKey && (event.key === '?' || event.key === '/')) {
+      event.preventDefault();
+      event.stopPropagation();
+      enterSearchMode(true);
+      return;
+    }
+
     // Check for search trigger: Ctrl+/
     if (event.ctrlKey && event.key === '/') {
       event.preventDefault();
@@ -2819,11 +4266,41 @@
       event.stopPropagation();
 
       if (key === 'j' || key === 'arrowdown') {
-        moveHighlight('down');
+        if (event.shiftKey) {
+          // Shift+J: select current tab, move down, select new tab
+          const tabs = getVisibleTabs();
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+            selectedTabs.add(tabs[highlightedTabIndex]);
+          }
+          moveHighlight('down');
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+            selectedTabs.add(tabs[highlightedTabIndex]);
+          }
+          updateHighlight();
+          updateLeapOverlayState();
+          log(`Shift+J: navigate+select (${selectedTabs.size} total)`);
+        } else {
+          moveHighlight('down');
+        }
         return;
       }
       if (key === 'k' || key === 'arrowup') {
-        moveHighlight('up');
+        if (event.shiftKey) {
+          // Shift+K: select current tab, move up, select new tab
+          const tabs = getVisibleTabs();
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+            selectedTabs.add(tabs[highlightedTabIndex]);
+          }
+          moveHighlight('up');
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+            selectedTabs.add(tabs[highlightedTabIndex]);
+          }
+          updateHighlight();
+          updateLeapOverlayState();
+          log(`Shift+K: navigate+select (${selectedTabs.size} total)`);
+        } else {
+          moveHighlight('up');
+        }
         return;
       }
       if (key === 'enter') {
