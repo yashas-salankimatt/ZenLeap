@@ -3,13 +3,13 @@
 // @description    WebSocket server exposing browser control via MCP for AI agents
 // @include        main
 // @author         ZenLeap
-// @version        0.1.0
+// @version        0.3.0
 // ==/UserScript==
 
 (function() {
   'use strict';
 
-  const VERSION = '0.1.0';
+  const VERSION = '0.3.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'ZenLeap AI';
@@ -295,9 +295,15 @@
           header.push(126, (payload.length >> 8) & 0xFF, payload.length & 0xFF);
         } else {
           header.push(127);
-          for (let i = 7; i >= 0; i--) {
-            header.push((payload.length >> (i * 8)) & 0xFF);
-          }
+          // Upper 4 bytes always 0 (payloads < 4GB).
+          // Cannot use >> for shifts >= 32; JS bitwise ops are 32-bit.
+          header.push(0, 0, 0, 0);
+          header.push(
+            (payload.length >> 24) & 0xFF,
+            (payload.length >> 16) & 0xFF,
+            (payload.length >> 8) & 0xFF,
+            payload.length & 0xFF
+          );
         }
 
         const frame = new Uint8Array(header.length + payload.length);
@@ -333,9 +339,17 @@
     #writeBinary(uint8arr) {
       if (this.#closed) return;
       try {
-        const str = String.fromCharCode.apply(null, uint8arr);
-        log('writeBinary: ' + str.length + ' bytes');
-        this.#bos.writeBytes(str, str.length);
+        // Chunk to avoid stack overflow in String.fromCharCode.apply for large payloads (>64KB)
+        const CHUNK = 8192;
+        let written = 0;
+        while (written < uint8arr.length) {
+          const end = Math.min(written + CHUNK, uint8arr.length);
+          const slice = uint8arr.subarray(written, end);
+          const str = String.fromCharCode.apply(null, slice);
+          this.#bos.writeBytes(str, str.length);
+          written = end;
+        }
+        log('writeBinary: ' + uint8arr.length + ' bytes');
       } catch (e) {
         log('Error writing binary: ' + e + '\n' + e.stack);
         this.close();
@@ -387,11 +401,11 @@
       }
       try {
         log('Handling: ' + msg.method);
-        // Timeout protection — no command should take more than 15s
+        // Timeout protection — 30s to accommodate screenshot/DOM extraction
         const result = await Promise.race([
           handler(msg.params || {}),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Command timed out after 15s')), 15000)
+            setTimeout(() => reject(new Error('Command timed out after 30s')), 30000)
           )
         ]);
         log('Completed: ' + msg.method);
@@ -435,6 +449,99 @@
       }
     }
     return [...agentTabs];
+  }
+
+  // ============================================
+  // SCREENSHOT
+  // ============================================
+
+  const MAX_SCREENSHOT_WIDTH = 1568; // Claude's recommended max image width
+
+  async function screenshotTab(tab) {
+    const browser = tab.linkedBrowser;
+    const browsingContext = browser.browsingContext;
+    const wg = browsingContext?.currentWindowGlobal;
+
+    if (wg) {
+      try {
+        // drawSnapshot(rect, scale, bgColor) — null rect = full viewport
+        const bitmap = await wg.drawSnapshot(null, 1, 'white');
+        try {
+          const canvas = document.createElement('canvas');
+          // Resize to max width while maintaining aspect ratio
+          if (bitmap.width > MAX_SCREENSHOT_WIDTH) {
+            canvas.width = MAX_SCREENSHOT_WIDTH;
+            canvas.height = Math.round(bitmap.height * (MAX_SCREENSHOT_WIDTH / bitmap.width));
+          } else {
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+          }
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+          return { image: dataUrl, width: canvas.width, height: canvas.height };
+        } finally {
+          bitmap.close(); // Prevent memory leak
+        }
+      } catch (e) {
+        log('drawSnapshot failed, trying PageThumbs fallback: ' + e);
+      }
+    }
+
+    // Fallback: PageThumbs
+    try {
+      const { PageThumbs } = ChromeUtils.importESModule(
+        'resource://gre/modules/PageThumbs.sys.mjs'
+      );
+      const blob = await PageThumbs.captureToBlob(browser, {
+        fullScale: true,
+        fullViewport: true,
+      });
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+      });
+      return { image: dataUrl, width: null, height: null };
+    } catch (e2) {
+      throw new Error('Screenshot failed: drawSnapshot: ' + e2 + '; PageThumbs unavailable');
+    }
+  }
+
+  // ============================================
+  // ACTOR HELPERS
+  // ============================================
+
+  function getActorForTab(tabId) {
+    const tab = resolveTab(tabId);
+    if (!tab) throw new Error('Tab not found');
+    const browser = tab.linkedBrowser;
+    const wg = browser.browsingContext?.currentWindowGlobal;
+    if (!wg) throw new Error('Page not loaded (no currentWindowGlobal)');
+    try {
+      return wg.getActor('ZenLeapAgent');
+    } catch (e) {
+      log('getActor failed: ' + e + ' (url: ' + (browser.currentURI?.spec || '?') + ')');
+      throw new Error('Cannot access page content: ' + e.message);
+    }
+  }
+
+  // Interaction commands (click, key press, etc.) can trigger focus loss,
+  // navigation, or browsing-context changes that destroy the actor before
+  // the sendQuery response arrives. The action WAS dispatched — wrap with
+  // a fallback so the caller gets a success result.
+  async function actorInteraction(tabId, messageName, data, fallbackResult) {
+    const actor = getActorForTab(tabId);
+    try {
+      return await actor.sendQuery(messageName, data);
+    } catch (e) {
+      if (String(e).includes('destroyed') || String(e).includes('AbortError')) {
+        log(messageName + ': actor destroyed (action was dispatched)');
+        return fallbackResult || { success: true, note: 'Action dispatched (actor destroyed before confirmation)' };
+      }
+      throw e;
+    }
   }
 
   // ============================================
@@ -549,12 +656,125 @@
       };
     },
 
+    screenshot: async ({ tab_id }) => {
+      const tab = resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      return await screenshotTab(tab);
+    },
+
+    get_dom: async ({ tab_id }) => {
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:ExtractDOM');
+    },
+
+    get_page_text: async ({ tab_id }) => {
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:GetPageText');
+    },
+
+    get_page_html: async ({ tab_id }) => {
+      const actor = getActorForTab(tab_id);
+      return await actor.sendQuery('ZenLeapAgent:GetPageHTML');
+    },
+
+    // --- Interaction ---
+    click_element: async ({ tab_id, index }) => {
+      if (index === undefined || index === null) throw new Error('index is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickElement', { index });
+    },
+
+    click_coordinates: async ({ tab_id, x, y }) => {
+      if (x === undefined || y === undefined) throw new Error('x and y are required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickCoordinates', { x, y });
+    },
+
+    fill_field: async ({ tab_id, index, value }) => {
+      if (index === undefined || index === null) throw new Error('index is required');
+      if (value === undefined) throw new Error('value is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:FillField', { index, value: String(value) });
+    },
+
+    select_option: async ({ tab_id, index, value }) => {
+      if (index === undefined || index === null) throw new Error('index is required');
+      if (value === undefined) throw new Error('value is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:SelectOption', { index, value: String(value) });
+    },
+
+    type_text: async ({ tab_id, text }) => {
+      if (!text) throw new Error('text is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:TypeText', { text });
+    },
+
+    press_key: async ({ tab_id, key, modifiers }) => {
+      if (!key) throw new Error('key is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:PressKey', { key, modifiers: modifiers || {} }, { success: true, key });
+    },
+
+    scroll: async ({ tab_id, direction, amount }) => {
+      if (!direction) throw new Error('direction is required (up/down/left/right)');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:Scroll', { direction, amount: amount || 500 });
+    },
+
+    hover: async ({ tab_id, index }) => {
+      if (index === undefined || index === null) throw new Error('index is required');
+      return await actorInteraction(tab_id, 'ZenLeapAgent:Hover', { index });
+    },
+
     // --- Control ---
     wait: async ({ seconds = 2 }) => {
       await new Promise(r => setTimeout(r, seconds * 1000));
       return { success: true };
     },
   };
+
+  // ============================================
+  // ACTOR REGISTRATION
+  // ============================================
+
+  const ACTOR_GLOBAL_KEY = '__zenleapActorsRegistered';
+
+  function registerActors() {
+    // Actors are browser-global — only register once across all windows
+    if (globalThis[ACTOR_GLOBAL_KEY]) {
+      log('Actors already registered');
+      return;
+    }
+
+    try {
+      // file:// is NOT a trusted scheme for actor modules.
+      // Register a resource:// substitution so Firefox trusts the URIs.
+      const actorsDir = Services.dirsvc.get('UChrm', Ci.nsIFile);
+      actorsDir.append('JS');
+      actorsDir.append('actors');
+
+      const resProto = Services.io
+        .getProtocolHandler('resource')
+        .QueryInterface(Ci.nsIResProtocolHandler);
+      resProto.setSubstitution('zenleap-agent', Services.io.newFileURI(actorsDir));
+      log('Registered resource://zenleap-agent/ -> ' + actorsDir.path);
+
+      const parentURI = 'resource://zenleap-agent/ZenLeapAgentParent.sys.mjs';
+      const childURI = 'resource://zenleap-agent/ZenLeapAgentChild.sys.mjs';
+
+      ChromeUtils.registerWindowActor('ZenLeapAgent', {
+        parent: { esModuleURI: parentURI },
+        child: { esModuleURI: childURI },
+        allFrames: false,
+        matches: ['*://*/*'],
+      });
+
+      globalThis[ACTOR_GLOBAL_KEY] = true;
+      log('JSWindowActor ZenLeapAgent registered');
+    } catch (e) {
+      if (String(e).includes('NotSupportedError') || String(e).includes('already been registered')) {
+        // Already registered by another window — expected under fx-autoconfig
+        globalThis[ACTOR_GLOBAL_KEY] = true;
+        log('Actors already registered (caught re-registration)');
+      } else {
+        log('Actor registration failed: ' + e);
+      }
+    }
+  }
 
   // ============================================
   // INITIALIZATION
@@ -578,6 +798,7 @@
     }
 
     startServer();
+    registerActors();
 
     log('ZenLeap Agent v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
   }
