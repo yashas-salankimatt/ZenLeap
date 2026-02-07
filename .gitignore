@@ -1,2 +1,5 @@
 .DS_Store
 *.zip
+
+# Plan files
+*[Pp][Ll][Aa][Nn]*.[Mm][Dd]
