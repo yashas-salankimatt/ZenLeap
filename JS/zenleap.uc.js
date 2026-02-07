@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.5.0  // Keep in sync with VERSION constant below
+// @version        2.6.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.5.0';
+  const VERSION = '2.6.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -83,8 +83,22 @@
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
+    'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
+    'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
     'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
+
+    // --- Appearance ---
+    'appearance.accentColor':      { default: '#61afef', type: 'color', label: 'Accent Color', description: 'Primary accent used for highlights and indicators', category: 'Appearance', group: 'Core Colors' },
+    'appearance.currentTabBg':     { default: '#61afef', type: 'color', label: 'Current Tab Badge', description: 'Background of the current tab badge', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.currentTabColor':  { default: '#1e1e1e', type: 'color', label: 'Current Tab Badge Text', description: 'Text color of the current tab badge', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.badgeBg':          { default: '#505050', type: 'color', label: 'Default Badge Background', description: 'Background of regular tab badges', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.badgeColor':       { default: '#e0e0e0', type: 'color', label: 'Default Badge Text', description: 'Text color of regular tab badges', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.upDirectionBg':    { default: '#455a6f', type: 'color', label: 'Up Direction Badge', description: 'Badge color for tabs above current', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.downDirectionBg':  { default: '#455a6f', type: 'color', label: 'Down Direction Badge', description: 'Badge color for tabs below current', category: 'Appearance', group: 'Tab Badges' },
+    'appearance.markColor':        { default: '#e06c75', type: 'color', label: 'Mark Indicator', description: 'Color for marked tab badges', category: 'Appearance', group: 'Marks & Selection' },
+    'appearance.highlightBorder':  { default: '#61afef', type: 'color', label: 'Browse Highlight', description: 'Outline color of highlighted tab in browse mode', category: 'Appearance', group: 'Marks & Selection' },
+    'appearance.selectedBorder':   { default: '#c678dd', type: 'color', label: 'Multi-Select Border', description: 'Outline color of selected tabs', category: 'Appearance', group: 'Marks & Selection' },
 
     // --- Advanced ---
     'advanced.debug':              { default: false, type: 'toggle', label: 'Debug Logging', description: 'Log actions to browser console', category: 'Advanced', group: 'Debugging' },
@@ -138,6 +152,7 @@
     if (!schema) return;
     S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
     saveSettings();
+    if (schema.type === 'color') applyThemeColors();
   }
 
   function resetAllSettings() {
@@ -145,6 +160,7 @@
       S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
     }
     saveSettings();
+    applyThemeColors();
   }
 
   // Helper: check if a keyboard event matches a combo-type setting
@@ -483,6 +499,29 @@
 
     if (queryLen > textLen) return null;
 
+    // Check for exact substring match first — gives large bonus
+    const exactPos = textLower.indexOf(queryLower);
+    if (exactPos >= 0) {
+      const indices = [];
+      for (let i = 0; i < queryLen; i++) indices.push(exactPos + i);
+      // Large bonus for exact substring: base + length bonus (must beat fuzzy * max recency multiplier)
+      let exactScore = 200 + queryLen * 25;
+      // Extra bonus if match starts at a word boundary
+      if (exactPos === 0 || /[\s\-_./]/.test(text[exactPos - 1])) {
+        exactScore += 50;
+      }
+      // Extra bonus if query matches the full word
+      const afterEnd = exactPos + queryLen;
+      if ((exactPos === 0 || /[\s\-_./]/.test(text[exactPos - 1])) &&
+          (afterEnd >= textLen || /[\s\-_./]/.test(text[afterEnd]))) {
+        exactScore += 30;
+      }
+      // Bonus for earlier position
+      exactScore -= exactPos * 0.5;
+      return { score: exactScore, indices };
+    }
+
+    // Fallback to fuzzy matching
     let score = 0;
     let queryIdx = 0;
     let indices = [];
@@ -526,20 +565,74 @@
     return { score, indices };
   }
 
+  // Parse search query into exact terms (quoted) and fuzzy terms (unquoted)
+  // Example: '"YouTube" test "GitHub"' → { exactTerms: ["YouTube", "GitHub"], fuzzyTerms: ["test"] }
+  function parseSearchQuery(query) {
+    if (!query) return { exactTerms: [], fuzzyTerms: [] };
+
+    const exactTerms = [];
+    // Match double-quoted strings as exact match terms
+    const remaining = query.replace(/"([^"]+)"/g, (_, term) => {
+      exactTerms.push(term);
+      return ' ';
+    });
+
+    const fuzzyTerms = remaining.trim().split(/\s+/).filter(w => w.length > 0);
+    return { exactTerms, fuzzyTerms };
+  }
+
+  // Exact match - finds all occurrences of term in text (case-insensitive)
+  // Returns array of character indices where the term matches
+  function exactMatchIndices(term, text) {
+    if (!term || !text) return null;
+    const termLower = term.toLowerCase();
+    const textLower = text.toLowerCase();
+    const idx = textLower.indexOf(termLower);
+    if (idx === -1) return null;
+
+    const indices = [];
+    for (let i = idx; i < idx + term.length; i++) {
+      indices.push(i);
+    }
+    return indices;
+  }
+
   // Multi-word fuzzy match - splits query into words, ALL words must match
   // Each word can match in either title or URL
+  // Supports exact matching with "quoted terms" and fuzzy matching for unquoted words
   // Returns { score, titleIndices, urlIndices } or null if any word doesn't match
   function fuzzyMatch(query, title, url) {
     if (!query) return null;
 
-    const words = query.trim().split(/\s+/).filter(w => w.length > 0);
-    if (words.length === 0) return null;
+    const { exactTerms, fuzzyTerms } = parseSearchQuery(query);
+    if (exactTerms.length === 0 && fuzzyTerms.length === 0) return null;
 
     let totalScore = 0;
     let allTitleIndices = [];
     let allUrlIndices = [];
 
-    for (const word of words) {
+    // Check exact terms first — ALL must match (AND logic)
+    for (const term of exactTerms) {
+      const titleIdx = exactMatchIndices(term, title || '');
+      const urlIdx = exactMatchIndices(term, url || '');
+
+      if (!titleIdx && !urlIdx) {
+        return null; // Exact term not found anywhere
+      }
+
+      // Exact matches get high score bonus (title weighted 2x)
+      if (titleIdx) {
+        totalScore += term.length * 20; // High bonus for exact title match
+        allTitleIndices.push(...titleIdx);
+      }
+      if (urlIdx) {
+        totalScore += term.length * 10;
+        allUrlIndices.push(...urlIdx);
+      }
+    }
+
+    // Check fuzzy terms — ALL must match
+    for (const word of fuzzyTerms) {
       const titleMatch = fuzzyMatchSingle(word, title || '');
       const urlMatch = fuzzyMatchSingle(word, url || '');
 
@@ -567,8 +660,8 @@
       }
     }
 
-    // Bonus for matching more words (encourages specific searches)
-    totalScore += words.length * 5;
+    // Bonus for matching more terms (encourages specific searches)
+    totalScore += (exactTerms.length + fuzzyTerms.length) * 5;
 
     return {
       score: totalScore,
@@ -637,20 +730,20 @@
   function searchTabs(query, { includeCurrent = false } = {}) {
     const currentTab = gBrowser.selectedTab;
 
-    // Get visible tabs, optionally excluding the current tab
+    // Get searchable tabs (respects cross-workspace setting), optionally excluding current
     const tabs = includeCurrent
-      ? getVisibleTabs()
-      : getVisibleTabs().filter(tab => tab !== currentTab);
-    const totalTabs = tabs.length;
+      ? getSearchableTabs()
+      : getSearchableTabs().filter(tab => tab !== currentTab);
 
     // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
       const sortedTabs = sortTabsByRecency(tabs);
       return sortedTabs.slice(0, S['display.maxSearchResults']).map((tab, idx) => ({
         tab,
-        score: 100 - idx, // Score reflects sorted position
+        score: 100 - idx,
         titleIndices: [],
-        urlIndices: []
+        urlIndices: [],
+        workspaceName: getTabWorkspaceName(tab)
       }));
     }
 
@@ -661,26 +754,22 @@
       const title = tab.label || '';
       const url = tab.linkedBrowser?.currentURI?.spec || '';
 
-      // Multi-word fuzzy match - all words must match somewhere in title or URL
+      // Multi-word fuzzy match (supports "exact" and fuzzy terms)
       const match = fuzzyMatch(query, title, url);
 
       if (match) {
         const matchScore = match.score;
-
-        // Get recency multiplier (0.8 to 1.8)
         const recencyMultiplier = calculateRecencyMultiplier(tab);
-
-        // Combined score: matchScore × recencyMultiplier
-        // Recent tabs get boosted, old tabs get penalized
         const totalScore = matchScore * recencyMultiplier;
 
         results.push({
           tab,
           score: totalScore,
-          matchScore,           // For debugging
-          recencyMultiplier,    // For debugging
+          matchScore,
+          recencyMultiplier,
           titleIndices: match.titleIndices,
-          urlIndices: match.urlIndices
+          urlIndices: match.urlIndices,
+          workspaceName: getTabWorkspaceName(tab)
         });
       }
     });
@@ -729,9 +818,23 @@
     searchVimIndicator.id = 'zenleap-search-vim-indicator';
     searchVimIndicator.textContent = 'INSERT';
 
+    // Cross-workspace toggle button (created via createElement for chrome context safety)
+    const wsToggle = document.createElement('button');
+    wsToggle.id = 'zenleap-search-ws-toggle';
+    wsToggle.title = 'Toggle cross-workspace search';
+    wsToggle.textContent = S['display.searchAllWorkspaces'] ? 'All' : 'WS';
+    wsToggle.classList.toggle('active', S['display.searchAllWorkspaces']);
+    wsToggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCrossWorkspaceSearch();
+      searchInput.focus();
+    });
+
     inputWrapper.appendChild(searchIcon);
     inputWrapper.appendChild(searchInput);
     inputWrapper.appendChild(searchInputDisplay);
+    inputWrapper.appendChild(wsToggle);
     inputWrapper.appendChild(searchVimIndicator);
 
     searchBreadcrumb = document.createElement('div');
@@ -878,6 +981,33 @@
         color: #666;
       }
 
+      #zenleap-search-ws-toggle {
+        font-size: 10px;
+        font-weight: 600;
+        font-family: monospace;
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #666;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        cursor: pointer;
+        transition: all 0.15s;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        flex-shrink: 0;
+      }
+
+      #zenleap-search-ws-toggle:hover {
+        background: rgba(255, 255, 255, 0.12);
+        color: #888;
+      }
+
+      #zenleap-search-ws-toggle.active {
+        background: rgba(198, 120, 221, 0.2);
+        color: #c678dd;
+        border-color: rgba(198, 120, 221, 0.4);
+      }
+
       #zenleap-search-vim-indicator {
         font-size: 10px;
         font-weight: 600;
@@ -934,10 +1064,19 @@
         font-size: 14px;
         font-weight: 500;
         color: #e0e0e0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 2px;
+        min-width: 0;
+      }
+
+      .zenleap-search-result-title-text {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        margin-bottom: 2px;
+        flex: 1;
+        min-width: 0;
       }
 
       .zenleap-search-result-url {
@@ -952,6 +1091,18 @@
       .zenleap-search-result-url .match {
         color: #61afef;
         font-weight: 600;
+      }
+
+      .zenleap-search-result-ws {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 500;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: rgba(198, 120, 221, 0.2);
+        color: #c678dd;
+        white-space: nowrap;
+        flex-shrink: 0;
       }
 
       .zenleap-search-result-label {
@@ -1058,6 +1209,14 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      .zenleap-command-label:has(.zenleap-search-result-ws) {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        text-overflow: clip;
       }
 
       .zenleap-command-label .match {
@@ -1226,6 +1385,8 @@
       // --- Tab Movement ---
       { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning'], command: () => {
         const tab = gBrowser.selectedTab;
+        // Unpin if pinned (except essentials) so it can move to the regular tab area
+        if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
         // Find the first non-pinned, non-essential tab position
         const firstRegularIdx = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
@@ -1236,6 +1397,8 @@
       }},
       { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end'], command: () => {
         const tab = gBrowser.selectedTab;
+        // Unpin if pinned (except essentials) so it can move to the regular tab area
+        if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
         if (tabs.length > 0 && tabs[tabs.length - 1] !== tab) {
           gBrowser.moveTabAfter(tab, tabs[tabs.length - 1]);
@@ -1246,7 +1409,13 @@
       // --- Navigation ---
       { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg'], command: () => {
         const tabs = getVisibleTabs();
-        if (tabs.length > 0) gBrowser.selectedTab = tabs[0];
+        if (tabs.length === 0) return;
+        if (S['display.ggSkipPinned']) {
+          const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+          gBrowser.selectedTab = tabs[firstUnpinned >= 0 ? firstUnpinned : 0];
+        } else {
+          gBrowser.selectedTab = tabs[0];
+        }
       }},
       { key: 'go-last-tab', label: 'Go to Last Tab', icon: '⇥', tags: ['navigate', 'last', 'bottom', 'end'], command: () => {
         const tabs = getVisibleTabs();
@@ -1601,6 +1770,7 @@
     renderCommandResults();
     updateBreadcrumb();
     updateSearchVimIndicator();
+    updateWsToggleVisibility();
   }
 
   function exitSubFlow() {
@@ -1641,6 +1811,7 @@
     renderCommandResults();
     updateBreadcrumb();
     updateSearchHintBar();
+    updateWsToggleVisibility();
   }
 
   function getSubFlowPlaceholder(type) {
@@ -1719,6 +1890,7 @@
       tab: r.tab,
       titleIndices: r.titleIndices,
       urlIndices: r.urlIndices,
+      workspaceName: r.workspaceName,
     }));
   }
 
@@ -1799,6 +1971,7 @@
       isTab: true,
       tab: r.tab,
       titleIndices: r.titleIndices,
+      workspaceName: r.workspaceName,
       urlIndices: r.urlIndices,
     }));
   }
@@ -1903,6 +2076,24 @@
     const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
     if (validTabs.length === 0) { exitSearchMode(); return; }
 
+    // Move tabs from other workspaces into the current workspace first
+    if (window.gZenWorkspaces) {
+      const currentWsId = gZenWorkspaces.activeWorkspace;
+      for (const tab of validTabs) {
+        const tabWsId = tab.getAttribute('zen-workspace-id');
+        if (tabWsId && tabWsId !== currentWsId) {
+          gZenWorkspaces.moveTabToWorkspace(tab, currentWsId);
+        }
+      }
+    }
+
+    // Unpin any pinned tabs (except essentials) so they can cross the pinned/unpinned DOM boundary
+    for (const tab of validTabs) {
+      if (tab.pinned && !tab.hasAttribute('zen-essential')) {
+        gBrowser.unpinTab(tab);
+      }
+    }
+
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
 
     const sortedSet = new Set(sortedTabs);
@@ -1913,13 +2104,12 @@
         const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t));
         if (anchor && sortedTabs.length > 0) {
           // Move first tab before the anchor, then chain each subsequent tab after the previous
-          // This guarantees the order: sorted[0], sorted[1], ..., anchor
           gBrowser.moveTabBefore(sortedTabs[0], anchor);
           for (let i = 1; i < sortedTabs.length; i++) {
             gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
           }
-        } else if (sortedTabs.length > 1) {
-          // All regular tabs are being moved — chain them in order starting from the first
+        } else {
+          // All regular tabs are being moved (or single tab) — find first regular tab as anchor
           const firstRegular = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
           if (firstRegular) {
             gBrowser.moveTabBefore(sortedTabs[0], firstRegular);
@@ -2056,11 +2246,13 @@
       const highlightedTitle = highlightMatches(title, result.titleIndices);
       const highlightedUrl = highlightMatches(url, result.urlIndices);
 
+      const wsBadge = result.workspaceName ? `<span class="zenleap-search-result-ws">${escapeHtml(result.workspaceName)}</span>` : '';
+
       html += `
         <div class="zenleap-search-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
           <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
           <div class="zenleap-search-result-info">
-            <div class="zenleap-search-result-title">${highlightedTitle}</div>
+            <div class="zenleap-search-result-title"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${wsBadge}</div>
             <div class="zenleap-search-result-url">${highlightedUrl}</div>
           </div>
           ${label ? `<span class="zenleap-search-result-label">${label}</span>` : ''}
@@ -2144,12 +2336,13 @@
         }
         const highlightedTitle = highlightMatches(title, cmd.titleIndices);
         const highlightedUrl = highlightMatches(url, cmd.urlIndices);
+        const cmdWsBadge = cmd.workspaceName ? `<span class="zenleap-search-result-ws">${escapeHtml(cmd.workspaceName)}</span>` : '';
 
         html += `
           <div class="zenleap-command-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
             <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
             <div class="zenleap-command-info">
-              <div class="zenleap-command-label">${highlightedTitle}</div>
+              <div class="zenleap-command-label"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${cmdWsBadge}</div>
               <div class="zenleap-command-sublabel">${highlightedUrl}</div>
             </div>
             ${label ? `<span class="zenleap-command-result-label">${label}</span>` : ''}
@@ -2233,6 +2426,7 @@
     updateBreadcrumb();
     renderCommandResults();
     updateSearchVimIndicator();
+    updateWsToggleVisibility();
     log('Entered command mode');
   }
 
@@ -2266,6 +2460,7 @@
 
     renderSearchResults();
     updateSearchVimIndicator();
+    updateWsToggleVisibility();
     log('Exited command mode');
   }
 
@@ -2297,6 +2492,7 @@
         <span><kbd>j/k</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
         <span><kbd>x</kbd> close tab</span>
+        <span><kbd>Tab</kbd> all workspaces</span>
         <span><kbd>1-9</kbd> jump</span>
         <span><kbd>Esc</kbd> close</span>
       `;
@@ -2304,6 +2500,7 @@
       searchHintBar.innerHTML = `
         <span><kbd>↑↓</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
+        <span><kbd>Tab</kbd> all workspaces</span>
         <span><kbd>Ctrl+x</kbd> close tab</span>
         <span><kbd>></kbd> commands</span>
         <span><kbd>Esc</kbd> normal mode</span>
@@ -2770,7 +2967,7 @@
     const tabs = document.createElement('div');
     tabs.className = 'zenleap-settings-tabs';
     tabs.id = 'zenleap-settings-tabs';
-    ['Keybindings', 'Timing', 'Display', 'Advanced'].forEach(cat => {
+    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced'].forEach(cat => {
       const btn = document.createElement('button');
       btn.textContent = cat;
       btn.dataset.tab = cat;
@@ -2961,6 +3158,24 @@
       .zenleap-settings-reset-all:hover {
         background: rgba(224, 108, 117, 0.2); border-color: rgba(224, 108, 117, 0.5);
       }
+      .zenleap-color-control {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .zenleap-color-picker {
+        width: 32px; height: 32px; border: none; border-radius: 6px;
+        cursor: pointer; padding: 0; background: none;
+        -moz-appearance: none; appearance: none;
+      }
+      .zenleap-color-picker::-moz-color-swatch {
+        border: 2px solid rgba(255, 255, 255, 0.15); border-radius: 6px;
+      }
+      .zenleap-color-hex {
+        background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #e0e0e0; padding: 5px 8px; border-radius: 6px; font-size: 12px;
+        width: 72px; font-family: monospace; text-align: center; outline: none;
+        transition: border-color 0.15s;
+      }
+      .zenleap-color-hex:focus { border-color: #61afef; }
       .zenleap-settings-empty {
         padding: 40px 20px; text-align: center; color: #555; font-size: 14px;
       }
@@ -3093,6 +3308,40 @@
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
       });
       control.appendChild(toggle);
+    } else if (schema.type === 'color') {
+      const colorWrap = document.createElement('div');
+      colorWrap.className = 'zenleap-color-control';
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = S[id];
+      colorInput.className = 'zenleap-color-picker';
+      const hexInput = document.createElement('input');
+      hexInput.type = 'text';
+      hexInput.value = S[id];
+      hexInput.maxLength = 7;
+      hexInput.className = 'zenleap-color-hex';
+      colorInput.addEventListener('input', () => {
+        S[id] = colorInput.value;
+        hexInput.value = colorInput.value;
+        saveSettings();
+        applyThemeColors();
+        row.classList.toggle('modified', S[id] !== schema.default);
+      });
+      hexInput.addEventListener('change', () => {
+        const val = hexInput.value.trim();
+        if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+          S[id] = val;
+          colorInput.value = val;
+          saveSettings();
+          applyThemeColors();
+          row.classList.toggle('modified', S[id] !== schema.default);
+        } else {
+          hexInput.value = S[id]; // Revert invalid input
+        }
+      });
+      colorWrap.appendChild(colorInput);
+      colorWrap.appendChild(hexInput);
+      control.appendChild(colorWrap);
     }
 
     // Reset button
@@ -3278,13 +3527,21 @@
   }
 
   // Select and open a search result
-  function selectSearchResult(index) {
+  async function selectSearchResult(index) {
     if (index < 0 || index >= searchResults.length) return;
 
     const result = searchResults[index];
     if (result && result.tab) {
       // Record jump before navigating
       recordJump(gBrowser.selectedTab);
+
+      // Switch workspace if the tab belongs to a different workspace (async)
+      if (result.workspaceName && window.gZenWorkspaces) {
+        const tabWsId = result.tab.getAttribute('zen-workspace-id');
+        if (tabWsId) {
+          await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
+        }
+      }
 
       gBrowser.selectedTab = result.tab;
 
@@ -3295,6 +3552,35 @@
     }
 
     exitSearchMode();
+  }
+
+  // Show/hide WS toggle based on whether we're in a search-like context
+  function updateWsToggleVisibility() {
+    const wsBtn = document.getElementById('zenleap-search-ws-toggle');
+    if (!wsBtn) return;
+    // Show only in tab search (not command mode) or tab-search/split-tab-picker sub-flows
+    const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker');
+    const shouldShow = !commandMode || isTabSearchSubFlow;
+    wsBtn.style.display = shouldShow ? '' : 'none';
+  }
+
+  // Toggle cross-workspace search and refresh results
+  function toggleCrossWorkspaceSearch() {
+    S['display.searchAllWorkspaces'] = !S['display.searchAllWorkspaces'];
+    saveSettings();
+    // Update the WS toggle button if it exists
+    const wsBtn = document.getElementById('zenleap-search-ws-toggle');
+    if (wsBtn) {
+      wsBtn.textContent = S['display.searchAllWorkspaces'] ? 'All' : 'WS';
+      wsBtn.classList.toggle('active', S['display.searchAllWorkspaces']);
+    }
+    // Re-render results with new scope
+    if (commandMode) {
+      renderCommandResults();
+    } else {
+      renderSearchResults();
+    }
+    log(`Cross-workspace search: ${S['display.searchAllWorkspaces'] ? 'ON' : 'OFF'}`);
   }
 
   // Close the selected search result tab
@@ -3432,11 +3718,15 @@
         return true;
       }
 
-      // Tab key (both modes)
+      // Tab key — toggle workspace search in tab-search/split-tab-picker sub-flows, else act as Enter
       if (key === 'Tab') {
         event.preventDefault();
         event.stopPropagation();
-        handleCommandSelect();
+        if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker')) {
+          toggleCrossWorkspaceSearch();
+        } else {
+          handleCommandSelect();
+        }
         return true;
       }
 
@@ -3517,6 +3807,14 @@
       event.preventDefault();
       event.stopPropagation();
       selectSearchResult(searchSelectedIndex);
+      return true;
+    }
+
+    // Tab to toggle cross-workspace search (works in both insert and normal mode)
+    if (key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleCrossWorkspaceSearch();
       return true;
     }
 
@@ -3966,9 +4264,44 @@
     const tabs = Array.from(gBrowser.tabs);
     return tabs.filter(tab => {
       if (tab.hasAttribute('zen-glance-tab')) return false;
+      if (tab.hasAttribute('zen-empty-tab')) return false;
       if (tab.hidden) return false;
       return true;
     });
+  }
+
+  // Get tabs for search — respects cross-workspace setting
+  function getSearchableTabs() {
+    if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
+      // Use Zen's allStoredTabs which traverses all workspace DOM containers
+      try {
+        const allTabs = gZenWorkspaces.allStoredTabs;
+        if (allTabs && allTabs.length > 0) {
+          return Array.from(allTabs).filter(tab =>
+            !tab.hasAttribute('zen-glance-tab') && !tab.hasAttribute('zen-essential') && !tab.hasAttribute('zen-empty-tab')
+          );
+        }
+      } catch (e) {
+        log(`allStoredTabs failed, falling back: ${e}`);
+      }
+    }
+    return getVisibleTabs();
+  }
+
+  // Get workspace name for a tab (returns null if same as active workspace)
+  function getTabWorkspaceName(tab) {
+    try {
+      if (!window.gZenWorkspaces) return null;
+      const tabWsId = tab.getAttribute('zen-workspace-id');
+      const activeWsId = gZenWorkspaces.activeWorkspace;
+      if (!tabWsId || tabWsId === activeWsId) return null;
+      const workspaces = gZenWorkspaces.getWorkspaces();
+      if (!workspaces) return null;
+      const ws = workspaces.find(w => w.uuid === tabWsId);
+      return ws ? ws.name : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   // Update relative numbers on all tabs
@@ -5086,14 +5419,20 @@
       // g = pending gg (move highlight to first tab)
       if (key === S['keys.browse.gMode'] && originalKey === S['keys.browse.gMode']) {
         if (browseGPending) {
-          // Second g pressed - move to first tab
+          // Second g pressed - move to first tab (or first unpinned if setting enabled)
           clearTimeout(browseGTimeout);
           browseGPending = false;
           browseGTimeout = null;
-          highlightedTabIndex = 0;
+          if (S['display.ggSkipPinned']) {
+            const tabs = getVisibleTabs();
+            const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+            highlightedTabIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
+          } else {
+            highlightedTabIndex = 0;
+          }
           updateHighlight();
           updateLeapOverlayState();
-          log(`Browse: jumped to first tab (index 0)`);
+          log(`Browse: jumped to first tab (index ${highlightedTabIndex})`);
           return;
         }
         // First g pressed - wait for second g
@@ -5133,9 +5472,18 @@
       event.preventDefault();
       event.stopPropagation();
 
-      // gg - go to first tab
+      // gg - go to first tab (or first unpinned if setting enabled)
       if (key === S['keys.gMode.first'] && gNumberBuffer === '') {
-        goToAbsoluteTab(1);
+        if (S['display.ggSkipPinned']) {
+          const tabs = getVisibleTabs();
+          const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+          const targetIdx = firstUnpinned >= 0 ? firstUnpinned : 0;
+          gBrowser.selectedTab = tabs[targetIdx];
+          log(`Jumped to first unpinned tab via gg (index ${targetIdx})`);
+          exitLeapMode(true);
+        } else {
+          goToAbsoluteTab(1);
+        }
         return;
       }
 
@@ -5341,6 +5689,29 @@
       return;
     }
 
+    // 0 = jump to first unpinned tab (like vim's 0 goes to start of line)
+    if (key === '0') {
+      const tabs = getVisibleTabs();
+      const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+      if (firstUnpinned >= 0) {
+        gBrowser.selectedTab = tabs[firstUnpinned];
+        log(`Jumped to first unpinned tab (index ${firstUnpinned})`);
+      }
+      exitLeapMode(true);
+      return;
+    }
+
+    // $ = jump to last tab (like vim's $ goes to end of line)
+    if (originalKey === '$') {
+      const tabs = getVisibleTabs();
+      if (tabs.length > 0) {
+        gBrowser.selectedTab = tabs[tabs.length - 1];
+        log(`Jumped to last tab (index ${tabs.length - 1})`);
+      }
+      exitLeapMode(true);
+      return;
+    }
+
     // Any other key in initial leap mode - ignore (don't exit, just wait for valid command)
     log(`Unrecognized key in leap mode: ${key}`);
   }
@@ -5381,6 +5752,62 @@
   }
 
   // Add CSS for relative number display and highlight
+  // Convert hex color (#RRGGBB) to rgba string
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  // Apply theme colors as CSS custom properties on :root
+  function applyThemeColors() {
+    const root = document.documentElement;
+    const accent = S['appearance.accentColor'];
+    const currentBg = S['appearance.currentTabBg'];
+    const currentColor = S['appearance.currentTabColor'];
+    const badgeBg = S['appearance.badgeBg'];
+    const badgeColor = S['appearance.badgeColor'];
+    const upBg = S['appearance.upDirectionBg'];
+    const downBg = S['appearance.downDirectionBg'];
+    const mark = S['appearance.markColor'];
+    const highlight = S['appearance.highlightBorder'];
+    const selected = S['appearance.selectedBorder'];
+
+    root.style.setProperty('--zl-accent', accent);
+    root.style.setProperty('--zl-accent-20', hexToRgba(accent, 0.2));
+    root.style.setProperty('--zl-accent-15', hexToRgba(accent, 0.15));
+    root.style.setProperty('--zl-accent-60', hexToRgba(accent, 0.6));
+    root.style.setProperty('--zl-accent-80', hexToRgba(accent, 0.8));
+    root.style.setProperty('--zl-current-bg', currentBg);
+    root.style.setProperty('--zl-current-color', currentColor);
+    root.style.setProperty('--zl-badge-bg', badgeBg);
+    root.style.setProperty('--zl-badge-color', badgeColor);
+    root.style.setProperty('--zl-up-bg', upBg);
+    root.style.setProperty('--zl-down-bg', downBg);
+    root.style.setProperty('--zl-mark', mark);
+    root.style.setProperty('--zl-mark-50', hexToRgba(mark, 0.5));
+    root.style.setProperty('--zl-mark-70', hexToRgba(mark, 0.7));
+    root.style.setProperty('--zl-mark-80', hexToRgba(mark, 0.8));
+    root.style.setProperty('--zl-mark-90', hexToRgba(mark, 0.9));
+    root.style.setProperty('--zl-highlight', highlight);
+    root.style.setProperty('--zl-highlight-20', hexToRgba(highlight, 0.2));
+    root.style.setProperty('--zl-highlight-15', hexToRgba(highlight, 0.15));
+    root.style.setProperty('--zl-highlight-60', hexToRgba(highlight, 0.6));
+    root.style.setProperty('--zl-highlight-80', hexToRgba(highlight, 0.8));
+    root.style.setProperty('--zl-selected', selected);
+    root.style.setProperty('--zl-selected-20', hexToRgba(selected, 0.2));
+    root.style.setProperty('--zl-selected-15', hexToRgba(selected, 0.15));
+
+    // Blend highlight + selected for the combo state (average the two colors)
+    const hR = parseInt(highlight.slice(1, 3), 16), hG = parseInt(highlight.slice(3, 5), 16), hB = parseInt(highlight.slice(5, 7), 16);
+    const sR = parseInt(selected.slice(1, 3), 16), sG = parseInt(selected.slice(3, 5), 16), sB = parseInt(selected.slice(5, 7), 16);
+    const blendHex = `#${Math.round((hR + sR) / 2).toString(16).padStart(2, '0')}${Math.round((hG + sG) / 2).toString(16).padStart(2, '0')}${Math.round((hB + sB) / 2).toString(16).padStart(2, '0')}`;
+    root.style.setProperty('--zl-highlight-selected', blendHex);
+    root.style.setProperty('--zl-highlight-selected-20', hexToRgba(blendHex, 0.25));
+    root.style.setProperty('--zl-highlight-selected-15', hexToRgba(blendHex, 0.2));
+  }
+
   function injectStyles() {
     const style = document.createElement('style');
     style.id = 'zenleap-styles';
@@ -5392,67 +5819,67 @@
 
       /* Highlighted tab in browse mode */
       tab[data-zenleap-highlight="true"] {
-        outline: 2px solid #61afef !important;
+        outline: 2px solid var(--zl-highlight) !important;
         outline-offset: -2px;
-        background-color: rgba(97, 175, 239, 0.2) !important;
+        background-color: var(--zl-highlight-20) !important;
       }
 
       tab[data-zenleap-highlight="true"] > .tab-stack > .tab-content {
-        background-color: rgba(97, 175, 239, 0.15) !important;
+        background-color: var(--zl-highlight-15) !important;
       }
 
       /* Selected tabs in browse mode (multi-select with Space) */
       tab[data-zenleap-selected="true"] {
-        outline: 2px solid #c678dd !important;
+        outline: 2px solid var(--zl-selected) !important;
         outline-offset: -2px;
-        background-color: rgba(198, 120, 221, 0.2) !important;
+        background-color: var(--zl-selected-20) !important;
       }
 
       tab[data-zenleap-selected="true"] > .tab-stack > .tab-content {
-        background-color: rgba(198, 120, 221, 0.15) !important;
+        background-color: var(--zl-selected-15) !important;
       }
 
       /* Tab that is both highlighted and selected */
       tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] {
-        outline: 2px solid #e5c07b !important;
-        background-color: rgba(229, 192, 123, 0.25) !important;
+        outline: 2px solid var(--zl-highlight-selected) !important;
+        background-color: var(--zl-highlight-selected-20) !important;
       }
 
       tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] > .tab-stack > .tab-content {
-        background-color: rgba(229, 192, 123, 0.2) !important;
+        background-color: var(--zl-highlight-selected-15) !important;
       }
 
       /* Expanded sidebar mode */
       @media (-moz-bool-pref: "zen.view.sidebar-expanded") {
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           content: attr(data-zenleap-rel) !important;
-          font-weight: bold;
-          font-size: 80%;
-          z-index: 100;
-          display: inline-block;
-          background-color: #505050;
-          color: #e0e0e0;
-          text-align: center;
-          width: 20px;
-          height: 20px;
-          line-height: 20px;
-          border-radius: 4px;
-          margin-left: 3px;
-          margin-right: 3px;
-          font-family: monospace;
+          font-weight: bold !important;
+          font-size: 80% !important;
+          z-index: 100 !important;
+          display: inline-block !important;
+          background-color: var(--zl-badge-bg) !important;
+          color: var(--zl-badge-color) !important;
+          text-align: center !important;
+          width: 20px !important;
+          height: 20px !important;
+          line-height: 20px !important;
+          border-radius: 4px !important;
+          margin-left: 3px !important;
+          margin-right: 3px !important;
+          font-family: monospace !important;
         }
 
         tab[data-zenleap-direction="current"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-          background-color: #61afef !important;
-          color: #1e1e1e !important;
+          background-color: var(--zl-current-bg) !important;
+          color: var(--zl-current-color) !important;
         }
 
         tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-          background-color: #455a6f;
+          background-color: var(--zl-up-bg) !important;
         }
 
         tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-          background-color: #455a6f;
+          background-color: var(--zl-down-bg) !important;
         }
 
         /* Hide badge on hover to make room for close button */
@@ -5474,69 +5901,69 @@
 
         /* Highlighted tab badge */
         tab[data-zenleap-highlight="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-          background-color: #61afef !important;
-          color: #1e1e1e !important;
-          box-shadow: 0 0 8px rgba(97, 175, 239, 0.6);
+          background-color: var(--zl-highlight) !important;
+          color: var(--zl-current-color) !important;
+          box-shadow: 0 0 8px var(--zl-highlight-60) !important;
         }
 
-        /* Marked tab badge - distinct red/magenta color */
+        /* Marked tab badge - distinct color */
         tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-          background-color: #e06c75 !important;
-          color: #1e1e1e !important;
+          background-color: var(--zl-mark) !important;
+          color: var(--zl-current-color) !important;
           font-weight: bold !important;
-          box-shadow: 0 0 6px rgba(224, 108, 117, 0.5);
+          box-shadow: 0 0 6px var(--zl-mark-50) !important;
         }
       }
 
       /* Compact sidebar mode */
       @media not (-moz-bool-pref: "zen.view.sidebar-expanded") {
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-          content: attr(data-zenleap-rel);
-          position: absolute;
-          top: 2px;
-          right: 2px;
-          font-weight: bold;
-          font-size: 70%;
-          z-index: 100;
-          color: #abb2bf;
-          font-family: monospace;
-          text-shadow: 0 0 2px rgba(0,0,0,0.5);
+          content: attr(data-zenleap-rel) !important;
+          position: absolute !important;
+          top: 2px !important;
+          right: 2px !important;
+          font-weight: bold !important;
+          font-size: 70% !important;
+          z-index: 100 !important;
+          color: var(--zl-badge-color) !important;
+          font-family: monospace !important;
+          text-shadow: 0 0 2px rgba(0,0,0,0.5) !important;
         }
 
         tab[data-zenleap-direction="current"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-          color: #61afef !important;
+          color: var(--zl-current-bg) !important;
         }
 
         tab[data-zenleap-highlight="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-          color: #61afef !important;
-          text-shadow: 0 0 6px rgba(97, 175, 239, 0.8);
+          color: var(--zl-highlight) !important;
+          text-shadow: 0 0 6px var(--zl-highlight-80) !important;
         }
 
-        /* Marked tab in compact mode - distinct red/magenta color */
+        /* Marked tab in compact mode */
         tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-          color: #e06c75 !important;
-          text-shadow: 0 0 4px rgba(224, 108, 117, 0.8);
+          color: var(--zl-mark) !important;
+          text-shadow: 0 0 4px var(--zl-mark-80) !important;
           font-weight: bold !important;
         }
       }
 
-      /* Leap mode active indicator - green for up, yellow for down */
+      /* Leap mode active indicator - uses direction colors */
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after,
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-        color: #98c379 !important;
-        background-color: #2c4a32 !important;
+        color: var(--zl-badge-color) !important;
+        background-color: var(--zl-up-bg) !important;
       }
 
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after,
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-        color: #e5c07b !important;
-        background-color: #4a4232 !important;
+        color: var(--zl-badge-color) !important;
+        background-color: var(--zl-down-bg) !important;
       }
 
-      /* Mark mode - gray out all non-marked tabs (higher specificity via [data-zenleap-active]) */
+      /* Mark mode - gray out all non-marked tabs */
       :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab:not([data-zenleap-has-mark="true"]):not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
         color: #666666 !important;
-        background-color: #505050 !important;
+        background-color: var(--zl-badge-bg) !important;
         box-shadow: none !important;
       }
 
@@ -5545,19 +5972,20 @@
         text-shadow: none !important;
       }
 
-      /* Mark mode - keep marked tabs red with enhanced visibility */
+      /* Mark mode - keep marked tabs with enhanced visibility */
       :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
-        background-color: #e06c75 !important;
-        color: #1e1e1e !important;
-        box-shadow: 0 0 8px rgba(224, 108, 117, 0.7) !important;
+        background-color: var(--zl-mark) !important;
+        color: var(--zl-current-color) !important;
+        box-shadow: 0 0 8px var(--zl-mark-70) !important;
       }
 
       :root[data-zenleap-active="true"][data-zenleap-mark-mode="true"] tab[data-zenleap-has-mark="true"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-        color: #e06c75 !important;
-        text-shadow: 0 0 6px rgba(224, 108, 117, 0.9) !important;
+        color: var(--zl-mark) !important;
+        text-shadow: 0 0 6px var(--zl-mark-90) !important;
       }
     `;
     document.head.appendChild(style);
+    applyThemeColors();
     log('Styles injected');
   }
 

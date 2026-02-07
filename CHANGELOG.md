@@ -5,6 +5,28 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-02-05
+
+### Added
+- **Cross-Workspace Tab Search** - Search tabs across all workspaces
+  - Toggle via `WS`/`All` button in search modal header
+  - Configurable default in Settings > Display > Search All Workspaces
+  - Workspace name badge shown next to tabs from other workspaces
+- **Exact Search with Quotation Marks** - Use quotes for exact matching
+  - `"YouTube"` finds tabs with exact word match (case-insensitive)
+  - Multiple quoted terms: `"YouTube" "music"` requires BOTH terms (AND logic)
+  - Mixed mode: `"YouTube" test` combines exact + fuzzy matching
+- **Appearance Customization** - New settings tab with color pickers
+  - Customize accent, badge, highlight, mark, and selection colors
+  - Live preview: color changes apply immediately
+  - 10 customizable color settings with hex input + color picker
+  - All tab badge CSS now uses CSS custom properties for theming
+
+### Changed
+- Tab badge styles migrated from hardcoded colors to CSS custom properties (`--zl-*`)
+- Search system uses `getSearchableTabs()` for workspace-aware tab enumeration
+- `fuzzyMatch()` now parses quoted terms separately from fuzzy terms
+
 ## [2.5.0] - 2026-02-05
 
 ### Added
@@ -171,6 +193,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.6.0 | 2026-02-05 | Cross-workspace search, exact match quotes, appearance customization |
 | 2.5.0 | 2026-02-05 | Settings modal, h/l workspace switching, configurable keybindings |
 | 2.4.1 | 2026-02-05 | Browse mode multi-select (Space/y/p/P), gg/G navigation, paste fix |
 | 2.4.0 | 2025-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |

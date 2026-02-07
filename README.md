@@ -82,6 +82,12 @@ Quickly find and switch to any tab with fuzzy search:
 - `Ctrl+/` — Open search modal
 - Type to fuzzy search through all open tabs by title and URL
 - Multi-word search: words can match in any order (e.g., "git hub" matches "GitHub")
+- **Exact match with quotes**: `"YouTube"` matches only tabs containing "YouTube"
+  - Multiple exact terms: `"YouTube" "music"` requires BOTH (AND logic)
+  - Mix exact + fuzzy: `"YouTube" test` — exact "YouTube" AND fuzzy "test"
+- **Cross-workspace search**: Click `WS`/`All` toggle in search bar to search all workspaces
+  - Tabs from other workspaces show a purple workspace badge
+  - Toggle default in Settings > Display
 - Recency-weighted ranking: recently accessed tabs rank higher
 - Real-time results with match highlighting
 - Navigate with `↑`/`↓` or `Ctrl+j`/`Ctrl+k`
@@ -119,7 +125,8 @@ Available commands include: close/duplicate/pin/mute/unload tabs, switch/move to
 Customize every keybinding, delay, and display option:
 - **Keybindings** — Rebind all keys with an intuitive key recorder
 - **Timing** — Adjust timeouts and delays
-- **Display** — Customize indicators and limits
+- **Appearance** — Color pickers for all tab badge, highlight, mark, and selection colors
+- **Display** — Customize indicators, limits, and cross-workspace search
 - **Advanced** — Debug mode, recency tuning
 - Search bar to filter settings
 - Per-setting reset buttons
