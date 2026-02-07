@@ -14,21 +14,44 @@ Like vim's relative line numbers, shows distance from current tab:
 
 ### Keyboard Navigation
 
+#### Leap Mode
+`Ctrl+Space` activates leap mode, giving access to all navigation commands:
+
+| Keys | Action |
+|------|--------|
+| `j` / `↓` | Enter browse mode (down) |
+| `k` / `↑` | Enter browse mode (up) |
+| `h` / `l` | Browse + switch workspace (prev/next) |
+| `g` | G-mode (absolute positioning) |
+| `z` | Z-mode (scroll commands) |
+| `m{char}` | Set mark on current tab |
+| `M` | Clear all marks |
+| `'{char}` | Jump to marked tab |
+| `o` / `i` | Jump back / forward in history |
+| `?` | Open help modal |
+| `/` | Open tab search |
+| `Escape` | Exit leap mode |
+
 #### Browse Mode
-Navigate tabs visually with j/k or arrow keys:
-- `Ctrl+Space` → `j` or `↓` — Start browsing down
-- `Ctrl+Space` → `k` or `↑` — Start browsing up
-- Continue with `j/k/↑/↓` to move selection
-- `gg` — Jump to first tab
-- `G` — Jump to last tab
-- `Enter` — Open selected tab
-- `x` — Close selected tab (or all selected tabs)
-- `Space` — Toggle multi-select on highlighted tab
-- `y` — Yank (copy) selected tabs
-- `p` — Paste yanked tabs after highlighted tab
-- `P` — Paste yanked tabs before highlighted tab
-- `1-9, a-z` — Jump directly to tab N positions away
-- `Escape` — Cancel and return to original tab
+Navigate and manipulate tabs visually:
+
+| Keys | Action |
+|------|--------|
+| `j` / `k` / `↑` / `↓` | Move highlight |
+| `gg` | Jump to first tab |
+| `G` | Jump to last tab |
+| `h` / `l` | Switch workspace (prev/next) |
+| `Enter` | Open highlighted tab |
+| `x` | Close highlighted/selected tabs |
+| `Space` | Toggle multi-select on highlighted tab |
+| `Shift+J` / `Shift+K` | Extend selection down/up |
+| `y` | Yank (copy) selected tabs |
+| `p` | Paste yanked tabs after highlighted tab |
+| `P` | Paste yanked tabs before highlighted tab |
+| `1-9, a-z` | Jump N tabs from origin |
+| `Escape` | Cancel, return to original tab |
+
+Yank/paste works across workspaces — yank tabs in one workspace, switch with `h`/`l`, paste in another.
 
 #### G-Mode (Absolute Positioning)
 Jump to specific tab positions:
@@ -41,6 +64,18 @@ Scroll the current tab into view:
 - `Ctrl+Space` → `zz` — Center current tab
 - `Ctrl+Space` → `zt` — Scroll current tab to top
 - `Ctrl+Space` → `zb` — Scroll current tab to bottom
+
+### Marks
+Set bookmarks on tabs for quick access:
+- `Ctrl+Space` → `m{a-z,0-9}` — Set mark (repeat to toggle off)
+- `Ctrl+Space` → `'{char}` — Jump to marked tab
+- `Ctrl+' → {char}` — Quick jump without entering leap mode
+- `Ctrl+Space` → `M` — Clear all marks
+
+### Jump History
+Like vim's Ctrl+O / Ctrl+I:
+- `Ctrl+Space` → `o` — Jump back to previous tab
+- `Ctrl+Space` → `i` — Jump forward in history
 
 ### Tab Search (Spotlight-like Fuzzy Finder)
 Quickly find and switch to any tab with fuzzy search:
@@ -62,9 +97,33 @@ Quickly find and switch to any tab with fuzzy search:
 - Editing: `x`, `s`, `S`, `D`, `C`
 - Insert switches: `i`, `a`, `I`, `A`
 
-### Help
+### Command Palette
+A searchable command palette for quick access to any action:
+- `Ctrl+Shift+/` — Open command palette directly
+- `Ctrl+/` → type `>` — Switch to command mode from search
+
+Available commands include: close/duplicate/pin/mute/unload tabs, switch/move to workspace, add to folder, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more.
+
+**Multi-step commands:** Some commands open sub-flows:
+- "Select matching tabs" → search tabs → pick action (close, move to workspace, add to folder)
+- "Split with tab" → pick a tab to split with
+- "Move to workspace" → pick destination workspace
+- "Add to folder" → pick folder or create new
+
+### Help & Settings
 - `Ctrl+Space` → `?` — Open help modal with all keybindings
-- Press any key to close
+- Click the gear icon in the help modal to open **Settings**
+- Or use the command palette: type `> settings`
+
+### Settings Modal
+Customize every keybinding, delay, and display option:
+- **Keybindings** — Rebind all keys with an intuitive key recorder
+- **Timing** — Adjust timeouts and delays
+- **Display** — Customize indicators and limits
+- **Advanced** — Debug mode, recency tuning
+- Search bar to filter settings
+- Per-setting reset buttons
+- Settings persist across browser restarts
 
 ### Compact Mode Support
 When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating.
@@ -175,46 +234,7 @@ cd claude-code/ZenLeap
 2. Remove ZenLeap styles from `userChrome.css` (between `/* === ZenLeap Styles === */` markers)
 3. Clear startup cache and restart
 
-## Usage Reference
-
-### Quick Reference Card
-
-| Mode | Keys | Action |
-|------|------|--------|
-| **Enter Leap Mode** | `Ctrl+Space` | Activate ZenLeap |
-| **Browse Mode** | `j` / `↓` | Start browsing down |
-| | `k` / `↑` | Start browsing up |
-| | `j/k/↑/↓` | Move selection |
-| | `gg` | Jump to first tab |
-| | `G` | Jump to last tab |
-| | `Enter` | Open selected tab |
-| | `x` | Close selected/highlighted tab |
-| | `Space` | Toggle multi-select |
-| | `y` | Yank selected tabs |
-| | `p` / `P` | Paste after/before highlighted |
-| | `1-9, a-z` | Jump N tabs from origin |
-| | `Escape` | Cancel, return to original |
-| **G-Mode** | `gg` | First tab |
-| | `G` | Last tab |
-| | `g{num}Enter` | Go to tab #{num} |
-| **Z-Mode** | `zz` | Center current tab |
-| | `zt` | Scroll to top |
-| | `zb` | Scroll to bottom |
-| **Marks** | `m{a-z,0-9}` | Set mark (repeat to toggle off) |
-| | `M` | Clear all marks |
-| | `'{a-z,0-9}` | Jump to marked tab |
-| | `Ctrl+'{char}` | Quick jump (no leap mode) |
-| **Jump History** | `o` | Jump back (like vim Ctrl+O) |
-| | `i` | Jump forward (like vim Ctrl+I) |
-| **Tab Search** | `Ctrl+/` | Open fuzzy search modal |
-| | `↑/↓` or `Ctrl+j/k` | Navigate results |
-| | `Enter` | Open selected tab |
-| | `x` or `Ctrl+X` | Close selected tab |
-| | `1-9` (normal) | Quick jump to result |
-| | `Escape` | Toggle vim mode / close |
-| **Help** | `?` | Open help modal |
-
-### Examples
+## Usage Examples
 
 **Browse and select a tab:**
 ```
@@ -226,27 +246,23 @@ Ctrl+Space → j → j → j → Enter    (move down 3 tabs, open it)
 Ctrl+Space → j → 5                 (jump 5 tabs down, open it)
 ```
 
-**Go to first/last tab:**
+**Switch workspace in browse mode:**
 ```
-Ctrl+Space → gg                    (first tab)
-Ctrl+Space → G                     (last tab)
-```
-
-**Go to specific tab number:**
-```
-Ctrl+Space → g → 1 → 2 → Enter     (go to tab #12)
+Ctrl+Space → j → l                 (browse down, switch to next workspace)
+Ctrl+Space → k → h                 (browse up, switch to prev workspace)
 ```
 
 **Multi-select and move tabs:**
 ```
 Ctrl+Space → j → Space → j → Space → y   (select 2 tabs, yank them)
-k → k → p                                  (move up, paste after current)
+l                                          (switch to next workspace)
+p                                          (paste yanked tabs here)
 ```
 
-**Jump to first/last tab in browse mode:**
+**Go to first/last tab:**
 ```
-Ctrl+Space → j → gg                       (browse down, then jump to first)
-Ctrl+Space → k → G                        (browse up, then jump to last)
+Ctrl+Space → gg                    (first tab)
+Ctrl+Space → G                     (last tab)
 ```
 
 **Center current tab in view:**
@@ -257,34 +273,34 @@ Ctrl+Space → zz
 **Set and jump to marks:**
 ```
 Ctrl+Space → m → a             (mark current tab as 'a')
-Ctrl+Space → m → a             (repeat same mark to remove it)
-Ctrl+Space → M                  (clear all marks)
 Ctrl+Space → ' → a             (jump to tab marked 'a')
 Ctrl+' → a                      (quick jump without leap mode)
 ```
 
-**Navigate jump history:**
-```
-Ctrl+Space → o                  (go back to previous tab)
-Ctrl+Space → i                  (go forward in history)
-```
-
 **Search for a tab:**
 ```
-Ctrl+/                          (open search modal)
-git                             (type to fuzzy search)
-↓ or Ctrl+j                     (select next result)
-Enter                           (open selected tab)
+Ctrl+/ → git → Enter              (search and open matching tab)
 ```
 
-**Quick jump in search:**
+**Use the command palette:**
 ```
-Ctrl+/                          (open search modal)
-doc                             (type query)
-3                               (press 3 in normal mode to jump to result #3)
+Ctrl+Shift+/                       (open command palette)
+close                              (type to filter commands)
+Enter                              (execute selected command)
+```
+
+**Select matching tabs and act on them:**
+```
+Ctrl+Shift+/ → select matching     (pick "Select Matching Tabs")
+github                              (search for tabs)
+Enter                               (confirm selection)
+close                               (choose "Close all matching")
 ```
 
 ## Customization
+
+### Settings Modal
+Open the settings modal from the help screen (gear icon) or command palette (`> settings`). All keybindings, timing values, and display options can be customized.
 
 ### CSS Variables
 
@@ -308,17 +324,6 @@ Add to your `userChrome.css`:
   --zenleap-font-size: 80%;
   --zenleap-compact-font-size: 70%;
 }
-```
-
-### Changing the Trigger Key
-
-Edit `zenleap.uc.js` and modify:
-
-```javascript
-const CONFIG = {
-  triggerKey: ' ',           // Space key
-  triggerModifier: 'ctrlKey' // Options: 'ctrlKey', 'altKey', 'shiftKey', 'metaKey'
-};
 ```
 
 ## Debugging

@@ -5,6 +5,31 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-02-05
+
+### Added
+- **Settings Modal** - Full customization of all keybindings, timing, and display options
+  - Accessible via help modal gear icon or command palette (`> settings`)
+  - Tab-based organization: Keybindings, Timing, Display, Advanced
+  - Intuitive key recorder for rebinding any keybinding
+  - Search bar to filter settings
+  - Per-setting reset buttons and "Reset All" option
+  - Settings persist across browser restarts via `uc.zenleap.settings` pref
+  - Glassmorphism UI matching ZenLeap design
+- **Workspace Switching in Leap Mode** - `h`/`l` now enter browse mode and switch workspace
+- **Active Tab Highlighting on Workspace Switch** - Highlights the active tab (not first) when switching workspaces with `h`/`l`
+- **Updated Help Modal** - Comprehensive keybinding reference with all current features
+  - Settings gear button in header
+  - Browse mode multi-select section
+  - Command palette section
+  - Workspace switching documentation
+- **Open Settings Command** - Added `> settings` to command palette
+
+### Changed
+- All keybindings and magic numbers now use centralized settings system (`SETTINGS_SCHEMA` + `S` object)
+- Legacy `CONFIG` object maintained as getter-based compatibility layer
+- Old `uc.zenleap.debug` and `uc.zenleap.current_indicator` prefs auto-migrated
+
 ## [2.4.1] - 2026-02-05
 
 ### Added
@@ -146,6 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.5.0 | 2026-02-05 | Settings modal, h/l workspace switching, configurable keybindings |
 | 2.4.1 | 2026-02-05 | Browse mode multi-select (Space/y/p/P), gg/G navigation, paste fix |
 | 2.4.0 | 2025-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |
 | 2.3.0 | 2025-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |

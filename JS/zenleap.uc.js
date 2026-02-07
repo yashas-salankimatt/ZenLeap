@@ -3,39 +3,186 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.4.1  // Keep in sync with VERSION constant below
+// @version        2.5.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.4.1';
+  const VERSION = '2.5.0';
 
-  // Configuration (defaults, overridden by preferences if set)
-  const CONFIG = {
-    debug: false,  // Set to true to enable console logging
-    currentTabIndicator: '·',  // What to show on current tab
-    overflowIndicator: '+',    // For positions > 45
-    leapModeTimeout: 3000,     // Auto-cancel leap mode after 3 seconds (not used in browse mode)
-    triggerKey: ' ',           // Space key
-    triggerModifier: 'ctrlKey' // Ctrl modifier
+  // ============================================
+  // SETTINGS SYSTEM
+  // ============================================
+
+  const SETTINGS_SCHEMA = {
+    // --- Keybindings: Global Triggers (combo type — key + modifiers) ---
+    'keys.global.leapMode':        { default: { key: ' ', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Leap Mode Toggle', description: 'Toggle leap mode on/off', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.search':          { default: { key: '/', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Tab Search', description: 'Open tab search', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.commandPalette':  { default: { key: '?', ctrl: true, shift: true, alt: false, meta: false }, type: 'combo', label: 'Command Palette', description: 'Open command palette directly (Ctrl+Shift+/)', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.quickMark':       { default: { key: "'", ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Quick Jump to Mark', description: 'Jump to mark without leap mode', category: 'Keybindings', group: 'Global Triggers' },
+
+    // --- Keybindings: Leap Mode ---
+    'keys.leap.browseDown':     { default: 'j', type: 'key', label: 'Browse Down', description: 'Enter browse mode downward', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.browseDownAlt':  { default: 'arrowdown', type: 'key', label: 'Browse Down (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.browseUp':       { default: 'k', type: 'key', label: 'Browse Up', description: 'Enter browse mode upward', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.browseUpAlt':    { default: 'arrowup', type: 'key', label: 'Browse Up (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.gMode':          { default: 'g', type: 'key', label: 'G-Mode', description: 'Enter absolute positioning mode', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.lastTab':        { default: 'G', type: 'key', label: 'Last Tab', description: 'Jump to last tab', category: 'Keybindings', group: 'Leap Mode', caseSensitive: true },
+    'keys.leap.zMode':          { default: 'z', type: 'key', label: 'Z-Mode', description: 'Enter scroll command mode', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.setMark':        { default: 'm', type: 'key', label: 'Set Mark', description: 'Set mark on current tab', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.clearMarks':     { default: 'M', type: 'key', label: 'Clear All Marks', description: 'Remove all marks', category: 'Keybindings', group: 'Leap Mode', caseSensitive: true },
+    'keys.leap.gotoMark':       { default: "'", type: 'key', label: 'Jump to Mark', description: 'Enter goto mark mode', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.gotoMarkAlt':    { default: '`', type: 'key', label: 'Jump to Mark (Alt)', description: 'Backtick alternative', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.jumpBack':       { default: 'o', type: 'key', label: 'Jump Back', description: 'Jump back in tab history', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.jumpForward':    { default: 'i', type: 'key', label: 'Jump Forward', description: 'Jump forward in tab history', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.help':           { default: '?', type: 'key', label: 'Help', description: 'Show help modal', category: 'Keybindings', group: 'Leap Mode', caseSensitive: true },
+    'keys.leap.prevWorkspace':  { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch to previous workspace', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.nextWorkspace':  { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch to next workspace', category: 'Keybindings', group: 'Leap Mode' },
+
+    // --- Keybindings: Browse Mode ---
+    'keys.browse.down':          { default: 'j', type: 'key', label: 'Move Down', description: 'Move highlight down', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.downAlt':       { default: 'arrowdown', type: 'key', label: 'Move Down (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.up':            { default: 'k', type: 'key', label: 'Move Up', description: 'Move highlight up', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.upAlt':         { default: 'arrowup', type: 'key', label: 'Move Up (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.confirm':       { default: 'enter', type: 'key', label: 'Open Tab', description: 'Open highlighted tab', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.close':         { default: 'x', type: 'key', label: 'Close Tab(s)', description: 'Close highlighted or selected tabs', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.select':        { default: ' ', type: 'key', label: 'Toggle Selection', description: 'Select/deselect highlighted tab', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.yank':          { default: 'y', type: 'key', label: 'Yank', description: 'Copy selected tabs to buffer', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.pasteAfter':    { default: 'p', type: 'key', label: 'Paste After', description: 'Paste tabs after highlight', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.pasteBefore':   { default: 'P', type: 'key', label: 'Paste Before', description: 'Paste tabs before highlight', category: 'Keybindings', group: 'Browse Mode', caseSensitive: true },
+    'keys.browse.prevWorkspace': { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch workspace left', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.nextWorkspace': { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch workspace right', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.gMode':         { default: 'g', type: 'key', label: 'Start gg', description: 'Begin gg to jump to first tab', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.lastTab':       { default: 'G', type: 'key', label: 'Last Tab', description: 'Jump to last tab', category: 'Keybindings', group: 'Browse Mode', caseSensitive: true },
+
+    // --- Keybindings: G-Mode ---
+    'keys.gMode.first':  { default: 'g', type: 'key', label: 'First Tab (gg)', description: 'Jump to first tab', category: 'Keybindings', group: 'G-Mode' },
+    'keys.gMode.last':   { default: 'G', type: 'key', label: 'Last Tab', description: 'Jump to last tab', category: 'Keybindings', group: 'G-Mode', caseSensitive: true },
+
+    // --- Keybindings: Z-Mode ---
+    'keys.zMode.center': { default: 'z', type: 'key', label: 'Center (zz)', description: 'Center current tab in view', category: 'Keybindings', group: 'Z-Mode' },
+    'keys.zMode.top':    { default: 't', type: 'key', label: 'Top (zt)', description: 'Scroll current tab to top', category: 'Keybindings', group: 'Z-Mode' },
+    'keys.zMode.bottom': { default: 'b', type: 'key', label: 'Bottom (zb)', description: 'Scroll current tab to bottom', category: 'Keybindings', group: 'Z-Mode' },
+
+    // --- Keybindings: Search / Command Mode ---
+    'keys.search.commandPrefix': { default: '>', type: 'key', label: 'Command Prefix', description: 'Character to enter command mode', category: 'Keybindings', group: 'Search / Command', caseSensitive: true },
+
+    // --- Timing ---
+    'timing.leapTimeout':          { default: 3000, type: 'number', label: 'Leap Mode Timeout', description: 'Auto-cancel after (ms)', category: 'Timing', group: 'Timeouts', min: 500, max: 30000, step: 100 },
+    'timing.gModeTimeout':         { default: 800, type: 'number', label: 'G-Mode Auto-Execute', description: 'Execute g{num} after (ms)', category: 'Timing', group: 'Timeouts', min: 200, max: 5000, step: 50 },
+    'timing.browseGTimeout':       { default: 500, type: 'number', label: 'Browse gg Timeout', description: 'Wait for second g (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 3000, step: 50 },
+    'timing.workspaceSwitchDelay': { default: 100, type: 'number', label: 'Workspace Switch Delay', description: 'UI update delay after switch (ms)', category: 'Timing', group: 'Delays', min: 50, max: 1000, step: 10 },
+    'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
+
+    // --- Display ---
+    'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
+    'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
+    'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
+    'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
+
+    // --- Advanced ---
+    'advanced.debug':              { default: false, type: 'toggle', label: 'Debug Logging', description: 'Log actions to browser console', category: 'Advanced', group: 'Debugging' },
+    'advanced.tabRecencyFloor':    { default: 0.8, type: 'number', label: 'Tab Recency Floor', description: 'Minimum recency multiplier', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 2, step: 0.1 },
+    'advanced.tabRecencyRange':    { default: 1.0, type: 'number', label: 'Tab Recency Range', description: 'Recency multiplier range', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 5, step: 0.1 },
+    'advanced.tabRecencyHalflife': { default: 12, type: 'number', label: 'Tab Recency Halflife', description: 'Minutes until 50% decay', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
+    'advanced.cmdRecencyFloor':    { default: 0.8, type: 'number', label: 'Command Recency Floor', description: 'Minimum recency multiplier', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 2, step: 0.1 },
+    'advanced.cmdRecencyRange':    { default: 2.2, type: 'number', label: 'Command Recency Range', description: 'Recency multiplier range', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 5, step: 0.1 },
+    'advanced.cmdRecencyHalflife': { default: 30, type: 'number', label: 'Command Recency Halflife', description: 'Minutes until 50% decay', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
   };
 
-  // Read preferences from about:config (defined in preferences.json)
-  try {
-    if (Services && Services.prefs) {
-      if (Services.prefs.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
-        CONFIG.debug = Services.prefs.getBoolPref('uc.zenleap.debug');
+  // Current settings (defaults + saved overrides)
+  const S = {};
+
+  function loadSettings() {
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+    }
+    try {
+      if (Services?.prefs?.getPrefType('uc.zenleap.settings') === Services.prefs.PREF_STRING) {
+        try {
+          const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.settings'));
+          for (const [id, value] of Object.entries(saved)) {
+            if (SETTINGS_SCHEMA[id]) S[id] = value;
+          }
+        } catch (parseErr) { /* corrupt JSON in saved settings, using defaults */ }
       }
-      if (Services.prefs.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
-        const indicator = Services.prefs.getStringPref('uc.zenleap.current_indicator');
-        if (indicator) CONFIG.currentTabIndicator = indicator;
+      // Migrate legacy prefs
+      if (Services?.prefs?.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
+        S['advanced.debug'] = Services.prefs.getBoolPref('uc.zenleap.debug');
+      }
+      if (Services?.prefs?.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
+        const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
+        if (ind) S['display.currentTabIndicator'] = ind;
+      }
+    } catch (e) { /* Services not available */ }
+  }
+
+  function saveSettings() {
+    const overrides = {};
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      if (JSON.stringify(S[id]) !== JSON.stringify(schema.default)) {
+        overrides[id] = S[id];
       }
     }
-  } catch (e) {
-    // Services not available, use defaults
+    try { Services.prefs.setStringPref('uc.zenleap.settings', JSON.stringify(overrides)); } catch (e) {}
   }
+
+  function resetSetting(id) {
+    const schema = SETTINGS_SCHEMA[id];
+    if (!schema) return;
+    S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+    saveSettings();
+  }
+
+  function resetAllSettings() {
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+    }
+    saveSettings();
+  }
+
+  // Helper: check if a keyboard event matches a combo-type setting
+  function matchCombo(event, combo) {
+    if (!combo || typeof combo !== 'object') return false;
+    return event.key === combo.key &&
+      !!event.ctrlKey === !!combo.ctrl &&
+      !!event.shiftKey === !!combo.shift &&
+      !!event.altKey === !!combo.alt &&
+      !!event.metaKey === !!combo.meta;
+  }
+
+  // Helper: format a key setting for display
+  function formatKeyDisplay(value, schema) {
+    if (schema?.type === 'combo' && typeof value === 'object') {
+      const parts = [];
+      if (value.ctrl) parts.push('Ctrl');
+      if (value.shift) parts.push('Shift');
+      if (value.alt) parts.push('Alt');
+      if (value.meta) parts.push('Meta');
+      parts.push(formatSingleKey(value.key));
+      return parts.join(' + ');
+    }
+    return formatSingleKey(value);
+  }
+
+  function formatSingleKey(key) {
+    const map = { ' ': 'Space', 'arrowdown': '↓', 'arrowup': '↑', 'arrowleft': '←', 'arrowright': '→', 'enter': 'Enter', 'escape': 'Esc', 'tab': 'Tab', 'backspace': '⌫', "'": "'", '`': '`' };
+    return map[key] || (key?.length === 1 ? key : key);
+  }
+
+  loadSettings();
+
+  // Legacy CONFIG compat — thin wrapper around S for any remaining references
+  const CONFIG = {
+    get debug() { return S['advanced.debug']; },
+    get currentTabIndicator() { return S['display.currentTabIndicator']; },
+    get overflowIndicator() { return S['display.overflowIndicator']; },
+    get leapModeTimeout() { return S['timing.leapTimeout']; },
+    get triggerKey() { return S['keys.global.leapMode'].key; },
+    get triggerModifier() { return 'ctrlKey'; },
+  };
 
   // Special characters for distances 36-45 (shift + number row)
   const SPECIAL_CHARS = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
@@ -69,7 +216,7 @@
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
 
   // Jump list (like vim's Ctrl+O / Ctrl+I)
-  const MAX_JUMP_LIST_SIZE = 100;
+  // Jump list size uses settings: S['display.maxJumpListSize']
   let jumpList = [];           // Array of tab references
   let jumpListIndex = -1;      // Current position in jump list
   let recordingJumps = true;   // Flag to temporarily disable recording
@@ -107,6 +254,14 @@
   // Help modal
   let helpMode = false;
   let helpModal = null;
+
+  // Settings modal
+  let settingsMode = false;
+  let settingsModal = null;
+  let settingsActiveTab = 'Keybindings';
+  let settingsSearchQuery = '';
+  let settingsRecordingId = null;
+  let settingsRecordingHandler = null;
 
   // Utility: Convert number to display character
   function numberToDisplay(num) {
@@ -166,7 +321,7 @@
     jumpListIndex = jumpList.length - 1;
 
     // Trim if too long
-    if (jumpList.length > MAX_JUMP_LIST_SIZE) {
+    if (jumpList.length > S['display.maxJumpListSize']) {
       jumpList.shift();
       jumpListIndex--;
     }
@@ -441,8 +596,7 @@
       const ageMs = Math.max(0, now - lastAccessed);
       const ageMinutes = ageMs / (1000 * 60);
 
-      // Exponential decay: floor=0.8, range=1.0, halflife=12 minutes
-      const multiplier = 0.8 + 1.0 * Math.exp(-ageMinutes / 12);
+      const multiplier = S['advanced.tabRecencyFloor'] + S['advanced.tabRecencyRange'] * Math.exp(-ageMinutes / S['advanced.tabRecencyHalflife']);
       return multiplier;
     }
 
@@ -488,7 +642,7 @@
     // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
       const sortedTabs = sortTabsByRecency(tabs);
-      return sortedTabs.slice(0, 100).map((tab, idx) => ({
+      return sortedTabs.slice(0, S['display.maxSearchResults']).map((tab, idx) => ({
         tab,
         score: 100 - idx, // Score reflects sorted position
         titleIndices: [],
@@ -530,8 +684,7 @@
     // Sort by combined score descending
     results.sort((a, b) => b.score - a.score);
 
-    // Return top 100 results (1-9 have quick jump labels)
-    return results.slice(0, 100);
+    return results.slice(0, S['display.maxSearchResults']);
   }
 
   // Create search modal
@@ -1060,7 +1213,7 @@
         // Discard after a short delay to let the tab switch complete
         setTimeout(() => {
           try { gBrowser.discardBrowser(current); } catch(e) { log(`Unload tab failed: ${e}`); }
-        }, 500);
+        }, S['timing.unloadTabDelay']);
       }},
 
       // --- Tab Selection (Multi-Step) ---
@@ -1224,12 +1377,17 @@
 
       // --- ZenLeap Meta ---
       { key: 'toggle-debug', label: 'Toggle Debug Logging', icon: '🐛', tags: ['debug', 'log', 'zenleap'], command: () => {
-        CONFIG.debug = !CONFIG.debug;
-        console.log(`[ZenLeap] Debug logging ${CONFIG.debug ? 'enabled' : 'disabled'}`);
+        S['advanced.debug'] = !S['advanced.debug'];
+        saveSettings();
+        console.log(`[ZenLeap] Debug logging ${S['advanced.debug'] ? 'enabled' : 'disabled'}`);
       }},
       { key: 'open-help', label: 'Open Help Modal', icon: '❓', tags: ['help', 'zenleap', 'keybindings'], command: () => {
         exitSearchMode();
         setTimeout(() => enterHelpMode(), 100);
+      }},
+      { key: 'open-settings', label: 'Open Settings', icon: '⚙', tags: ['settings', 'config', 'preferences', 'customize', 'keybindings'], command: () => {
+        exitSearchMode();
+        setTimeout(() => enterSettingsMode(), 100);
       }},
     ];
   }
@@ -1334,9 +1492,7 @@
     if (!lastUsed) return 1.0; // No recency data, neutral
     const ageMs = Math.max(0, Date.now() - lastUsed);
     const ageMinutes = ageMs / (1000 * 60);
-    // Aggressive recency: floor=0.8, range=2.2, halflife=30 minutes
-    // Recently used commands get up to 3.0x boost
-    return 0.8 + 2.2 * Math.exp(-ageMinutes / 30);
+    return S['advanced.cmdRecencyFloor'] + S['advanced.cmdRecencyRange'] * Math.exp(-ageMinutes / S['advanced.cmdRecencyHalflife']);
   }
 
   function filterCommands(query) {
@@ -2170,45 +2326,52 @@
 
     container.innerHTML = `
       <div class="zenleap-help-header">
-        <h1>ZenLeap</h1>
-        <span class="zenleap-help-version">v${VERSION}</span>
-        <span class="zenleap-help-subtitle">Vim-style Tab Navigation</span>
+        <div>
+          <h1>ZenLeap</h1>
+          <span class="zenleap-help-version">v${VERSION}</span>
+          <span class="zenleap-help-subtitle">Vim-style Tab Navigation</span>
+        </div>
       </div>
 
       <div class="zenleap-help-content">
         <div class="zenleap-help-section">
-          <h2>🚀 Leap Mode</h2>
+          <h2>&#128640; Leap Mode</h2>
           <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>Space</kbd> to activate</p>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Enter browse mode (down/up)</span></div>
-            <div class="zenleap-help-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>Enter browse mode (arrows)</span></div>
-            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Browse + switch workspace (prev/next)</span></div>
+            <div class="zenleap-help-item"><kbd>&#8593;</kbd> / <kbd>&#8595;</kbd><span>Enter browse mode (arrows)</span></div>
+            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Browse + switch workspace</span></div>
             <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
             <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
             <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
             <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
             <div class="zenleap-help-item"><kbd>'</kbd><span>Jump to mark</span></div>
-            <div class="zenleap-help-item"><kbd>o</kbd><span>Jump back in history</span></div>
-            <div class="zenleap-help-item"><kbd>i</kbd><span>Jump forward in history</span></div>
+            <div class="zenleap-help-item"><kbd>o</kbd> / <kbd>i</kbd><span>Jump back / forward in history</span></div>
             <div class="zenleap-help-item"><kbd>?</kbd><span>Show this help</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Exit leap mode</span></div>
           </div>
         </div>
 
         <div class="zenleap-help-section">
-          <h2>📂 Browse Mode</h2>
+          <h2>&#128194; Browse Mode</h2>
           <p class="zenleap-help-trigger">After pressing <kbd>j</kbd> or <kbd>k</kbd> in leap mode</p>
           <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Move selection down/up</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Move highlight down/up</span></div>
+            <div class="zenleap-help-item"><kbd>Shift</kbd>+<kbd>J</kbd>/<kbd>K</kbd><span>Navigate + select</span></div>
+            <div class="zenleap-help-item"><kbd>Space</kbd><span>Toggle selection on tab</span></div>
+            <div class="zenleap-help-item"><kbd>y</kbd><span>Yank (copy) selected tabs</span></div>
+            <div class="zenleap-help-item"><kbd>p</kbd> / <kbd>P</kbd><span>Paste after / before</span></div>
+            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Switch workspace (prev/next)</span></div>
+            <div class="zenleap-help-item"><kbd>gg</kbd> / <kbd>G</kbd><span>Jump to first / last tab</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open highlighted tab</span></div>
+            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected/highlighted tab(s)</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd> <kbd>a-z</kbd><span>Jump N tabs from origin</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Cancel, return to original</span></div>
           </div>
         </div>
 
         <div class="zenleap-help-section">
-          <h2>📍 G-Mode</h2>
+          <h2>&#128205; G-Mode</h2>
           <p class="zenleap-help-trigger">After pressing <kbd>g</kbd> in leap mode</p>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>g</kbd><span>Go to first tab (gg)</span></div>
@@ -2218,7 +2381,7 @@
         </div>
 
         <div class="zenleap-help-section">
-          <h2>📜 Z-Mode</h2>
+          <h2>&#128220; Z-Mode</h2>
           <p class="zenleap-help-trigger">After pressing <kbd>z</kbd> in leap mode</p>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>z</kbd><span>Center current tab (zz)</span></div>
@@ -2228,43 +2391,48 @@
         </div>
 
         <div class="zenleap-help-section">
-          <h2>🔖 Marks</h2>
+          <h2>&#128278; Marks</h2>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>m</kbd> + <kbd>a-z</kbd><span>Set mark (repeat to toggle off)</span></div>
             <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
             <div class="zenleap-help-item"><kbd>'</kbd> + <kbd>a-z</kbd><span>Jump to marked tab</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>'</kbd> + <kbd>char</kbd><span>Quick jump (no leap mode)</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>'</kbd>+<kbd>char</kbd><span>Quick jump (no leap mode)</span></div>
           </div>
         </div>
 
         <div class="zenleap-help-section">
-          <h2>🔍 Tab Search</h2>
+          <h2>&#128269; Tab Search</h2>
           <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>/</kbd> to open</p>
 
           <h3>Insert Mode</h3>
           <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>↑</kbd> / <kbd>↓</kbd><span>Navigate results</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>j/k</kbd><span>Navigate results</span></div>
+            <div class="zenleap-help-item"><kbd>&#8593;</kbd>/<kbd>&#8595;</kbd> or <kbd>Ctrl</kbd>+<kbd>j/k</kbd><span>Navigate results</span></div>
             <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd> + <kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>></kbd><span>Enter command mode</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Switch to normal mode</span></div>
           </div>
 
           <h3>Normal Mode</h3>
           <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Navigate results</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>j</kbd>/<kbd>k</kbd><span>Navigate results</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump to result</span></div>
-            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Move cursor left/right</span></div>
-            <div class="zenleap-help-item"><kbd>w</kbd> / <kbd>b</kbd> / <kbd>e</kbd><span>Word movement</span></div>
-            <div class="zenleap-help-item"><kbd>0</kbd> / <kbd>$</kbd><span>Beginning/end of line</span></div>
-            <div class="zenleap-help-item"><kbd>i</kbd> / <kbd>a</kbd><span>Insert at/after cursor</span></div>
-            <div class="zenleap-help-item"><kbd>I</kbd> / <kbd>A</kbd><span>Insert at beginning/end</span></div>
-            <div class="zenleap-help-item"><kbd>s</kbd><span>Substitute character</span></div>
-            <div class="zenleap-help-item"><kbd>S</kbd><span>Substitute entire line</span></div>
-            <div class="zenleap-help-item"><kbd>D</kbd> / <kbd>C</kbd><span>Delete/change to end</span></div>
+            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
+            <div class="zenleap-help-item"><kbd>h/l/w/b/e/0/$</kbd><span>Vim cursor movement</span></div>
+            <div class="zenleap-help-item"><kbd>i/a/I/A</kbd><span>Enter insert mode</span></div>
+            <div class="zenleap-help-item"><kbd>s/S/D/C</kbd><span>Substitute/delete/change</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Close search</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>&#9881; Command Palette</h2>
+          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd> or type <kbd>></kbd> in search</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>&#8593;</kbd>/<kbd>&#8595;</kbd><span>Navigate commands</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd> or <kbd>Tab</kbd><span>Execute command</span></div>
+            <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump + execute</span></div>
+            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Back / close</span></div>
           </div>
         </div>
       </div>
@@ -2336,7 +2504,40 @@
       .zenleap-help-header {
         padding: 24px 32px 20px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+      }
+
+      .zenleap-help-header > div {
         text-align: center;
+      }
+
+      .zenleap-help-settings-btn {
+        position: absolute;
+        right: 24px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(97, 175, 239, 0.1);
+        border: 1px solid rgba(97, 175, 239, 0.25);
+        color: #abb2bf;
+        font-size: 13px;
+        padding: 6px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.2s ease;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        white-space: nowrap;
+      }
+
+      .zenleap-help-settings-btn:hover {
+        background: rgba(97, 175, 239, 0.2);
+        border-color: rgba(97, 175, 239, 0.4);
+        color: #61afef;
       }
 
       .zenleap-help-header h1 {
@@ -2471,6 +2672,21 @@
     document.head.appendChild(style);
     document.documentElement.appendChild(helpModal);
 
+    // Create settings button programmatically (innerHTML strips <button> in chrome context)
+    const helpHeader = container.querySelector('.zenleap-help-header');
+    if (helpHeader) {
+      const settingsBtn = document.createElement('button');
+      settingsBtn.className = 'zenleap-help-settings-btn';
+      settingsBtn.title = 'Settings';
+      settingsBtn.textContent = '\u2699 Settings';
+      settingsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        exitHelpMode();
+        setTimeout(() => enterSettingsMode(), 50);
+      });
+      helpHeader.appendChild(settingsBtn);
+    }
+
     log('Help modal created');
   }
 
@@ -2497,6 +2713,474 @@
     helpModal.classList.remove('active');
 
     log('Exited help mode');
+  }
+
+  // ============================================
+  // SETTINGS MODAL
+  // ============================================
+
+  function createSettingsModal() {
+    if (settingsModal) return;
+
+    // Set to non-null only after successful creation to allow retry on failure
+    const modal = document.createElement('div');
+    modal.id = 'zenleap-settings-modal';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-settings-backdrop';
+    backdrop.addEventListener('click', () => exitSettingsMode());
+
+    const container = document.createElement('div');
+    container.id = 'zenleap-settings-container';
+
+    // Header (create button via createElement — innerHTML strips <button> in chrome context)
+    const header = document.createElement('div');
+    header.className = 'zenleap-settings-header';
+    header.innerHTML = `<div><h1>Settings</h1><span class="zenleap-settings-subtitle">ZenLeap Configuration</span></div>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-settings-close-btn';
+    closeBtn.title = 'Close';
+    closeBtn.textContent = '\u2715';
+    closeBtn.addEventListener('click', () => exitSettingsMode());
+    header.appendChild(closeBtn);
+
+    // Search (create input via createElement — innerHTML strips <input> in chrome context)
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'zenleap-settings-search';
+    const searchIcon = document.createElement('span');
+    searchIcon.className = 'zenleap-settings-search-icon';
+    searchIcon.textContent = '\uD83D\uDD0D';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.id = 'zenleap-settings-search-input';
+    searchInput.placeholder = 'Search settings...';
+    searchInput.addEventListener('input', (e) => {
+      settingsSearchQuery = e.target.value.toLowerCase();
+      renderSettingsContent();
+    });
+    searchWrap.appendChild(searchIcon);
+    searchWrap.appendChild(searchInput);
+
+    // Tabs
+    const tabs = document.createElement('div');
+    tabs.className = 'zenleap-settings-tabs';
+    tabs.id = 'zenleap-settings-tabs';
+    ['Keybindings', 'Timing', 'Display', 'Advanced'].forEach(cat => {
+      const btn = document.createElement('button');
+      btn.textContent = cat;
+      btn.dataset.tab = cat;
+      if (cat === settingsActiveTab) btn.classList.add('active');
+      btn.addEventListener('click', () => {
+        settingsActiveTab = cat;
+        tabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderSettingsContent();
+      });
+      tabs.appendChild(btn);
+    });
+
+    // Body
+    const body = document.createElement('div');
+    body.id = 'zenleap-settings-body';
+
+    // Footer (create button via createElement — innerHTML strips <button> in chrome context)
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-settings-footer';
+    const resetAllBtn = document.createElement('button');
+    resetAllBtn.className = 'zenleap-settings-reset-all';
+    resetAllBtn.textContent = 'Reset All to Defaults';
+    resetAllBtn.addEventListener('click', () => {
+      resetAllSettings();
+      renderSettingsContent();
+    });
+    footer.appendChild(resetAllBtn);
+
+    container.appendChild(header);
+    container.appendChild(searchWrap);
+    container.appendChild(tabs);
+    container.appendChild(body);
+    container.appendChild(footer);
+
+    modal.appendChild(backdrop);
+    modal.appendChild(container);
+
+    // Inject styles
+    const style = document.createElement('style');
+    style.id = 'zenleap-settings-styles';
+    style.textContent = `
+      #zenleap-settings-modal {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100002; display: none; justify-content: center; align-items: center; padding: 20px;
+      }
+      #zenleap-settings-modal.active { display: flex; }
+      #zenleap-settings-backdrop {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(8px);
+      }
+      #zenleap-settings-container {
+        position: relative; width: 95%; max-width: 750px; max-height: 85vh;
+        background: rgba(25, 25, 30, 0.98); border-radius: 16px;
+        box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        overflow: hidden; display: flex; flex-direction: column;
+        animation: zenleap-settings-appear 0.2s ease-out;
+      }
+      @keyframes zenleap-settings-appear {
+        from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      .zenleap-settings-header {
+        padding: 20px 24px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .zenleap-settings-header h1 {
+        margin: 0; font-size: 22px; font-weight: 700; color: #61afef; display: inline;
+      }
+      .zenleap-settings-subtitle {
+        display: block; margin-top: 4px; font-size: 12px; color: #888;
+      }
+      .zenleap-settings-close-btn {
+        background: none; border: none; color: #666; font-size: 18px; cursor: pointer;
+        padding: 4px 8px; border-radius: 4px; transition: all 0.15s;
+      }
+      .zenleap-settings-close-btn:hover { color: #e0e0e0; background: rgba(255,255,255,0.1); }
+      .zenleap-settings-search {
+        display: flex; align-items: center; padding: 12px 24px; gap: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .zenleap-settings-search-icon { font-size: 14px; opacity: 0.5; }
+      #zenleap-settings-search-input {
+        flex: 1; background: transparent; border: none; outline: none;
+        font-size: 14px; color: #e0e0e0; caret-color: #61afef;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      #zenleap-settings-search-input::placeholder { color: #555; }
+      .zenleap-settings-tabs {
+        display: flex; padding: 0 24px; gap: 4px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .zenleap-settings-tabs button {
+        background: none; border: none; color: #888; font-size: 13px; font-weight: 500;
+        padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+        transition: all 0.15s; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      .zenleap-settings-tabs button:hover { color: #ccc; }
+      .zenleap-settings-tabs button.active {
+        color: #61afef; border-bottom-color: #61afef;
+      }
+      #zenleap-settings-body {
+        flex: 1; overflow-y: auto; padding: 16px 24px;
+      }
+      #zenleap-settings-body::-webkit-scrollbar { width: 8px; }
+      #zenleap-settings-body::-webkit-scrollbar-track { background: transparent; }
+      #zenleap-settings-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+      #zenleap-settings-body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+      .zenleap-settings-group { margin-bottom: 20px; }
+      .zenleap-settings-group h3 {
+        margin: 0 0 10px; font-size: 11px; font-weight: 600; color: #61afef;
+        text-transform: uppercase; letter-spacing: 0.8px;
+      }
+      .zenleap-settings-row {
+        display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+        border-radius: 8px; transition: background 0.1s;
+      }
+      .zenleap-settings-row:hover { background: rgba(255, 255, 255, 0.03); }
+      .zenleap-settings-row.modified .zenleap-settings-name { color: #e5c07b; }
+      .zenleap-settings-label { flex: 1; min-width: 0; }
+      .zenleap-settings-name {
+        font-size: 13px; font-weight: 500; color: #e0e0e0; display: block;
+      }
+      .zenleap-settings-desc {
+        font-size: 11px; color: #666; display: block; margin-top: 2px;
+      }
+      .zenleap-settings-control { flex-shrink: 0; }
+      .zenleap-key-recorder {
+        background: rgba(97, 175, 239, 0.1); border: 1px solid rgba(97, 175, 239, 0.3);
+        color: #61afef; padding: 5px 14px; border-radius: 6px; cursor: pointer;
+        font-family: monospace; font-size: 12px; font-weight: 600;
+        min-width: 80px; text-align: center; transition: all 0.15s;
+      }
+      .zenleap-key-recorder:hover {
+        background: rgba(97, 175, 239, 0.2); border-color: rgba(97, 175, 239, 0.5);
+      }
+      .zenleap-key-recorder.recording {
+        background: rgba(97, 175, 239, 0.25); border-color: #61afef;
+        animation: zenleap-recording-pulse 1s ease-in-out infinite;
+      }
+      @keyframes zenleap-recording-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(97, 175, 239, 0.4); }
+        50% { box-shadow: 0 0 0 6px rgba(97, 175, 239, 0); }
+      }
+      .zenleap-settings-control input[type="number"],
+      .zenleap-settings-control input[type="text"] {
+        background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px;
+        width: 80px; outline: none; transition: border-color 0.15s;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      .zenleap-settings-control input[type="text"] { width: 50px; text-align: center; font-family: monospace; }
+      .zenleap-settings-control input:focus { border-color: #61afef; }
+      /* Toggle switch */
+      .zenleap-toggle {
+        position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer;
+      }
+      .zenleap-toggle input { opacity: 0; width: 0; height: 0; }
+      .zenleap-toggle-slider {
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(255, 255, 255, 0.12); border-radius: 11px;
+        transition: background 0.2s;
+      }
+      .zenleap-toggle-slider::before {
+        content: ''; position: absolute; height: 16px; width: 16px;
+        left: 3px; bottom: 3px; background: #888; border-radius: 50%;
+        transition: all 0.2s;
+      }
+      .zenleap-toggle input:checked + .zenleap-toggle-slider { background: rgba(97, 175, 239, 0.4); }
+      .zenleap-toggle input:checked + .zenleap-toggle-slider::before {
+        transform: translateX(18px); background: #61afef;
+      }
+      .zenleap-settings-reset-btn {
+        background: none; border: none; color: #555; font-size: 16px; cursor: pointer;
+        padding: 4px 6px; border-radius: 4px; transition: all 0.15s; flex-shrink: 0;
+      }
+      .zenleap-settings-reset-btn:hover { color: #e06c75; background: rgba(224, 108, 117, 0.1); }
+      .zenleap-settings-footer {
+        padding: 12px 24px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+        display: flex; justify-content: center;
+      }
+      .zenleap-settings-reset-all {
+        background: rgba(224, 108, 117, 0.1); border: 1px solid rgba(224, 108, 117, 0.3);
+        color: #e06c75; padding: 6px 16px; border-radius: 6px; cursor: pointer;
+        font-size: 12px; font-weight: 500; transition: all 0.15s;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      }
+      .zenleap-settings-reset-all:hover {
+        background: rgba(224, 108, 117, 0.2); border-color: rgba(224, 108, 117, 0.5);
+      }
+      .zenleap-settings-empty {
+        padding: 40px 20px; text-align: center; color: #555; font-size: 14px;
+      }
+    `;
+    document.head.appendChild(style);
+    document.documentElement.appendChild(modal);
+
+    // Only assign after successful creation so failures allow retry
+    settingsModal = modal;
+
+    renderSettingsContent();
+    log('Settings modal created');
+  }
+
+  function renderSettingsContent() {
+    const body = document.getElementById('zenleap-settings-body');
+    if (!body) return;
+    body.innerHTML = '';
+
+    const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
+      if (schema.category !== settingsActiveTab) return false;
+      if (settingsSearchQuery) {
+        const text = `${schema.label} ${schema.description || ''} ${schema.group} ${id}`.toLowerCase();
+        return text.includes(settingsSearchQuery);
+      }
+      return true;
+    });
+
+    // Group by subcategory
+    const groups = new Map();
+    for (const [id, schema] of entries) {
+      const g = schema.group || 'General';
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push([id, schema]);
+    }
+
+    if (groups.size === 0) {
+      body.innerHTML = '<div class="zenleap-settings-empty">No settings match your search</div>';
+      return;
+    }
+
+    for (const [groupName, items] of groups) {
+      const groupDiv = document.createElement('div');
+      groupDiv.className = 'zenleap-settings-group';
+      const h3 = document.createElement('h3');
+      h3.textContent = groupName;
+      groupDiv.appendChild(h3);
+
+      for (const [id, schema] of items) {
+        groupDiv.appendChild(createSettingRow(id, schema));
+      }
+      body.appendChild(groupDiv);
+    }
+  }
+
+  function createSettingRow(id, schema) {
+    const row = document.createElement('div');
+    row.className = 'zenleap-settings-row';
+    row.dataset.id = id;
+
+    const isModified = JSON.stringify(S[id]) !== JSON.stringify(schema.default);
+    if (isModified) row.classList.add('modified');
+
+    // Label
+    const label = document.createElement('div');
+    label.className = 'zenleap-settings-label';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'zenleap-settings-name';
+    nameSpan.textContent = schema.label;
+    label.appendChild(nameSpan);
+    if (schema.description) {
+      const descSpan = document.createElement('span');
+      descSpan.className = 'zenleap-settings-desc';
+      descSpan.textContent = schema.description;
+      label.appendChild(descSpan);
+    }
+
+    // Control
+    const control = document.createElement('div');
+    control.className = 'zenleap-settings-control';
+
+    if (schema.type === 'combo' || schema.type === 'key') {
+      const btn = document.createElement('button');
+      btn.className = 'zenleap-key-recorder';
+      btn.textContent = formatKeyDisplay(S[id], schema);
+      btn.addEventListener('click', () => startKeyRecording(id, btn));
+      control.appendChild(btn);
+    } else if (schema.type === 'number') {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.value = S[id];
+      if (schema.min !== undefined) input.min = schema.min;
+      if (schema.max !== undefined) input.max = schema.max;
+      if (schema.step !== undefined) input.step = schema.step;
+      input.addEventListener('change', () => {
+        let val = parseFloat(input.value);
+        if (isNaN(val)) val = schema.default;
+        if (schema.min !== undefined && val < schema.min) val = schema.min;
+        if (schema.max !== undefined && val > schema.max) val = schema.max;
+        S[id] = val;
+        input.value = val;
+        saveSettings();
+        row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
+      });
+      control.appendChild(input);
+    } else if (schema.type === 'text') {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = S[id];
+      if (schema.maxLength) input.maxLength = schema.maxLength;
+      input.addEventListener('input', () => {
+        S[id] = input.value;
+        saveSettings();
+        row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
+      });
+      control.appendChild(input);
+    } else if (schema.type === 'toggle') {
+      const toggle = document.createElement('label');
+      toggle.className = 'zenleap-toggle';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!S[id];
+      const slider = document.createElement('span');
+      slider.className = 'zenleap-toggle-slider';
+      toggle.appendChild(cb);
+      toggle.appendChild(slider);
+      cb.addEventListener('change', () => {
+        S[id] = cb.checked;
+        saveSettings();
+        row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
+      });
+      control.appendChild(toggle);
+    }
+
+    // Reset button
+    const resetBtn = document.createElement('button');
+    resetBtn.className = 'zenleap-settings-reset-btn';
+    resetBtn.textContent = '\u21BA';
+    resetBtn.title = `Reset to default: ${formatKeyDisplay(schema.default, schema)}`;
+    resetBtn.addEventListener('click', () => {
+      resetSetting(id);
+      renderSettingsContent();
+    });
+
+    row.appendChild(label);
+    row.appendChild(control);
+    row.appendChild(resetBtn);
+    return row;
+  }
+
+  // Key recording for rebinding
+  function startKeyRecording(settingId, buttonElement) {
+    stopKeyRecording();
+    settingsRecordingId = settingId;
+    const schema = SETTINGS_SCHEMA[settingId];
+
+    buttonElement.textContent = 'Press key\u2026';
+    buttonElement.classList.add('recording');
+
+    settingsRecordingHandler = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      if (event.key === 'Escape') {
+        stopKeyRecording();
+        renderSettingsContent();
+        return;
+      }
+
+      // Ignore bare modifier keys
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
+
+      if (schema.type === 'combo') {
+        S[settingId] = {
+          key: event.key,
+          ctrl: event.ctrlKey,
+          shift: event.shiftKey,
+          alt: event.altKey,
+          meta: event.metaKey,
+        };
+      } else {
+        S[settingId] = schema.caseSensitive ? event.key : event.key.toLowerCase();
+      }
+
+      saveSettings();
+      stopKeyRecording();
+      renderSettingsContent();
+    };
+
+    window.addEventListener('keydown', settingsRecordingHandler, true);
+  }
+
+  function stopKeyRecording() {
+    if (settingsRecordingHandler) {
+      window.removeEventListener('keydown', settingsRecordingHandler, true);
+      settingsRecordingHandler = null;
+    }
+    settingsRecordingId = null;
+  }
+
+  function enterSettingsMode() {
+    if (settingsMode) return;
+    if (helpMode) exitHelpMode();
+    if (leapMode) exitLeapMode(false);
+    if (searchMode) exitSearchMode();
+
+    createSettingsModal();
+    settingsMode = true;
+    settingsModal.classList.add('active');
+
+    setTimeout(() => {
+      const input = document.getElementById('zenleap-settings-search-input');
+      if (input) input.focus();
+    }, 50);
+
+    log('Entered settings mode');
+  }
+
+  function exitSettingsMode() {
+    if (!settingsMode) return;
+    stopKeyRecording();
+    settingsMode = false;
+    settingsModal.classList.remove('active');
+    log('Exited settings mode');
   }
 
   // Enter search mode
@@ -3258,8 +3942,8 @@
       return;
     }
 
-    // Detect > prefix to enter command mode
-    if (value === '>') {
+    // Detect command prefix to enter command mode
+    if (value === S['keys.search.commandPrefix']) {
       searchInput.value = '';
       commandEnteredFromSearch = true;
       enterCommandMode();
@@ -3783,7 +4467,7 @@
           updateLeapOverlayState();
         }
         log(`Browse: workspace switched, ${newTabs.length} tabs visible, highlight=${highlightedTabIndex}`);
-      }, 100);
+      }, S['timing.workspaceSwitchDelay']);
     } catch (e) { log(`Workspace switch failed: ${e}`); }
   }
 
@@ -4224,9 +4908,19 @@
       return;
     }
 
-    // Handle help mode - Escape or ? to close
+    // Handle settings mode - Escape to close, all other keys handled by modal
+    if (settingsMode) {
+      if (event.key === 'Escape' && !settingsRecordingId) {
+        event.preventDefault();
+        event.stopPropagation();
+        exitSettingsMode();
+      }
+      return;
+    }
+
+    // Handle help mode - Escape or help key to close
     if (helpMode) {
-      if (event.key === 'Escape' || event.key === '?') {
+      if (event.key === 'Escape' || event.key === S['keys.leap.help']) {
         event.preventDefault();
         event.stopPropagation();
         exitHelpMode();
@@ -4248,24 +4942,24 @@
       return;
     }
 
-    // Check for command mode trigger: Ctrl+Shift+/
-    if (event.ctrlKey && event.shiftKey && (event.key === '?' || event.key === '/')) {
+    // Check for command mode trigger
+    if (matchCombo(event, S['keys.global.commandPalette'])) {
       event.preventDefault();
       event.stopPropagation();
       enterSearchMode(true);
       return;
     }
 
-    // Check for search trigger: Ctrl+/
-    if (event.ctrlKey && event.key === '/') {
+    // Check for search trigger
+    if (matchCombo(event, S['keys.global.search'])) {
       event.preventDefault();
       event.stopPropagation();
       enterSearchMode();
       return;
     }
 
-    // Check for leap mode trigger: Ctrl+Space
-    if (event[CONFIG.triggerModifier] && event.key === CONFIG.triggerKey) {
+    // Check for leap mode trigger
+    if (matchCombo(event, S['keys.global.leapMode'])) {
       event.preventDefault();
       event.stopPropagation();
 
@@ -4277,8 +4971,8 @@
       return;
     }
 
-    // Check for quick mark jump: Ctrl+' (works outside leap mode)
-    if (event[CONFIG.triggerModifier] && (event.key === "'" || event.key === '`')) {
+    // Check for quick mark jump (works outside leap mode)
+    if (matchCombo(event, S['keys.global.quickMark'])) {
       event.preventDefault();
       event.stopPropagation();
 
@@ -4317,81 +5011,63 @@
       event.preventDefault();
       event.stopPropagation();
 
-      if (key === 'j' || key === 'arrowdown') {
+      if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
         if (event.shiftKey) {
-          // Shift+J: select current tab, move down, select new tab
           const tabs = getVisibleTabs();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-            selectedTabs.add(tabs[highlightedTabIndex]);
-          }
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
           moveHighlight('down');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-            selectedTabs.add(tabs[highlightedTabIndex]);
-          }
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
           updateHighlight();
           updateLeapOverlayState();
-          log(`Shift+J: navigate+select (${selectedTabs.size} total)`);
         } else {
           moveHighlight('down');
         }
         return;
       }
-      if (key === 'k' || key === 'arrowup') {
+      if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt']) {
         if (event.shiftKey) {
-          // Shift+K: select current tab, move up, select new tab
           const tabs = getVisibleTabs();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-            selectedTabs.add(tabs[highlightedTabIndex]);
-          }
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
           moveHighlight('up');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-            selectedTabs.add(tabs[highlightedTabIndex]);
-          }
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
           updateHighlight();
           updateLeapOverlayState();
-          log(`Shift+K: navigate+select (${selectedTabs.size} total)`);
         } else {
           moveHighlight('up');
         }
         return;
       }
-      if (key === 'enter') {
+      if (key === S['keys.browse.confirm']) {
         confirmBrowseSelection();
         return;
       }
-      if (key === 'x') {
+      if (key === S['keys.browse.close']) {
         closeHighlightedTab();
         return;
       }
-      // Space = toggle selection on highlighted tab
-      if (key === ' ') {
+      if (key === S['keys.browse.select']) {
         toggleTabSelection();
         return;
       }
-      // y = yank selected tabs
-      if (key === 'y') {
+      if (key === S['keys.browse.yank']) {
         yankSelectedTabs();
         return;
       }
-      // p = paste yanked tabs after highlighted tab
-      if (key === 'p' && originalKey === 'p') {
-        pasteTabs('after');
-        return;
-      }
-      // P = paste yanked tabs before highlighted tab
-      if (originalKey === 'P') {
+      if (originalKey === S['keys.browse.pasteBefore']) {
         pasteTabs('before');
         return;
       }
-
-      // h = switch to previous workspace, l = switch to next workspace
-      if (key === 'h' || key === 'l') {
-        browseWorkspaceSwitch(key === 'h' ? 'prev' : 'next');
+      if (key === S['keys.browse.pasteAfter']) {
+        pasteTabs('after');
+        return;
+      }
+      if (key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.nextWorkspace']) {
+        browseWorkspaceSwitch(key === S['keys.browse.prevWorkspace'] ? 'prev' : 'next');
         return;
       }
 
       // G = move highlight to last tab
-      if (originalKey === 'G') {
+      if (originalKey === S['keys.browse.lastTab']) {
         const tabs = getVisibleTabs();
         highlightedTabIndex = tabs.length - 1;
         updateHighlight();
@@ -4401,7 +5077,7 @@
       }
 
       // g = pending gg (move highlight to first tab)
-      if (key === 'g' && originalKey === 'g') {
+      if (key === S['keys.browse.gMode'] && originalKey === S['keys.browse.gMode']) {
         if (browseGPending) {
           // Second g pressed - move to first tab
           clearTimeout(browseGTimeout);
@@ -4424,7 +5100,7 @@
             log(`Browse: g timed out, jumping distance ${gDistance}`);
             jumpAndOpenTab(gDistance);
           }
-        }, 500);
+        }, S['timing.browseGTimeout']);
         return;
       }
 
@@ -4451,13 +5127,13 @@
       event.stopPropagation();
 
       // gg - go to first tab
-      if (key === 'g' && gNumberBuffer === '') {
+      if (key === S['keys.gMode.first'] && gNumberBuffer === '') {
         goToAbsoluteTab(1);
         return;
       }
 
       // G in g-mode - go to last tab
-      if (originalKey === 'G' && gNumberBuffer === '') {
+      if (originalKey === S['keys.gMode.last'] && gNumberBuffer === '') {
         const tabs = getVisibleTabs();
         goToAbsoluteTab(tabs.length);
         return;
@@ -4482,7 +5158,7 @@
               updateLeapOverlayState();
             }
           }
-        }, 800); // 800ms timeout for multi-digit
+        }, S['timing.gModeTimeout']);
 
         log(`g-mode number buffer: ${gNumberBuffer}`);
         return;
@@ -4512,17 +5188,17 @@
       event.preventDefault();
       event.stopPropagation();
 
-      if (key === 'z') {
+      if (key === S['keys.zMode.center']) {
         scrollTabIntoView('center');
         exitLeapMode(false);
         return;
       }
-      if (key === 't') {
+      if (key === S['keys.zMode.top']) {
         scrollTabIntoView('top');
         exitLeapMode(false);
         return;
       }
-      if (key === 'b') {
+      if (key === S['keys.zMode.bottom']) {
         scrollTabIntoView('bottom');
         exitLeapMode(false);
         return;
@@ -4581,78 +5257,66 @@
     event.preventDefault();
     event.stopPropagation();
 
-    if (key === 'j' || key === 'arrowdown') {
+    if (key === S['keys.leap.browseDown'] || key === S['keys.leap.browseDownAlt']) {
       enterBrowseMode('down');
       return;
     }
-    if (key === 'k' || key === 'arrowup') {
+    if (key === S['keys.leap.browseUp'] || key === S['keys.leap.browseUpAlt']) {
       enterBrowseMode('up');
       return;
     }
-    // G (shift+g) - go to last tab directly (must check before lowercase g)
-    if (originalKey === 'G') {
+    if (originalKey === S['keys.leap.lastTab']) {
       const tabs = getVisibleTabs();
       goToAbsoluteTab(tabs.length);
       return;
     }
-    if (key === 'g') {
+    if (key === S['keys.leap.gMode']) {
       gMode = true;
       gNumberBuffer = '';
-      clearTimeout(leapModeTimeout); // No timeout in g-mode
+      clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       log('Entered g-mode');
       return;
     }
-    if (key === 'z') {
+    if (key === S['keys.leap.zMode']) {
       zMode = true;
-      clearTimeout(leapModeTimeout); // No timeout in z-mode
+      clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       log('Entered z-mode');
       return;
     }
-    if (key === 'm' && originalKey !== 'M') {
+    if (key === S['keys.leap.setMark'] && originalKey !== S['keys.leap.clearMarks']) {
       markMode = true;
       document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
-      clearTimeout(leapModeTimeout); // No timeout in mark mode
+      clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       log('Entered mark mode');
       return;
     }
-    // M (shift+m) - clear all marks
-    if (originalKey === 'M') {
+    if (originalKey === S['keys.leap.clearMarks']) {
       clearAllMarks();
       exitLeapMode(false);
       return;
     }
-    if (key === "'" || key === '`') {
+    if (key === S['keys.leap.gotoMark'] || key === S['keys.leap.gotoMarkAlt']) {
       gotoMarkMode = true;
       document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
-      clearTimeout(leapModeTimeout); // No timeout in goto mark mode
+      clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       log('Entered goto mark mode');
       return;
     }
-    if (key === 'o') {
-      // Jump back in history
-      if (jumpBack()) {
-        exitLeapMode(true); // Center scroll
-      }
+    if (key === S['keys.leap.jumpBack']) {
+      if (jumpBack()) exitLeapMode(true);
       return;
     }
-    if (key === 'i') {
-      // Jump forward in history
-      if (jumpForward()) {
-        exitLeapMode(true); // Center scroll
-      }
+    if (key === S['keys.leap.jumpForward']) {
+      if (jumpForward()) exitLeapMode(true);
       return;
     }
-    // h = enter browse mode + switch to previous workspace
-    // l = enter browse mode + switch to next workspace
-    if (key === 'h' || key === 'l') {
-      // Set browse state directly without highlighting in current workspace —
-      // browseWorkspaceSwitch will reset highlight after the workspace switch
+    if (key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.nextWorkspace']) {
       browseMode = true;
-      browseDirection = key === 'h' ? 'up' : 'down';
+      browseDirection = key === S['keys.leap.prevWorkspace'] ? 'up' : 'down';
       const tabs = getVisibleTabs();
       const currentTab = gBrowser.selectedTab;
       originalTabIndex = tabs.indexOf(currentTab);
@@ -4660,11 +5324,10 @@
       highlightedTabIndex = 0;
       clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
-      browseWorkspaceSwitch(key === 'h' ? 'prev' : 'next');
+      browseWorkspaceSwitch(key === S['keys.leap.prevWorkspace'] ? 'prev' : 'next');
       return;
     }
-    // ? - open help modal
-    if (originalKey === '?') {
+    if (originalKey === S['keys.leap.help']) {
       enterHelpMode();
       return;
     }
