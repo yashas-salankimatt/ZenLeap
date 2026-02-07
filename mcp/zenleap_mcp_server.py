@@ -131,6 +131,65 @@ async def browser_reload(tab_id: str = "") -> str:
     )
 
 
+# ── Tab Events ──────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_get_tab_events() -> str:
+    """Get and drain the queue of tab open/close events since the last call.
+    Useful for detecting popups, new tabs opened by links (target=_blank), etc.
+    Returns events with type (tab_opened/tab_closed), tab_id, opener_tab_id."""
+    return text_result(await browser_command("get_tab_events"))
+
+
+# ── Dialogs ─────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_get_dialogs() -> str:
+    """Get any pending alert/confirm/prompt dialogs that the browser is showing.
+    Returns a list of dialog objects with type, message, and default_value."""
+    return text_result(await browser_command("get_dialogs"))
+
+
+@mcp.tool()
+async def browser_handle_dialog(action: str, text: str = "") -> str:
+    """Handle (accept or dismiss) the oldest pending dialog.
+    action: 'accept' to click OK/Yes, 'dismiss' to click Cancel/No.
+    text: optional text to enter for prompt dialogs before accepting."""
+    params = {"action": action}
+    if text:
+        params["text"] = text
+    return text_result(await browser_command("handle_dialog", params))
+
+
+# ── Navigation Status ───────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_get_navigation_status(tab_id: str = "") -> str:
+    """Get the HTTP status and error code for the last navigation in a tab.
+    Returns {url, http_status, error_code, loading}. Useful to detect 404s,
+    server errors, or network failures after navigation."""
+    return text_result(
+        await browser_command(
+            "get_navigation_status", {"tab_id": tab_id or None}
+        )
+    )
+
+
+# ── Frames ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_list_frames(tab_id: str = "") -> str:
+    """List all frames (iframes) in a tab. Returns frame IDs that can be passed to
+    other tools (get_dom, click, fill, etc.) to interact with content inside iframes."""
+    return text_result(
+        await browser_command("list_frames", {"tab_id": tab_id or None})
+    )
+
+
 # ── Observation ─────────────────────────────────────────────────
 
 
@@ -160,11 +219,15 @@ async def browser_screenshot(tab_id: str = "") -> Image:
 
 
 @mcp.tool()
-async def browser_get_dom(tab_id: str = "") -> str:
+async def browser_get_dom(tab_id: str = "", frame_id: int = 0) -> str:
     """Get all interactive elements on the current page with indices.
     Returns elements like buttons, links, inputs, selects with their index numbers.
-    Use these indices with click/fill tools in the future."""
-    result = await browser_command("get_dom", {"tab_id": tab_id or None})
+    Use these indices with click/fill tools. Pass frame_id to target an iframe
+    (get frame IDs from browser_list_frames)."""
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("get_dom", params)
     if isinstance(result, dict) and "elements" in result:
         lines = [
             f"Page: {result.get('url', '?')}",
@@ -189,18 +252,24 @@ async def browser_get_dom(tab_id: str = "") -> str:
 
 
 @mcp.tool()
-async def browser_get_page_text(tab_id: str = "") -> str:
-    """Get the full visible text content of the current page."""
-    result = await browser_command("get_page_text", {"tab_id": tab_id or None})
+async def browser_get_page_text(tab_id: str = "", frame_id: int = 0) -> str:
+    """Get the full visible text content of the current page or a specific iframe."""
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("get_page_text", params)
     if isinstance(result, dict) and "text" in result:
         return result["text"]
     return text_result(result)
 
 
 @mcp.tool()
-async def browser_get_page_html(tab_id: str = "") -> str:
-    """Get the full HTML source of the current page."""
-    result = await browser_command("get_page_html", {"tab_id": tab_id or None})
+async def browser_get_page_html(tab_id: str = "", frame_id: int = 0) -> str:
+    """Get the full HTML source of the current page or a specific iframe."""
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("get_page_html", params)
     if isinstance(result, dict) and "html" in result:
         return result["html"]
     return text_result(result)
@@ -210,124 +279,113 @@ async def browser_get_page_html(tab_id: str = "") -> str:
 
 
 @mcp.tool()
-async def browser_click(index: int, tab_id: str = "") -> str:
+async def browser_click(index: int, tab_id: str = "", frame_id: int = 0) -> str:
     """Click an interactive element by its index from browser_get_dom.
     Always call browser_get_dom first to get element indices."""
-    return text_result(
-        await browser_command(
-            "click_element", {"tab_id": tab_id or None, "index": index}
-        )
-    )
+    params = {"tab_id": tab_id or None, "index": index}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("click_element", params))
 
 
 @mcp.tool()
-async def browser_click_coordinates(x: int, y: int, tab_id: str = "") -> str:
+async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: int = 0) -> str:
     """Click at specific x,y coordinates on the page.
     Use browser_screenshot + browser_get_dom to identify coordinates."""
-    return text_result(
-        await browser_command(
-            "click_coordinates", {"tab_id": tab_id or None, "x": x, "y": y}
-        )
-    )
+    params = {"tab_id": tab_id or None, "x": x, "y": y}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("click_coordinates", params))
 
 
 @mcp.tool()
-async def browser_fill(index: int, value: str, tab_id: str = "") -> str:
+async def browser_fill(index: int, value: str, tab_id: str = "", frame_id: int = 0) -> str:
     """Fill a form field (input/textarea) with a value by its index from browser_get_dom.
     Clears existing content and sets the new value, dispatching input/change events."""
-    return text_result(
-        await browser_command(
-            "fill_field", {"tab_id": tab_id or None, "index": index, "value": value}
-        )
-    )
+    params = {"tab_id": tab_id or None, "index": index, "value": value}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("fill_field", params))
 
 
 @mcp.tool()
-async def browser_select_option(index: int, value: str, tab_id: str = "") -> str:
+async def browser_select_option(index: int, value: str, tab_id: str = "", frame_id: int = 0) -> str:
     """Select an option in a <select> dropdown by its index from browser_get_dom.
     The value can be the option's value attribute or visible text."""
-    return text_result(
-        await browser_command(
-            "select_option",
-            {"tab_id": tab_id or None, "index": index, "value": value},
-        )
-    )
+    params = {"tab_id": tab_id or None, "index": index, "value": value}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("select_option", params))
 
 
 @mcp.tool()
-async def browser_type(text: str, tab_id: str = "") -> str:
+async def browser_type(text: str, tab_id: str = "", frame_id: int = 0) -> str:
     """Type text character-by-character into the currently focused element.
     Dispatches keydown/keypress/keyup and input events for each character.
     Focus an element first with browser_click."""
-    return text_result(
-        await browser_command(
-            "type_text", {"tab_id": tab_id or None, "text": text}
-        )
-    )
+    params = {"tab_id": tab_id or None, "text": text}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("type_text", params))
 
 
 @mcp.tool()
 async def browser_press_key(
-    key: str, ctrl: bool = False, shift: bool = False, alt: bool = False, meta: bool = False, tab_id: str = ""
+    key: str, ctrl: bool = False, shift: bool = False, alt: bool = False, meta: bool = False, tab_id: str = "", frame_id: int = 0
 ) -> str:
     """Press a keyboard key (Enter, Tab, Escape, ArrowDown, a, etc.) with optional modifiers.
     Dispatches keydown/keypress/keyup events on the focused element."""
     modifiers = {"ctrl": ctrl, "shift": shift, "alt": alt, "meta": meta}
-    return text_result(
-        await browser_command(
-            "press_key",
-            {"tab_id": tab_id or None, "key": key, "modifiers": modifiers},
-        )
-    )
+    params = {"tab_id": tab_id or None, "key": key, "modifiers": modifiers}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("press_key", params))
 
 
 @mcp.tool()
 async def browser_scroll(
-    direction: str = "down", amount: int = 500, tab_id: str = ""
+    direction: str = "down", amount: int = 500, tab_id: str = "", frame_id: int = 0
 ) -> str:
     """Scroll the page in a direction (up/down/left/right) by a pixel amount.
     Default is 500 pixels down."""
-    return text_result(
-        await browser_command(
-            "scroll",
-            {"tab_id": tab_id or None, "direction": direction, "amount": amount},
-        )
-    )
+    params = {"tab_id": tab_id or None, "direction": direction, "amount": amount}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("scroll", params))
 
 
 @mcp.tool()
-async def browser_hover(index: int, tab_id: str = "") -> str:
+async def browser_hover(index: int, tab_id: str = "", frame_id: int = 0) -> str:
     """Hover over an interactive element by its index from browser_get_dom.
     Dispatches mouseenter/mouseover/mousemove events. Useful for revealing tooltips or dropdown menus."""
-    return text_result(
-        await browser_command(
-            "hover", {"tab_id": tab_id or None, "index": index}
-        )
-    )
+    params = {"tab_id": tab_id or None, "index": index}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("hover", params))
 
 
 # ── Console / Eval ─────────────────────────────────────────────
 
 
 @mcp.tool()
-async def browser_console_setup(tab_id: str = "") -> str:
+async def browser_console_setup(tab_id: str = "", frame_id: int = 0) -> str:
     """Start capturing console output (log/warn/error/info) and uncaught errors on a tab.
     Must be called before browser_console_logs or browser_console_errors will return data.
     Capture persists until the page navigates away."""
-    return text_result(
-        await browser_command(
-            "console_setup", {"tab_id": tab_id or None}
-        )
-    )
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("console_setup", params))
 
 
 @mcp.tool()
-async def browser_console_logs(tab_id: str = "") -> str:
+async def browser_console_logs(tab_id: str = "", frame_id: int = 0) -> str:
     """Get captured console messages (log/warn/info/error) from the current page.
     Call browser_console_setup first to start capturing. Returns up to 500 most recent entries."""
-    result = await browser_command(
-        "console_get_logs", {"tab_id": tab_id or None}
-    )
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("console_get_logs", params)
     if isinstance(result, dict) and "logs" in result:
         if not result["logs"]:
             return "(no console logs captured)"
@@ -342,12 +400,13 @@ async def browser_console_logs(tab_id: str = "") -> str:
 
 
 @mcp.tool()
-async def browser_console_errors(tab_id: str = "") -> str:
+async def browser_console_errors(tab_id: str = "", frame_id: int = 0) -> str:
     """Get captured errors: console.error calls, uncaught exceptions, and unhandled promise rejections.
     Call browser_console_setup first to start capturing. Returns up to 100 most recent entries."""
-    result = await browser_command(
-        "console_get_errors", {"tab_id": tab_id or None}
-    )
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("console_get_errors", params)
     if isinstance(result, dict) and "errors" in result:
         if not result["errors"]:
             return "(no errors captured)"
@@ -366,14 +425,14 @@ async def browser_console_errors(tab_id: str = "") -> str:
 
 
 @mcp.tool()
-async def browser_console_eval(expression: str, tab_id: str = "") -> str:
+async def browser_console_eval(expression: str, tab_id: str = "", frame_id: int = 0) -> str:
     """Execute JavaScript in the current page and return the result.
     Runs in the page's global scope — can access page variables, DOM, etc.
     May be blocked by Content Security Policy on some pages."""
-    result = await browser_command(
-        "console_evaluate",
-        {"tab_id": tab_id or None, "expression": expression},
-    )
+    params = {"tab_id": tab_id or None, "expression": expression}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = await browser_command("console_evaluate", params)
     if isinstance(result, dict):
         if "error" in result:
             stack = result.get("stack", "")
@@ -381,6 +440,23 @@ async def browser_console_eval(expression: str, tab_id: str = "") -> str:
         if "result" in result:
             return str(result["result"])
     return text_result(result)
+
+
+# ── Clipboard ───────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_clipboard_read() -> str:
+    """Read the current text content from the system clipboard."""
+    result = await browser_command("clipboard_read")
+    return result.get("text", "")
+
+
+@mcp.tool()
+async def browser_clipboard_write(text: str) -> str:
+    """Write text to the system clipboard. Can then be pasted into any element
+    using browser_press_key with meta+v (macOS) or ctrl+v."""
+    return text_result(await browser_command("clipboard_write", {"text": text}))
 
 
 # ── Control ─────────────────────────────────────────────────────
@@ -391,6 +467,32 @@ async def browser_wait(seconds: float = 2.0) -> str:
     """Wait for a specified number of seconds. Useful after navigation or clicks
     to let the page load or animations complete."""
     return text_result(await browser_command("wait", {"seconds": seconds}))
+
+
+@mcp.tool()
+async def browser_wait_for_element(
+    selector: str, tab_id: str = "", frame_id: int = 0, timeout: int = 10
+) -> str:
+    """Wait for a CSS selector to match an element on the page.
+    Polls every 250ms until the element appears or timeout (seconds) is reached.
+    Returns the element's tag and text if found, or {found: false, timeout: true}."""
+    params = {"tab_id": tab_id or None, "selector": selector, "timeout": timeout}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("wait_for_element", params))
+
+
+@mcp.tool()
+async def browser_wait_for_text(
+    text: str, tab_id: str = "", frame_id: int = 0, timeout: int = 10
+) -> str:
+    """Wait for specific text to appear on the page.
+    Polls every 250ms until the text is found or timeout (seconds) is reached.
+    Returns {found: true} or {found: false, timeout: true}."""
+    params = {"tab_id": tab_id or None, "text": text, "timeout": timeout}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("wait_for_text", params))
 
 
 @mcp.tool()

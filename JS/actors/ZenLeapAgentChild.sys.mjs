@@ -18,6 +18,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
   #consoleLogs = [];
   #consoleErrors = [];
   #captureSetup = false;
+  #cursorOverlay = null;
 
   receiveMessage(message) {
     const data = message.data || {};
@@ -52,6 +53,10 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         return { errors: [...this.#consoleErrors] };
       case 'ZenLeapAgent:EvalJS':
         return this.#evalInContent(data.expression);
+      case 'ZenLeapAgent:QuerySelector':
+        return this.#querySelector(data.selector);
+      case 'ZenLeapAgent:SearchText':
+        return this.#searchText(data.text);
       default:
         return { error: 'Unknown message: ' + message.name };
     }
@@ -72,9 +77,11 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     const elements = [];
     this.#elementMap.clear();
     let index = 0;
+    const MAX_DEPTH = 50;
 
-    const walk = (node) => {
+    const walk = (node, depth = 0) => {
       if (node.nodeType !== 1) return; // ELEMENT_NODE only
+      if (depth > MAX_DEPTH) return; // Prevent stack overflow on deep/cyclic DOMs
 
       const tag = node.tagName.toLowerCase();
       const role = node.getAttribute('role');
@@ -84,6 +91,29 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         node.hasAttribute('onclick') ||
         (node.hasAttribute('tabindex') && node.getAttribute('tabindex') !== '-1') ||
         node.getAttribute('contenteditable') === 'true';
+
+      // Mark iframes with their browsingContext ID for frame_id targeting
+      if (tag === 'iframe' && this.#isVisible(node)) {
+        const frameBC = node.browsingContext;
+        if (frameBC) {
+          elements.push({
+            index: index,
+            tag: 'iframe',
+            text: node.getAttribute('title') || node.getAttribute('name') || '',
+            attributes: {
+              src: node.src || '',
+              name: node.name || undefined,
+              frame_id: frameBC.id,
+            },
+            rect: (() => {
+              const r = node.getBoundingClientRect();
+              return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+            })(),
+          });
+          this.#elementMap.set(index, new WeakRef(node));
+          index++;
+        }
+      }
 
       if (isInteractive && this.#isVisible(node)) {
         const rect = node.getBoundingClientRect();
@@ -111,7 +141,13 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         });
       }
 
-      for (const child of node.children) walk(child);
+      // Enter shadow DOM (openOrClosedShadowRoot is Gecko-specific, handles closed roots)
+      const shadow = node.openOrClosedShadowRoot || node.shadowRoot;
+      if (shadow) {
+        for (const child of shadow.children) walk(child, depth + 1);
+      }
+
+      for (const child of node.children) walk(child, depth + 1);
     };
 
     walk(doc.body);
@@ -180,6 +216,10 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
   #clickElement(index) {
     const el = this.#getElement(index);
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const rect = el.getBoundingClientRect();
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    this.#showCursor(cx, cy);
     el.click();
     return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
   }
@@ -195,12 +235,10 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     if (el.getAttribute('contenteditable') === 'true') {
       el.textContent = value;
     } else {
-      // Use native setter to bypass React/framework value traps
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        this.contentWindow.HTMLInputElement.prototype, 'value'
-      )?.set || Object.getOwnPropertyDescriptor(
-        this.contentWindow.HTMLTextAreaElement.prototype, 'value'
-      )?.set;
+      // Use the correct prototype's setter based on element type.
+      // HTMLInputElement.prototype.value and HTMLTextAreaElement.prototype.value
+      // are DIFFERENT setters — using the wrong one throws.
+      const nativeSetter = this.#getValueSetter(el);
       if (nativeSetter) {
         nativeSetter.call(el, value);
       } else {
@@ -210,6 +248,22 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     el.dispatchEvent(new this.contentWindow.Event('input', { bubbles: true }));
     el.dispatchEvent(new this.contentWindow.Event('change', { bubbles: true }));
     return { success: true, tag, value: value.substring(0, 50) };
+  }
+
+  #getValueSetter(el) {
+    const win = this.contentWindow;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea') {
+      return Object.getOwnPropertyDescriptor(
+        win.HTMLTextAreaElement.prototype, 'value'
+      )?.set;
+    }
+    if (tag === 'input') {
+      return Object.getOwnPropertyDescriptor(
+        win.HTMLInputElement.prototype, 'value'
+      )?.set;
+    }
+    return null;
   }
 
   #selectOption(index, value) {
@@ -244,11 +298,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     // Append characters to input/textarea value and dispatch input events.
     // Avoids KeyboardEvent which runs trusted from JSWindowActor and can crash tabs.
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        win.HTMLInputElement.prototype, 'value'
-      )?.set || Object.getOwnPropertyDescriptor(
-        win.HTMLTextAreaElement.prototype, 'value'
-      )?.set;
+      const nativeSetter = this.#getValueSetter(target);
       const current = target.value || '';
       if (nativeSetter) {
         nativeSetter.call(target, current + text);
@@ -326,6 +376,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
   #clickCoordinates(x, y) {
     const doc = this.contentWindow?.document;
     if (!doc) throw new Error('No document');
+    this.#showCursor(x, y);
     const el = doc.elementFromPoint(x, y);
     if (!el) throw new Error('No element at coordinates (' + x + ', ' + y + ')');
     const opts = { bubbles: true, clientX: x, clientY: y };
@@ -413,6 +464,73 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
 
     this.#captureSetup = true;
     return { success: true };
+  }
+
+  // --- Virtual Cursor ---
+
+  #showCursor(x, y) {
+    const doc = this.contentWindow?.document;
+    if (!doc) return;
+    // Validate inputs are finite numbers
+    const numX = Number(x);
+    const numY = Number(y);
+    if (!Number.isFinite(numX) || !Number.isFinite(numY)) return;
+    // Remove previous cursor
+    this.#removeCursor();
+    // Create cursor overlay: red crosshair with ring
+    const cursor = doc.createElement('div');
+    cursor.id = '__zenleap_cursor';
+    // Use individual style properties (not cssText concatenation) to prevent CSS injection
+    cursor.style.position = 'fixed';
+    cursor.style.zIndex = '2147483647';
+    cursor.style.pointerEvents = 'none';
+    cursor.style.left = (numX - 12) + 'px';
+    cursor.style.top = (numY - 12) + 'px';
+    cursor.style.width = '24px';
+    cursor.style.height = '24px';
+    cursor.style.border = '3px solid red';
+    cursor.style.borderRadius = '50%';
+    cursor.style.background = 'rgba(255,0,0,0.2)';
+    cursor.style.boxShadow = '0 0 8px rgba(255,0,0,0.6)';
+    // Crosshair lines
+    const hLine = doc.createElement('div');
+    hLine.style.cssText = 'position:absolute;top:50%;left:-4px;right:-4px;height:1px;background:red;transform:translateY(-50%)';
+    const vLine = doc.createElement('div');
+    vLine.style.cssText = 'position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:red;transform:translateX(-50%)';
+    cursor.appendChild(hLine);
+    cursor.appendChild(vLine);
+    doc.documentElement.appendChild(cursor);
+    this.#cursorOverlay = cursor;
+    // Auto-remove after 5 seconds
+    this.contentWindow.setTimeout(() => this.#removeCursor(), 5000);
+  }
+
+  #removeCursor() {
+    if (this.#cursorOverlay && this.#cursorOverlay.parentNode) {
+      this.#cursorOverlay.parentNode.removeChild(this.#cursorOverlay);
+    }
+    this.#cursorOverlay = null;
+  }
+
+  // --- Element/Text Query ---
+
+  #querySelector(selector) {
+    const doc = this.contentWindow?.document;
+    if (!doc) return { found: false };
+    const el = doc.querySelector(selector);
+    if (!el) return { found: false };
+    return {
+      found: true,
+      tag: el.tagName.toLowerCase(),
+      text: this.#getVisibleText(el).substring(0, 100),
+    };
+  }
+
+  #searchText(text) {
+    const doc = this.contentWindow?.document;
+    if (!doc?.body) return { found: false };
+    const bodyText = doc.body.innerText || '';
+    return { found: bodyText.includes(text) };
   }
 
   // --- JS Evaluation ---

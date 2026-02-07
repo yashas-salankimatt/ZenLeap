@@ -909,3 +909,160 @@ class TestErrorPaths:
         with patch.object(server, "get_ws", return_value=fake_ws):
             with pytest.raises(Exception, match="Unknown browser error"):
                 await server.browser_command("bad_method")
+
+
+# ── Phase 6: New Tools ────────────────────────────────────────
+
+
+class TestListFrames:
+    @pytest.mark.asyncio
+    async def test_list_frames(self):
+        frames = [
+            {"frame_id": 1, "url": "https://example.com", "is_top": True},
+            {"frame_id": 2, "url": "https://ads.example.com", "is_top": False},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": frames}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_frames()
+        data = json.loads(result)
+        assert len(data) == 2
+        assert data[0]["is_top"] is True
+
+
+class TestGetDomWithFrameId:
+    @pytest.mark.asyncio
+    async def test_get_dom_passes_frame_id(self):
+        dom = {"elements": [], "url": "https://example.com", "title": "Test"}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": dom}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_get_dom(frame_id=42)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["frame_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_get_dom_no_frame_id(self):
+        dom = {"elements": [], "url": "https://example.com", "title": "Test"}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": dom}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_get_dom()
+        msg = json.loads(fake_ws.sent[0])
+        assert "frame_id" not in msg["params"]
+
+
+class TestWaitForElement:
+    @pytest.mark.asyncio
+    async def test_wait_for_element(self):
+        resp = {"found": True, "tag": "button", "text": "Submit"}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_wait_for_element("button.submit")
+        data = json.loads(result)
+        assert data["found"] is True
+
+
+class TestWaitForText:
+    @pytest.mark.asyncio
+    async def test_wait_for_text(self):
+        resp = {"found": True}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_wait_for_text("Hello World")
+        data = json.loads(result)
+        assert data["found"] is True
+
+
+class TestNavigationStatus:
+    @pytest.mark.asyncio
+    async def test_get_navigation_status(self):
+        resp = {"url": "https://example.com", "http_status": 200, "error_code": 0, "loading": False}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_navigation_status()
+        data = json.loads(result)
+        assert data["http_status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_get_navigation_status_404(self):
+        resp = {"url": "https://example.com/bad", "http_status": 404, "error_code": 0, "loading": False}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_navigation_status()
+        data = json.loads(result)
+        assert data["http_status"] == 404
+
+
+class TestDialogs:
+    @pytest.mark.asyncio
+    async def test_get_dialogs_empty(self):
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": []}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_dialogs()
+        assert json.loads(result) == []
+
+    @pytest.mark.asyncio
+    async def test_get_dialogs_with_alert(self):
+        dialogs = [{"type": "alertCheck", "message": "Hello!", "default_value": ""}]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": dialogs}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_dialogs()
+        data = json.loads(result)
+        assert len(data) == 1
+        assert data[0]["type"] == "alertCheck"
+
+    @pytest.mark.asyncio
+    async def test_handle_dialog_accept(self):
+        resp = {"success": True, "action": "accept", "type": "alertCheck"}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_handle_dialog("accept")
+        data = json.loads(result)
+        assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_handle_dialog_with_text(self):
+        resp = {"success": True, "action": "accept", "type": "prompt"}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_handle_dialog("accept", text="my input")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["text"] == "my input"
+
+
+class TestTabEvents:
+    @pytest.mark.asyncio
+    async def test_get_tab_events_empty(self):
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": []}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_tab_events()
+        assert json.loads(result) == []
+
+    @pytest.mark.asyncio
+    async def test_get_tab_events_with_popup(self):
+        events = [
+            {"type": "tab_opened", "tab_id": "p1", "opener_tab_id": "t1", "is_agent_tab": True},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": events}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_tab_events()
+        data = json.loads(result)
+        assert data[0]["type"] == "tab_opened"
+        assert data[0]["is_agent_tab"] is True
+
+
+class TestClipboard:
+    @pytest.mark.asyncio
+    async def test_clipboard_read(self):
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": {"text": "hello"}}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_clipboard_read()
+        assert result == "hello"
+
+    @pytest.mark.asyncio
+    async def test_clipboard_write(self):
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": {"success": True, "length": 5}}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_clipboard_write("hello")
+        data = json.loads(result)
+        assert data["success"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["text"] == "hello"

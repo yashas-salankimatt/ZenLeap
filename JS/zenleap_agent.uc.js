@@ -9,7 +9,7 @@
 (function() {
   'use strict';
 
-  const VERSION = '0.5.0';
+  const VERSION = '0.6.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'ZenLeap AI';
@@ -487,8 +487,18 @@
     );
   }
 
+  // Track the agent's "active" tab independently of gBrowser.selectedTab,
+  // because agent tabs live in a separate workspace from the user's tabs.
+  let currentAgentTab = null;
+
   function resolveTab(tabId) {
-    if (!tabId) return gBrowser.selectedTab;
+    if (!tabId) {
+      // Prefer agent's tracked current tab over gBrowser.selectedTab
+      if (currentAgentTab && currentAgentTab.linkedBrowser && currentAgentTab.parentNode) {
+        return currentAgentTab;
+      }
+      return gBrowser.selectedTab;
+    }
 
     // Match by linkedPanel ID
     for (const tab of gBrowser.tabs) {
@@ -499,6 +509,158 @@
       if (tab.linkedBrowser?.currentURI?.spec === tabId) return tab;
     }
     return null;
+  }
+
+  // ============================================
+  // TAB EVENT TRACKING
+  // ============================================
+
+  const tabEventQueue = [];
+
+  function setupTabEventTracking() {
+    try {
+      gBrowser.tabContainer.addEventListener('TabOpen', (event) => {
+        const tab = event.target;
+        // Check if opener is an agent tab
+        const openerBC = tab.linkedBrowser?.browsingContext?.opener;
+        const openerTab = openerBC ? gBrowser.getTabForBrowser(openerBC.top?.embedderElement) : null;
+        const isAgentChild = openerTab && agentTabs.has(openerTab);
+
+        if (isAgentChild) {
+          agentTabs.add(tab);
+          // Move to agent workspace
+          if (agentWorkspaceId && gZenWorkspaces) {
+            gZenWorkspaces.moveTabToWorkspace(tab, agentWorkspaceId);
+          }
+          log('Agent popup detected: ' + tab.linkedPanel);
+        }
+
+        tabEventQueue.push({
+          type: 'tab_opened',
+          tab_id: tab.linkedPanel,
+          opener_tab_id: openerTab?.linkedPanel || null,
+          is_agent_tab: isAgentChild || false,
+          timestamp: new Date().toISOString(),
+        });
+        if (tabEventQueue.length > 50) tabEventQueue.shift();
+      });
+
+      gBrowser.tabContainer.addEventListener('TabClose', (event) => {
+        const tab = event.target;
+        agentTabs.delete(tab);
+        tabEventQueue.push({
+          type: 'tab_closed',
+          tab_id: tab.linkedPanel,
+          timestamp: new Date().toISOString(),
+        });
+        if (tabEventQueue.length > 50) tabEventQueue.shift();
+      });
+
+      log('Tab event tracking active');
+    } catch (e) {
+      log('Failed to setup tab event tracking: ' + e);
+    }
+  }
+
+  // ============================================
+  // DIALOG HANDLING
+  // ============================================
+
+  const pendingDialogs = [];
+  const dialogWindowRefs = new Map(); // dialog object → WeakRef(window)
+
+  const dialogObserver = {
+    observe(subject, topic, data) {
+      if (topic !== 'common-dialog-loaded') return;
+      try {
+        const dialogWin = subject;
+        const args = dialogWin.arguments?.[0];
+        if (!args) return;
+        const dialogInfo = {
+          type: args.promptType || 'unknown', // alertCheck, confirmCheck, prompt
+          message: args.text || '',
+          default_value: args.value || '',
+          timestamp: new Date().toISOString(),
+        };
+        // Use WeakRef to avoid retaining dialog window in memory
+        dialogWindowRefs.set(dialogInfo, new WeakRef(dialogWin));
+        pendingDialogs.push(dialogInfo);
+        if (pendingDialogs.length > 20) {
+          const old = pendingDialogs.shift();
+          dialogWindowRefs.delete(old);
+        }
+        log('Dialog captured: ' + dialogInfo.type + ' — ' + dialogInfo.message.substring(0, 80));
+      } catch (e) {
+        log('Dialog observer error: ' + e);
+      }
+    }
+  };
+
+  function setupDialogObserver() {
+    try {
+      Services.obs.addObserver(dialogObserver, 'common-dialog-loaded');
+      log('Dialog observer active');
+    } catch (e) {
+      log('Failed to setup dialog observer: ' + e);
+    }
+  }
+
+  // ============================================
+  // NAVIGATION STATUS TRACKING
+  // ============================================
+
+  // WeakMap: browser → {url, httpStatus, errorCode, loading}
+  const navStatusMap = new WeakMap();
+
+  const navProgressListener = {
+    QueryInterface: ChromeUtils.generateQI([
+      'nsIWebProgressListener',
+      'nsISupportsWeakReference',
+    ]),
+
+    onStateChange(webProgress, request, stateFlags, status) {
+      if (!(stateFlags & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT)) return;
+      const browser = webProgress?.browsingContext?.top?.embedderElement;
+      if (!browser) return;
+
+      const entry = navStatusMap.get(browser) || {};
+
+      if (stateFlags & Ci.nsIWebProgressListener.STATE_START) {
+        entry.loading = true;
+        entry.httpStatus = 0;
+        entry.errorCode = 0;
+        entry.url = request?.name || '';
+      }
+      if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
+        entry.loading = false;
+        if (request instanceof Ci.nsIHttpChannel) {
+          try {
+            entry.httpStatus = request.responseStatus;
+          } catch (e) {
+            // Channel may be invalid
+          }
+        }
+        if (status !== 0) {
+          entry.errorCode = status;
+        }
+      }
+      navStatusMap.set(browser, entry);
+    },
+
+    onLocationChange() {},
+    onProgressChange() {},
+    onSecurityChange() {},
+    onStatusChange() {},
+    onContentBlockingEvent() {},
+  };
+
+  function setupNavTracking() {
+    try {
+      gBrowser.addTabsProgressListener(navProgressListener);
+      log('Navigation status tracking active');
+    } catch (e) {
+      log('Failed to setup nav tracking: ' + e);
+    }
   }
 
   // ============================================
@@ -564,12 +726,14 @@
   // ACTOR HELPERS
   // ============================================
 
-  function getActorForTab(tabId) {
+  function getActorForTab(tabId, frameId) {
     const tab = resolveTab(tabId);
     if (!tab) throw new Error('Tab not found');
     const browser = tab.linkedBrowser;
-    const wg = browser.browsingContext?.currentWindowGlobal;
-    if (!wg) throw new Error('Page not loaded (no currentWindowGlobal)');
+    const wg = frameId
+      ? getWindowGlobalForFrame(browser, frameId)
+      : browser.browsingContext?.currentWindowGlobal;
+    if (!wg) throw new Error(frameId ? 'Frame not found: ' + frameId : 'Page not loaded (no currentWindowGlobal)');
     try {
       return wg.getActor('ZenLeapAgent');
     } catch (e) {
@@ -578,12 +742,36 @@
     }
   }
 
+  function getWindowGlobalForFrame(browser, frameId) {
+    const contexts = browser.browsingContext?.getAllBrowsingContextsInSubtree() || [];
+    for (const ctx of contexts) {
+      if (ctx.id == frameId) {  // Allow type coercion (int vs string)
+        return ctx.currentWindowGlobal;
+      }
+    }
+    return null;
+  }
+
+  function listFramesForTab(tabId) {
+    const tab = resolveTab(tabId);
+    if (!tab) throw new Error('Tab not found');
+    const browser = tab.linkedBrowser;
+    const topCtx = browser.browsingContext;
+    if (!topCtx) throw new Error('Page not loaded');
+    const contexts = topCtx.getAllBrowsingContextsInSubtree() || [];
+    return contexts.map(ctx => ({
+      frame_id: ctx.id,
+      url: ctx.currentWindowGlobal?.documentURI?.spec || '',
+      is_top: ctx === topCtx,
+    }));
+  }
+
   // Interaction commands (click, key press, etc.) can trigger focus loss,
   // navigation, or browsing-context changes that destroy the actor before
   // the sendQuery response arrives. The action WAS dispatched — wrap with
   // a fallback so the caller gets a success result.
-  async function actorInteraction(tabId, messageName, data, fallbackResult) {
-    const actor = getActorForTab(tabId);
+  async function actorInteraction(tabId, messageName, data, fallbackResult, frameId) {
+    const actor = getActorForTab(tabId, frameId);
     try {
       return await actor.sendQuery(messageName, data);
     } catch (e) {
@@ -617,11 +805,14 @@
       });
       agentTabs.add(tab);
 
-      // Move tab to agent workspace and switch to it
+      // Move tab to agent workspace
       if (wsId && gZenWorkspaces) {
         gZenWorkspaces.moveTabToWorkspace(tab, wsId);
-        await gZenWorkspaces.changeWorkspaceWithID(wsId);
       }
+      // Track as agent's active tab and visually focus it.
+      // We assume the ZenLeap AI workspace is the active workspace,
+      // so gBrowser.selectedTab will actually show this tab in the UI.
+      currentAgentTab = tab;
       gBrowser.selectedTab = tab;
       log('Created tab: ' + tab.linkedPanel + ' -> ' + (url || 'about:blank') + (wsId ? ' [ws:' + wsId + ']' : ''));
 
@@ -634,6 +825,7 @@
     close_tab: async ({ tab_id }) => {
       const tab = resolveTab(tab_id);
       if (!tab) throw new Error('Tab not found');
+      if (currentAgentTab === tab) currentAgentTab = null;
       agentTabs.delete(tab);
       gBrowser.removeTab(tab);
       return { success: true };
@@ -642,14 +834,7 @@
     switch_tab: async ({ tab_id }) => {
       const tab = resolveTab(tab_id);
       if (!tab) throw new Error('Tab not found');
-      // Switch to the tab's workspace if needed
-      const tabWsId = tab.getAttribute('zen-workspace-id');
-      if (tabWsId && gZenWorkspaces) {
-        const active = gZenWorkspaces.getActiveWorkspace?.();
-        if (active?.uuid !== tabWsId) {
-          await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
-        }
-      }
+      currentAgentTab = tab;
       gBrowser.selectedTab = tab;
       return { success: true };
     },
@@ -658,11 +843,11 @@
       // List all tabs in the agent workspace, falling back to tracked tabs
       const wsId = await ensureAgentWorkspace();
       const tabs = wsId ? getWorkspaceTabs(wsId) : [...agentTabs].filter(t => t.linkedBrowser && t.parentNode);
-      return tabs.map(t => ({
+      return tabs.filter(t => t.linkedPanel).map(t => ({
         tab_id: t.linkedPanel,
         title: t.label || '',
         url: t.linkedBrowser?.currentURI?.spec || '',
-        active: t === gBrowser.selectedTab
+        active: t === currentAgentTab
       }));
     },
 
@@ -710,6 +895,67 @@
       return { success: true };
     },
 
+    // --- Tab Events ---
+    get_tab_events: async () => {
+      const events = tabEventQueue.splice(0); // drain queue
+      return events;
+    },
+
+    // --- Dialogs ---
+    get_dialogs: async () => {
+      return pendingDialogs.map(d => ({
+        type: d.type,
+        message: d.message,
+        default_value: d.default_value,
+        timestamp: d.timestamp,
+      }));
+    },
+
+    handle_dialog: async ({ action, text }) => {
+      if (!action) throw new Error('action is required (accept or dismiss)');
+      if (pendingDialogs.length === 0) throw new Error('No pending dialogs');
+      const dialog = pendingDialogs.shift();
+      const dialogWin = dialog._dialog;
+      if (!dialogWin || dialogWin.closed) {
+        return { success: false, note: 'Dialog already closed' };
+      }
+      try {
+        const ui = dialogWin.document?.getElementById('commonDialog');
+        if (!ui) throw new Error('Dialog UI not found');
+        if (text !== undefined && dialog.type === 'prompt') {
+          const input = dialogWin.document.getElementById('loginTextbox');
+          if (input) input.value = text;
+        }
+        if (action === 'accept') {
+          ui.acceptDialog();
+        } else {
+          ui.cancelDialog();
+        }
+        return { success: true, action, type: dialog.type };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    },
+
+    // --- Navigation Status ---
+    get_navigation_status: async ({ tab_id }) => {
+      const tab = resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      const browser = tab.linkedBrowser;
+      const entry = navStatusMap.get(browser) || {};
+      return {
+        url: browser.currentURI?.spec || '',
+        http_status: entry.httpStatus || 0,
+        error_code: entry.errorCode || 0,
+        loading: browser.webProgress?.isLoadingDocument || false,
+      };
+    },
+
+    // --- Frames ---
+    list_frames: async ({ tab_id }) => {
+      return listFramesForTab(tab_id);
+    },
+
     // --- Observation ---
     get_page_info: async ({ tab_id }) => {
       const tab = resolveTab(tab_id);
@@ -730,89 +976,158 @@
       return await screenshotTab(tab);
     },
 
-    get_dom: async ({ tab_id }) => {
-      const actor = getActorForTab(tab_id);
+    get_dom: async ({ tab_id, frame_id }) => {
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:ExtractDOM');
     },
 
-    get_page_text: async ({ tab_id }) => {
-      const actor = getActorForTab(tab_id);
+    get_page_text: async ({ tab_id, frame_id }) => {
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:GetPageText');
     },
 
-    get_page_html: async ({ tab_id }) => {
-      const actor = getActorForTab(tab_id);
+    get_page_html: async ({ tab_id, frame_id }) => {
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:GetPageHTML');
     },
 
     // --- Interaction ---
-    click_element: async ({ tab_id, index }) => {
+    click_element: async ({ tab_id, frame_id, index }) => {
       if (index === undefined || index === null) throw new Error('index is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickElement', { index });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickElement', { index }, null, frame_id);
     },
 
-    click_coordinates: async ({ tab_id, x, y }) => {
+    click_coordinates: async ({ tab_id, frame_id, x, y }) => {
       if (x === undefined || y === undefined) throw new Error('x and y are required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickCoordinates', { x, y });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:ClickCoordinates', { x, y }, null, frame_id);
     },
 
-    fill_field: async ({ tab_id, index, value }) => {
+    fill_field: async ({ tab_id, frame_id, index, value }) => {
       if (index === undefined || index === null) throw new Error('index is required');
       if (value === undefined) throw new Error('value is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:FillField', { index, value: String(value) });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:FillField', { index, value: String(value) }, null, frame_id);
     },
 
-    select_option: async ({ tab_id, index, value }) => {
+    select_option: async ({ tab_id, frame_id, index, value }) => {
       if (index === undefined || index === null) throw new Error('index is required');
       if (value === undefined) throw new Error('value is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:SelectOption', { index, value: String(value) });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:SelectOption', { index, value: String(value) }, null, frame_id);
     },
 
-    type_text: async ({ tab_id, text }) => {
+    type_text: async ({ tab_id, frame_id, text }) => {
       if (!text) throw new Error('text is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:TypeText', { text });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:TypeText', { text }, null, frame_id);
     },
 
-    press_key: async ({ tab_id, key, modifiers }) => {
+    press_key: async ({ tab_id, frame_id, key, modifiers }) => {
       if (!key) throw new Error('key is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:PressKey', { key, modifiers: modifiers || {} }, { success: true, key });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:PressKey', { key, modifiers: modifiers || {} }, { success: true, key }, frame_id);
     },
 
-    scroll: async ({ tab_id, direction, amount }) => {
+    scroll: async ({ tab_id, frame_id, direction, amount }) => {
       if (!direction) throw new Error('direction is required (up/down/left/right)');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:Scroll', { direction, amount: amount || 500 });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:Scroll', { direction, amount: amount || 500 }, null, frame_id);
     },
 
-    hover: async ({ tab_id, index }) => {
+    hover: async ({ tab_id, frame_id, index }) => {
       if (index === undefined || index === null) throw new Error('index is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:Hover', { index });
+      return await actorInteraction(tab_id, 'ZenLeapAgent:Hover', { index }, null, frame_id);
     },
 
     // --- Console / Eval ---
-    console_setup: async ({ tab_id }) => {
-      return await actorInteraction(tab_id, 'ZenLeapAgent:SetupConsoleCapture');
+    console_setup: async ({ tab_id, frame_id }) => {
+      return await actorInteraction(tab_id, 'ZenLeapAgent:SetupConsoleCapture', {}, null, frame_id);
     },
 
-    console_get_logs: async ({ tab_id }) => {
-      const actor = getActorForTab(tab_id);
+    console_get_logs: async ({ tab_id, frame_id }) => {
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:GetConsoleLogs');
     },
 
-    console_get_errors: async ({ tab_id }) => {
-      const actor = getActorForTab(tab_id);
+    console_get_errors: async ({ tab_id, frame_id }) => {
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:GetConsoleErrors');
     },
 
-    console_evaluate: async ({ tab_id, expression }) => {
+    console_evaluate: async ({ tab_id, frame_id, expression }) => {
       if (!expression) throw new Error('expression is required');
-      const actor = getActorForTab(tab_id);
+      const actor = getActorForTab(tab_id, frame_id);
       return await actor.sendQuery('ZenLeapAgent:EvalJS', { expression });
+    },
+
+    // --- Clipboard ---
+    clipboard_read: async () => {
+      try {
+        const trans = Cc['@mozilla.org/widget/transferable;1'].createInstance(Ci.nsITransferable);
+        trans.init(null);
+        trans.addDataFlavor('text/plain');
+        Services.clipboard.getData(trans, Ci.nsIClipboard.kGlobalClipboard);
+        const data = {};
+        const dataLen = {};
+        trans.getTransferData('text/plain', data);
+        const str = data.value?.QueryInterface(Ci.nsISupportsString);
+        return { text: str ? str.data : '' };
+      } catch (e) {
+        return { text: '', error: e.message };
+      }
+    },
+
+    clipboard_write: async ({ text }) => {
+      if (text === undefined) throw new Error('text is required');
+      try {
+        const trans = Cc['@mozilla.org/widget/transferable;1'].createInstance(Ci.nsITransferable);
+        trans.init(null);
+        trans.addDataFlavor('text/plain');
+        const str = Cc['@mozilla.org/supports-string;1'].createInstance(Ci.nsISupportsString);
+        str.data = text;
+        trans.setTransferData('text/plain', str);
+        Services.clipboard.setData(trans, null, Ci.nsIClipboard.kGlobalClipboard);
+        return { success: true, length: text.length };
+      } catch (e) {
+        throw new Error('Clipboard write failed: ' + e.message);
+      }
     },
 
     // --- Control ---
     wait: async ({ seconds = 2 }) => {
       await new Promise(r => setTimeout(r, seconds * 1000));
       return { success: true };
+    },
+
+    wait_for_element: async ({ tab_id, frame_id, selector, timeout = 10 }) => {
+      if (!selector) throw new Error('selector is required');
+      const tab = resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      const deadline = Date.now() + timeout * 1000;
+      while (Date.now() < deadline) {
+        try {
+          const actor = getActorForTab(tab_id, frame_id);
+          const result = await actor.sendQuery('ZenLeapAgent:QuerySelector', { selector });
+          if (result.found) return result;
+        } catch (e) {
+          // Actor might not be available yet during navigation
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return { found: false, timeout: true };
+    },
+
+    wait_for_text: async ({ tab_id, frame_id, text, timeout = 10 }) => {
+      if (!text) throw new Error('text is required');
+      const tab = resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      const deadline = Date.now() + timeout * 1000;
+      while (Date.now() < deadline) {
+        try {
+          const actor = getActorForTab(tab_id, frame_id);
+          const result = await actor.sendQuery('ZenLeapAgent:SearchText', { text });
+          if (result.found) return result;
+        } catch (e) {
+          // Actor might not be available yet during navigation
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      return { found: false, timeout: true };
     },
 
     wait_for_load: async ({ tab_id, timeout = 15 }) => {
@@ -823,11 +1138,13 @@
       while (browser.webProgress?.isLoadingDocument && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 200));
       }
+      const navEntry = navStatusMap.get(browser) || {};
       return {
         success: true,
         url: browser.currentURI?.spec || '',
         title: tab.label || '',
         loading: browser.webProgress?.isLoadingDocument || false,
+        http_status: navEntry.httpStatus || 0,
       };
     },
   };
@@ -864,7 +1181,7 @@
       ChromeUtils.registerWindowActor('ZenLeapAgent', {
         parent: { esModuleURI: parentURI },
         child: { esModuleURI: childURI },
-        allFrames: false,
+        allFrames: true,
         matches: ['*://*/*'],
       });
 
@@ -904,6 +1221,9 @@
 
     startServer();
     registerActors();
+    setupNavTracking();
+    setupDialogObserver();
+    setupTabEventTracking();
 
     log('ZenLeap Agent v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
   }
