@@ -13,12 +13,27 @@ const INTERACTIVE_ROLES = new Set([
   'menuitem', 'tab', 'switch', 'option',
 ]);
 
+// Characters requiring Shift modifier (US keyboard layout)
+const SHIFT_CHARS = new Set('~!@#$%^&*()_+{}|:"<>?');
+
+// Shifted character → base key (US keyboard layout)
+const SHIFT_MAP = {
+  '~': '`', '!': '1', '@': '2', '#': '3', '$': '4', '%': '5',
+  '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+  '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\',
+  ':': ';', '"': "'", '<': ',', '>': '.', '?': '/',
+};
+
+// nsITextInputProcessor flag: key is non-printable (Enter, Tab, Arrow, etc.)
+const TIP_KEY_NON_PRINTABLE = 0x02;
+
 export class ZenLeapAgentChild extends JSWindowActorChild {
   #elementMap = new Map(); // index → WeakRef(element)
   #consoleLogs = [];
   #consoleErrors = [];
   #captureSetup = false;
   #cursorOverlay = null;
+  #tip = null; // nsITextInputProcessor instance (cached)
 
   receiveMessage(message) {
     const data = message.data || {};
@@ -220,8 +235,28 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     const cx = rect.x + rect.width / 2;
     const cy = rect.y + rect.height / 2;
     this.#showCursor(cx, cy);
-    el.click();
-    return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
+    // Use windowUtils.sendMouseEvent for native-level trusted mouse events
+    const utils = this.contentWindow?.windowUtils;
+    let method;
+    if (utils?.sendMouseEvent) {
+      method = 'windowUtils';
+      utils.sendMouseEvent('mousedown', cx, cy, 0, 1, 0);
+      utils.sendMouseEvent('mouseup', cx, cy, 0, 1, 0);
+    } else {
+      method = 'el.click';
+      el.click();
+    }
+    // Always ensure focus — sendMouseEvent doesn't trigger focus change,
+    // and el.click() doesn't always focus either
+    el.focus();
+    const doc = this.contentWindow?.document;
+    return {
+      success: true,
+      tag: el.tagName.toLowerCase(),
+      text: this.#getVisibleText(el).substring(0, 100),
+      method,
+      focused: doc?.activeElement === el,
+    };
   }
 
   #fillField(index, value) {
@@ -290,13 +325,127 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     return { success: true, value: el.value };
   }
 
-  #typeText(text) {
+  // --- nsITextInputProcessor (TIP) ---
+  // Produces trusted keyboard events (isTrusted:true) through Gecko's full
+  // event pipeline. Unlike dispatchEvent, TIP events are indistinguishable
+  // from real user keypresses — works for canvas-based apps (Google Sheets),
+  // contenteditable, and standard form fields. Targets the specific content
+  // window without stealing OS-level focus from other windows.
+
+  #getTextInputProcessor() {
     const win = this.contentWindow;
-    const doc = win?.document;
+    if (!win) throw new Error('No content window');
+    if (!this.#tip) {
+      this.#tip = Cc['@mozilla.org/text-input-processor;1']
+        .createInstance(Ci.nsITextInputProcessor);
+    }
+    // Begin (or re-validate) transaction targeting this content window
+    if (!this.#tip.beginInputTransactionForTests(win)) {
+      // Stale — create fresh instance
+      this.#tip = Cc['@mozilla.org/text-input-processor;1']
+        .createInstance(Ci.nsITextInputProcessor);
+      if (!this.#tip.beginInputTransactionForTests(win)) {
+        throw new Error('Cannot begin text input transaction');
+      }
+    }
+    return this.#tip;
+  }
+
+  #charToCode(char) {
+    const c = char.toLowerCase();
+    if (c >= 'a' && c <= 'z') return 'Key' + c.toUpperCase();
+    if (c >= '0' && c <= '9') return 'Digit' + c;
+    const map = {
+      ' ': 'Space', '-': 'Minus', '=': 'Equal',
+      '[': 'BracketLeft', ']': 'BracketRight',
+      '\\': 'Backslash', ';': 'Semicolon', "'": 'Quote',
+      ',': 'Comma', '.': 'Period', '/': 'Slash', '`': 'Backquote',
+    };
+    return map[c] || '';
+  }
+
+  // Compute DOM keyCode for a character. Apps like Google Sheets check keyCode
+  // (not just key/code) to handle character input on their canvas.
+  #charToKeyCode(char) {
+    // Shifted symbols → use base key's keyCode
+    const base = SHIFT_MAP[char];
+    if (base) return this.#charToKeyCode(base);
+    const c = char.toUpperCase();
+    if (c >= 'A' && c <= 'Z') return c.charCodeAt(0);     // 65-90
+    if (char >= '0' && char <= '9') return char.charCodeAt(0); // 48-57
+    if (char === ' ') return 32;
+    const punctMap = {
+      ';': 186, '=': 187, ',': 188, '-': 189, '.': 190, '/': 191,
+      '`': 192, '[': 219, '\\': 220, ']': 221, "'": 222,
+    };
+    return punctMap[char] || 0;
+  }
+
+  #typeText(text) {
+    let tip;
+    try {
+      tip = this.#getTextInputProcessor();
+    } catch (e) {
+      // TIP unavailable — fall back to value-setter approach
+      const result = this.#typeTextFallback(text, this.contentWindow);
+      result.method = 'fallback';
+      return result;
+    }
+
+    const KE = this.contentWindow.KeyboardEvent;
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      try {
+        // Control characters → special key presses
+        if (char === '\t') {
+          const e = new KE('', { key: 'Tab', code: 'Tab' });
+          tip.keydown(e, TIP_KEY_NON_PRINTABLE);
+          tip.keyup(e, TIP_KEY_NON_PRINTABLE);
+          continue;
+        }
+        if (char === '\n' || char === '\r') {
+          const e = new KE('', { key: 'Enter', code: 'Enter' });
+          tip.keydown(e, TIP_KEY_NON_PRINTABLE);
+          tip.keyup(e, TIP_KEY_NON_PRINTABLE);
+          continue;
+        }
+
+        // Determine if Shift is needed
+        const isUpper = char >= 'A' && char <= 'Z';
+        const isShiftSym = SHIFT_CHARS.has(char);
+        const needsShift = isUpper || isShiftSym;
+
+        // Physical key code and DOM keyCode (based on base character)
+        const code = isShiftSym
+          ? this.#charToCode(SHIFT_MAP[char])
+          : this.#charToCode(char);
+        const keyCode = this.#charToKeyCode(char);
+
+        if (needsShift) {
+          tip.keydown(new KE('', { key: 'Shift', code: 'ShiftLeft', keyCode: 16 }));
+        }
+
+        const event = new KE('', { key: char, code, keyCode });
+        tip.keydown(event);
+        tip.keyup(event);
+
+        if (needsShift) {
+          tip.keyup(new KE('', { key: 'Shift', code: 'ShiftLeft' }));
+        }
+      } catch (e) {
+        // TIP may fail if page navigated (Tab/Enter can cause this)
+        return { success: true, typed: i, total: text.length, method: 'textInputProcessor' };
+      }
+    }
+
+    return { success: true, length: text.length, method: 'textInputProcessor' };
+  }
+
+  #typeTextFallback(text, win) {
+    const doc = win.document;
     const target = doc?.activeElement || doc?.body;
     if (!target) throw new Error('No active element to type into');
-    // Append characters to input/textarea value and dispatch input events.
-    // Avoids KeyboardEvent which runs trusted from JSWindowActor and can crash tabs.
+
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
       const nativeSetter = this.#getValueSetter(target);
       const current = target.value || '';
@@ -316,13 +465,76 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
 
   #pressKey(key, modifiers) {
     const win = this.contentWindow;
-    const doc = win?.document;
+    if (!win) throw new Error('No content window for key press');
+
+    // Normalize key name
+    if (key === 'Space') key = ' ';
+
+    // Keys that can destroy the actor (navigation, focus loss)
+    const destructive = new Set(['Tab', 'Escape', 'Enter']);
+    const shouldDefer = destructive.has(key);
+
+    const execute = () => {
+      let tip;
+      try {
+        tip = this.#getTextInputProcessor();
+      } catch (e) {
+        this.#pressKeyFallback(key, modifiers, win);
+        return;
+      }
+
+      const KE = win.KeyboardEvent;
+      const mods = [];
+
+      // Activate modifier keys
+      if (modifiers.shift) {
+        const e = new KE('', { key: 'Shift', code: 'ShiftLeft' });
+        tip.keydown(e); mods.push(e);
+      }
+      if (modifiers.ctrl) {
+        const e = new KE('', { key: 'Control', code: 'ControlLeft' });
+        tip.keydown(e); mods.push(e);
+      }
+      if (modifiers.alt) {
+        const e = new KE('', { key: 'Alt', code: 'AltLeft' });
+        tip.keydown(e); mods.push(e);
+      }
+      if (modifiers.meta) {
+        const e = new KE('', { key: 'Meta', code: 'MetaLeft' });
+        tip.keydown(e); mods.push(e);
+      }
+
+      // Determine code, keyCode, and flags
+      const isNonPrintable = key.length > 1;
+      const code = isNonPrintable ? key : this.#charToCode(key);
+      const flags = isNonPrintable ? TIP_KEY_NON_PRINTABLE : 0;
+      const keyCode = isNonPrintable ? 0 : this.#charToKeyCode(key);
+
+      const event = new KE('', { key, code, keyCode });
+      tip.keydown(event, flags);
+      tip.keyup(event, flags);
+
+      // Deactivate modifiers in reverse order
+      for (const mod of mods.reverse()) {
+        tip.keyup(mod);
+      }
+    };
+
+    if (shouldDefer) {
+      win.setTimeout(() => {
+        try { execute(); } catch (e) { /* actor may be destroyed */ }
+      }, 0);
+    } else {
+      execute();
+    }
+
+    return { success: true, key, method: 'textInputProcessor' };
+  }
+
+  #pressKeyFallback(key, modifiers, win) {
+    const doc = win.document;
     const target = doc?.activeElement || doc?.body;
-    if (!target) throw new Error('No active element for key press');
-    // Defer key event dispatch: KeyboardEvent from a JSWindowActor child is
-    // trusted, so special keys (Escape, Tab, Enter) trigger browser-level
-    // handlers that can crash/navigate the tab. Dispatching after a setTimeout
-    // lets the sendQuery response return before side effects occur.
+    if (!target) return;
     const opts = {
       key,
       bubbles: true,
@@ -331,15 +543,8 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
       altKey: !!modifiers.alt,
       metaKey: !!modifiers.meta,
     };
-    win.setTimeout(() => {
-      try {
-        target.dispatchEvent(new win.KeyboardEvent('keydown', opts));
-        target.dispatchEvent(new win.KeyboardEvent('keyup', opts));
-      } catch (e) {
-        // Tab may have been destroyed by the key event — expected for Escape/Tab/etc.
-      }
-    }, 0);
-    return { success: true, key };
+    target.dispatchEvent(new win.KeyboardEvent('keydown', opts));
+    target.dispatchEvent(new win.KeyboardEvent('keyup', opts));
   }
 
   #scroll(direction, amount) {
@@ -366,24 +571,44 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     const rect = el.getBoundingClientRect();
     const cx = rect.x + rect.width / 2;
     const cy = rect.y + rect.height / 2;
-    const opts = { bubbles: true, clientX: cx, clientY: cy };
-    el.dispatchEvent(new this.contentWindow.MouseEvent('mouseenter', opts));
-    el.dispatchEvent(new this.contentWindow.MouseEvent('mouseover', opts));
-    el.dispatchEvent(new this.contentWindow.MouseEvent('mousemove', opts));
+    // Use windowUtils for native-level mouse events
+    const utils = this.contentWindow?.windowUtils;
+    if (utils?.sendMouseEvent) {
+      utils.sendMouseEvent('mousemove', cx, cy, 0, 0, 0);
+    } else {
+      const opts = { bubbles: true, clientX: cx, clientY: cy };
+      el.dispatchEvent(new this.contentWindow.MouseEvent('mouseenter', opts));
+      el.dispatchEvent(new this.contentWindow.MouseEvent('mouseover', opts));
+      el.dispatchEvent(new this.contentWindow.MouseEvent('mousemove', opts));
+    }
     return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
   }
 
   #clickCoordinates(x, y) {
-    const doc = this.contentWindow?.document;
+    const win = this.contentWindow;
+    const doc = win?.document;
     if (!doc) throw new Error('No document');
     this.#showCursor(x, y);
     const el = doc.elementFromPoint(x, y);
-    if (!el) throw new Error('No element at coordinates (' + x + ', ' + y + ')');
-    const opts = { bubbles: true, clientX: x, clientY: y };
-    el.dispatchEvent(new this.contentWindow.MouseEvent('mousedown', opts));
-    el.dispatchEvent(new this.contentWindow.MouseEvent('mouseup', opts));
-    el.dispatchEvent(new this.contentWindow.MouseEvent('click', opts));
-    return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
+    // Use windowUtils for native-level trusted mouse events
+    const utils = win.windowUtils;
+    if (utils?.sendMouseEvent) {
+      utils.sendMouseEvent('mousedown', x, y, 0, 1, 0);
+      utils.sendMouseEvent('mouseup', x, y, 0, 1, 0);
+      // sendMouseEvent doesn't trigger focus change — ensure focus explicitly
+      if (el) el.focus();
+    } else {
+      if (!el) throw new Error('No element at coordinates (' + x + ', ' + y + ')');
+      const opts = { bubbles: true, clientX: x, clientY: y };
+      el.dispatchEvent(new win.MouseEvent('mousedown', opts));
+      el.dispatchEvent(new win.MouseEvent('mouseup', opts));
+      el.dispatchEvent(new win.MouseEvent('click', opts));
+    }
+    return {
+      success: true,
+      tag: el?.tagName?.toLowerCase() || 'unknown',
+      text: el ? this.#getVisibleText(el).substring(0, 100) : '',
+    };
   }
 
   // --- Console Capture ---
@@ -501,8 +726,8 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     cursor.appendChild(vLine);
     doc.documentElement.appendChild(cursor);
     this.#cursorOverlay = cursor;
-    // Auto-remove after 5 seconds
-    this.contentWindow.setTimeout(() => this.#removeCursor(), 5000);
+    // Auto-remove after 60 seconds (or when cursor moves)
+    this.contentWindow.setTimeout(() => this.#removeCursor(), 60000);
   }
 
   #removeCursor() {

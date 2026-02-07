@@ -1021,7 +1021,8 @@
 
     press_key: async ({ tab_id, frame_id, key, modifiers }) => {
       if (!key) throw new Error('key is required');
-      return await actorInteraction(tab_id, 'ZenLeapAgent:PressKey', { key, modifiers: modifiers || {} }, { success: true, key }, frame_id);
+      const mods = modifiers || {};
+      return await actorInteraction(tab_id, 'ZenLeapAgent:PressKey', { key, modifiers: mods }, { success: true, key }, frame_id);
     },
 
     scroll: async ({ tab_id, frame_id, direction, amount }) => {
