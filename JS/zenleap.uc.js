@@ -38,8 +38,10 @@
     'keys.leap.jumpBack':       { default: 'o', type: 'key', label: 'Jump Back', description: 'Jump back in tab history', category: 'Keybindings', group: 'Leap Mode' },
     'keys.leap.jumpForward':    { default: 'i', type: 'key', label: 'Jump Forward', description: 'Jump forward in tab history', category: 'Keybindings', group: 'Leap Mode' },
     'keys.leap.help':           { default: '?', type: 'key', label: 'Help', description: 'Show help modal', category: 'Keybindings', group: 'Leap Mode', caseSensitive: true },
-    'keys.leap.prevWorkspace':  { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch to previous workspace', category: 'Keybindings', group: 'Leap Mode' },
-    'keys.leap.nextWorkspace':  { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch to next workspace', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.prevWorkspace':     { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch to previous workspace', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.prevWorkspaceAlt':  { default: 'arrowleft', type: 'key', label: 'Previous Workspace (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.nextWorkspace':     { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch to next workspace', category: 'Keybindings', group: 'Leap Mode' },
+    'keys.leap.nextWorkspaceAlt':  { default: 'arrowright', type: 'key', label: 'Next Workspace (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Leap Mode' },
 
     // --- Keybindings: Browse Mode ---
     'keys.browse.down':          { default: 'j', type: 'key', label: 'Move Down', description: 'Move highlight down', category: 'Keybindings', group: 'Browse Mode' },
@@ -52,8 +54,10 @@
     'keys.browse.yank':          { default: 'y', type: 'key', label: 'Yank', description: 'Copy selected tabs to buffer', category: 'Keybindings', group: 'Browse Mode' },
     'keys.browse.pasteAfter':    { default: 'p', type: 'key', label: 'Paste After', description: 'Paste tabs after highlight', category: 'Keybindings', group: 'Browse Mode' },
     'keys.browse.pasteBefore':   { default: 'P', type: 'key', label: 'Paste Before', description: 'Paste tabs before highlight', category: 'Keybindings', group: 'Browse Mode', caseSensitive: true },
-    'keys.browse.prevWorkspace': { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch workspace left', category: 'Keybindings', group: 'Browse Mode' },
-    'keys.browse.nextWorkspace': { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch workspace right', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.prevWorkspace':    { default: 'h', type: 'key', label: 'Previous Workspace', description: 'Switch workspace left', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.prevWorkspaceAlt': { default: 'arrowleft', type: 'key', label: 'Previous Workspace (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.nextWorkspace':    { default: 'l', type: 'key', label: 'Next Workspace', description: 'Switch workspace right', category: 'Keybindings', group: 'Browse Mode' },
+    'keys.browse.nextWorkspaceAlt': { default: 'arrowright', type: 'key', label: 'Next Workspace (Alt)', description: 'Arrow key alternative', category: 'Keybindings', group: 'Browse Mode' },
     'keys.browse.gMode':         { default: 'g', type: 'key', label: 'Start gg', description: 'Begin gg to jump to first tab', category: 'Keybindings', group: 'Browse Mode' },
     'keys.browse.lastTab':       { default: 'G', type: 'key', label: 'Last Tab', description: 'Jump to last tab', category: 'Keybindings', group: 'Browse Mode', caseSensitive: true },
 
@@ -2341,6 +2345,7 @@
             <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Enter browse mode (down/up)</span></div>
             <div class="zenleap-help-item"><kbd>&#8593;</kbd> / <kbd>&#8595;</kbd><span>Enter browse mode (arrows)</span></div>
             <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Browse + switch workspace</span></div>
+            <div class="zenleap-help-item"><kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Browse + switch workspace (arrows)</span></div>
             <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
             <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
             <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
@@ -2361,7 +2366,7 @@
             <div class="zenleap-help-item"><kbd>Space</kbd><span>Toggle selection on tab</span></div>
             <div class="zenleap-help-item"><kbd>y</kbd><span>Yank (copy) selected tabs</span></div>
             <div class="zenleap-help-item"><kbd>p</kbd> / <kbd>P</kbd><span>Paste after / before</span></div>
-            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Switch workspace (prev/next)</span></div>
+            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd> / <kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Switch workspace</span></div>
             <div class="zenleap-help-item"><kbd>gg</kbd> / <kbd>G</kbd><span>Jump to first / last tab</span></div>
             <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open highlighted tab</span></div>
             <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected/highlighted tab(s)</span></div>
@@ -5061,8 +5066,10 @@
         pasteTabs('after');
         return;
       }
-      if (key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.nextWorkspace']) {
-        browseWorkspaceSwitch(key === S['keys.browse.prevWorkspace'] ? 'prev' : 'next');
+      if (key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'] ||
+          key === S['keys.browse.nextWorkspace'] || key === S['keys.browse.nextWorkspaceAlt']) {
+        const isPrev = key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'];
+        browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
         return;
       }
 
@@ -5314,9 +5321,11 @@
       if (jumpForward()) exitLeapMode(true);
       return;
     }
-    if (key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.nextWorkspace']) {
+    if (key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.prevWorkspaceAlt'] ||
+        key === S['keys.leap.nextWorkspace'] || key === S['keys.leap.nextWorkspaceAlt']) {
+      const isPrev = key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.prevWorkspaceAlt'];
       browseMode = true;
-      browseDirection = key === S['keys.leap.prevWorkspace'] ? 'up' : 'down';
+      browseDirection = isPrev ? 'up' : 'down';
       const tabs = getVisibleTabs();
       const currentTab = gBrowser.selectedTab;
       originalTabIndex = tabs.indexOf(currentTab);
@@ -5324,7 +5333,7 @@
       highlightedTabIndex = 0;
       clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
-      browseWorkspaceSwitch(key === S['keys.leap.prevWorkspace'] ? 'prev' : 'next');
+      browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
       return;
     }
     if (originalKey === S['keys.leap.help']) {
