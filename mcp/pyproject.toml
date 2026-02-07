@@ -1,0 +1,15 @@
+[project]
+name = "zenleap-mcp"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp>=1.26.0",
+    "websockets>=16.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
