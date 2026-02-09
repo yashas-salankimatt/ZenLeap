@@ -253,6 +253,9 @@
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
 
+  // Input interception: prevent keyboard events from leaking to web page content
+  let contentFocusStolen = false;
+
   // Jump list (like vim's Ctrl+O / Ctrl+I)
   // Jump list size uses settings: S['display.maxJumpListSize']
   let jumpList = [];           // Array of tab references
@@ -5377,6 +5380,31 @@
     }
   }
 
+  // Steal focus from content area to prevent keyboard events from reaching web pages
+  // (e.g., Space toggling YouTube playback, j/k editing Google Sheets)
+  function stealFocusFromContent() {
+    if (contentFocusStolen) return;
+    try {
+      gBrowser.selectedBrowser.blur();
+      contentFocusStolen = true;
+      log('Stole focus from content');
+    } catch (e) {
+      log(`Failed to steal focus from content: ${e}`);
+    }
+  }
+
+  // Restore focus to the content area after leaving leap mode
+  function restoreFocusToContent() {
+    if (!contentFocusStolen) return;
+    try {
+      gBrowser.selectedBrowser.focus();
+      log('Restored focus to content');
+    } catch (e) {
+      log(`Failed to restore focus to content: ${e}`);
+    }
+    contentFocusStolen = false;
+  }
+
   // Enter leap mode
   function enterLeapMode() {
     if (leapMode) return;
@@ -5388,6 +5416,9 @@
     originalTabIndex = -1;
     browseDirection = null;
     sidebarWasExpanded = false;
+
+    // Steal focus from content to prevent input leaking to web pages
+    stealFocusFromContent();
 
     // Show sidebar if in compact mode and sidebar is not already visible
     if (isCompactModeEnabled()) {
@@ -5832,6 +5863,9 @@
       setTimeout(() => scrollTabIntoView('center'), 50);
     }
 
+    // Restore focus to content area so keyboard input resumes going to the web page
+    restoreFocusToContent();
+
     log('Exited leap mode');
   }
 
@@ -6017,6 +6051,7 @@
     if (matchCombo(event, S['keys.global.commandPalette'])) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       enterSearchMode(true);
       return;
     }
@@ -6025,6 +6060,7 @@
     if (matchCombo(event, S['keys.global.search'])) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       enterSearchMode();
       return;
     }
@@ -6033,10 +6069,13 @@
     if (matchCombo(event, S['keys.global.leapMode'])) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       if (leapMode) {
         exitLeapMode(false);
       } else {
+        // Steal focus immediately to minimize chance of the trigger key leaking to content
+        stealFocusFromContent();
         enterLeapMode();
       }
       return;
@@ -6046,6 +6085,7 @@
     if (matchCombo(event, S['keys.global.quickMark'])) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       if (!leapMode) {
         // Set mark mode state AND attribute BEFORE entering leap mode
@@ -6097,6 +6137,7 @@
     if (key === 'escape') {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
       if (browseMode) {
         cancelBrowseMode();
       } else {
@@ -6109,6 +6150,7 @@
     if (browseMode) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
         if (event.shiftKey) {
@@ -6232,6 +6274,7 @@
     if (gMode) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       // gg - go to first tab (or first unpinned if setting enabled)
       if (key === S['keys.gMode.first'] && gNumberBuffer === '') {
@@ -6303,6 +6346,7 @@
     if (zMode) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       if (key === S['keys.zMode.center']) {
         scrollTabIntoView('center');
@@ -6331,6 +6375,7 @@
     if (markMode) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       // Accept a-z and 0-9 as mark characters
       if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
@@ -6350,6 +6395,7 @@
     if (gotoMarkMode) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
 
       // Accept a-z and 0-9 as mark characters
       if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
@@ -6372,6 +6418,7 @@
     // === INITIAL LEAP MODE (waiting for j/k/g/z/m/'/o/i) ===
     event.preventDefault();
     event.stopPropagation();
+    event.stopImmediatePropagation();
 
     if (key === S['keys.leap.browseDown'] || key === S['keys.leap.browseDownAlt']) {
       enterBrowseMode('down');
@@ -6506,9 +6553,19 @@
     log('Tab listeners set up');
   }
 
+  // Suppress keyup events while in active modes to prevent them from leaking to content
+  // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode)
+  function handleKeyUp(event) {
+    if (leapMode || searchMode || commandMode || settingsMode || helpMode) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
   // Set up keyboard listener
   function setupKeyboardListener() {
     window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
     log('Keyboard listener set up');
   }
 
