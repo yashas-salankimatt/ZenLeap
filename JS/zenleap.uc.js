@@ -1566,6 +1566,16 @@
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-workspace-picker' },
+      { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change'],
+        condition: () => {
+          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
+        },
+        subFlow: 'switch-workspace-picker' },
+      { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab'],
+        condition: () => {
+          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
+        },
+        subFlow: 'move-to-workspace-picker' },
       { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
@@ -1586,6 +1596,11 @@
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-folder-picker' },
+      { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group'],
+        condition: () => {
+          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'add-to-folder-picker' },
       { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group'],
         condition: () => {
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
@@ -1617,87 +1632,7 @@
 
   // Generate dynamic commands based on current state
   function getDynamicCommands() {
-    const commands = [];
-
-    // Workspace switch commands
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        if (workspaces && Array.isArray(workspaces)) {
-          const activeId = window.gZenWorkspaces.activeWorkspace;
-          for (const ws of workspaces) {
-            const icon = ws.icon || '🗂';
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            commands.push({
-              key: `switch-workspace:${ws.uuid}`,
-              label: `Switch to Workspace: ${name}${isActive ? ' (current)' : ''}`,
-              icon: icon,
-              tags: ['workspace', 'switch', name.toLowerCase()],
-              command: () => { window.gZenWorkspaces.changeWorkspaceWithID(ws.uuid); },
-            });
-            if (!isActive) {
-              commands.push({
-                key: `move-to-workspace:${ws.uuid}`,
-                label: `Move Tab to Workspace: ${name}`,
-                icon: icon,
-                tags: ['workspace', 'move', 'tab', name.toLowerCase()],
-                command: () => {
-                  window.gZenWorkspaces.moveTabToWorkspace(gBrowser.selectedTab, ws.uuid);
-                },
-              });
-            }
-          }
-        }
-      }
-    } catch (e) { log(`Error generating workspace commands: ${e}`); }
-
-    // Folder commands
-    try {
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const folderId = folder.id;
-        const activeTab = gBrowser.selectedTab;
-        // Skip if tab is already in this folder
-        if (activeTab && activeTab.group === folder) continue;
-
-        commands.push({
-          key: `add-to-folder:${folderId}`,
-          label: `Add Tab to Folder: ${name}`,
-          icon: '📂',
-          tags: ['folder', 'add', 'move', 'tab', 'group', name.toLowerCase()],
-          command: () => {
-            try {
-              const tabToMove = gBrowser.selectedTab;
-              if (!tabToMove) return;
-              // Re-fetch folder by ID to avoid stale DOM references
-              const targetFolder = document.getElementById(folderId);
-              if (!targetFolder) { log(`Folder not found: ${folderId}`); return; }
-
-              // Handle cross-workspace moves
-              const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
-              if (targetWorkspaceId && window.gZenWorkspaces) {
-                const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-                if (currentWorkspaceId !== targetWorkspaceId) {
-                  window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
-                }
-              }
-
-              // Pin tab if not already pinned (Zen folders require pinned tabs)
-              if (!tabToMove.pinned) {
-                gBrowser.pinTab(tabToMove);
-              }
-
-              targetFolder.addTabs([tabToMove]);
-              log(`Added tab to folder: ${name}`);
-            } catch(e) { log(`Add to folder failed: ${e}`); }
-          },
-        });
-      }
-    } catch (e) { log(`Error generating folder commands: ${e}`); }
-
-    return commands;
+    return [];
   }
 
   // Get all available commands (static + dynamic)
@@ -1883,6 +1818,9 @@
       case 'folder-name-input': return 'Enter folder name...';
       case 'delete-folder-picker': return 'Select a folder to delete...';
       case 'delete-workspace-picker': return 'Select a workspace to delete...';
+      case 'switch-workspace-picker': return 'Select a workspace to switch to...';
+      case 'move-to-workspace-picker': return 'Select a workspace to move tab to...';
+      case 'add-to-folder-picker': return 'Select a folder to add tab to...';
       case 'rename-folder-picker': return 'Select a folder to rename...';
       case 'rename-workspace-picker': return 'Select a workspace to rename...';
       case 'rename-folder-input': return 'Enter new folder name...';
@@ -1935,6 +1873,12 @@
         return getDeleteFolderPickerResults(query);
       case 'delete-workspace-picker':
         return getDeleteWorkspacePickerResults(query);
+      case 'switch-workspace-picker':
+        return getSwitchWorkspacePickerResults(query);
+      case 'move-to-workspace-picker':
+        return getMoveToWorkspacePickerResults(query);
+      case 'add-to-folder-picker':
+        return getAddToFolderPickerResults(query);
       case 'rename-folder-picker':
         return getRenameFolderPickerResults(query);
       case 'rename-workspace-picker':
@@ -2020,6 +1964,29 @@
     });
   }
 
+  function getSwitchWorkspacePickerResults(query) {
+    const results = [];
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        const activeId = window.gZenWorkspaces.activeWorkspace;
+        if (workspaces && Array.isArray(workspaces)) {
+          for (const ws of workspaces) {
+            const name = ws.name || 'Unnamed';
+            const isActive = ws.uuid === activeId;
+            results.push({
+              key: `switch-workspace:${ws.uuid}`,
+              label: `${name}${isActive ? ' (current)' : ''}`,
+              icon: ws.icon || '🗂',
+              tags: ['workspace', 'switch', name.toLowerCase()],
+              workspaceId: ws.uuid,
+            });
+          }
+        }
+      }
+    } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'switch-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
   function getRenameFolderPickerResults(query) {
     const results = [];
     try {
@@ -2051,6 +2018,7 @@
     });
   }
 
+  function getMoveToWorkspacePickerResults(query) {
   function getRenameWorkspacePickerResults(query) {
     const results = [];
     try {
@@ -2059,6 +2027,13 @@
         const activeId = window.gZenWorkspaces.activeWorkspace;
         if (workspaces && Array.isArray(workspaces)) {
           for (const ws of workspaces) {
+            if (ws.uuid === activeId) continue;
+            const name = ws.name || 'Unnamed';
+            results.push({
+              key: `move-to-workspace:${ws.uuid}`,
+              label: name,
+              icon: ws.icon || '🗂',
+              tags: ['workspace', 'move', name.toLowerCase()],
             const name = ws.name || 'Unnamed';
             const isActive = ws.uuid === activeId;
             results.push({
@@ -2071,6 +2046,9 @@
           }
         }
       }
+    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'move-to-workspace:none', label: 'No other workspaces found', icon: '🗂', tags: [] }];
     } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
     if (results.length === 0) {
       return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
@@ -2082,6 +2060,34 @@
     });
   }
 
+  function getAddToFolderPickerResults(query) {
+    const results = [];
+    try {
+      const activeTab = gBrowser.selectedTab;
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        // Skip if tab is already in this folder
+        if (activeTab && activeTab.group === folder) continue;
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+        results.push({
+          key: `add-to-folder:${folder.id}`,
+          label: name,
+          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+          icon: '📂',
+          tags: ['folder', 'add', name.toLowerCase()],
+          folder: folder,
+        });
+      }
+    } catch (e) { log(`Error getting folders for add: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'add-to-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
   function getRenameFolderInputResults(query) {
     const name = (query || '').trim();
     if (!name) {
@@ -2331,6 +2337,25 @@
         }
         break;
 
+      case 'switch-workspace-picker':
+        if (result.workspaceId) {
+          window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
+          exitSearchMode();
+        }
+        break;
+
+      case 'move-to-workspace-picker':
+        if (result.workspaceId) {
+          window.gZenWorkspaces.moveTabToWorkspace(gBrowser.selectedTab, result.workspaceId);
+          exitSearchMode();
+        }
+        break;
+
+      case 'add-to-folder-picker':
+        if (result.folder) {
+          addTabToFolder(result.folder);
+        }
+        break;
       case 'rename-folder-picker':
         if (result.folder) {
           commandSubFlow.data = { folderId: result.folder.id };
@@ -2594,6 +2619,35 @@
         log(`Split view with tab: ${tab.label}`);
       }
     } catch (e) { log(`Split failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function addTabToFolder(folder) {
+    try {
+      const tabToMove = gBrowser.selectedTab;
+      if (!tabToMove) { exitSearchMode(); return; }
+      // Re-fetch folder by ID to avoid stale DOM references
+      const targetFolder = document.getElementById(folder.id);
+      if (!targetFolder) { log(`Folder not found: ${folder.id}`); exitSearchMode(); return; }
+
+      // Handle cross-workspace moves
+      const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+      if (targetWorkspaceId && window.gZenWorkspaces) {
+        const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
+        if (currentWorkspaceId !== targetWorkspaceId) {
+          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
+        }
+      }
+
+      // Pin tab if not already pinned (Zen folders require pinned tabs)
+      if (!tabToMove.pinned) {
+        gBrowser.pinTab(tabToMove);
+      }
+
+      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+      targetFolder.addTabs([tabToMove]);
+      log(`Added tab to folder: ${name}`);
+    } catch(e) { log(`Add to folder failed: ${e}`); }
     exitSearchMode();
   }
 
