@@ -3723,6 +3723,7 @@
     // Use updateSearchVimIndicator to properly set up input/display visibility
     // This ensures input is shown and display is hidden for insert mode
     updateSearchVimIndicator();
+    updateWsToggleVisibility();
 
     log(`Entered search mode${asCommand ? ' (command)' : ''}`);
   }
@@ -3884,7 +3885,10 @@
     if (!S['display.vimModeInBars']) {
       searchVimIndicator.style.display = 'none';
       if (searchInputDisplay) searchInputDisplay.style.display = 'none';
-      if (searchInput) searchInput.style.display = '';
+      if (searchInput) {
+        searchInput.style.display = '';
+        searchInput.focus();
+      }
       updateSearchHintBar();
       return;
     }
