@@ -84,6 +84,7 @@
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
+    'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
     'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
@@ -2583,8 +2584,10 @@
   function updateSearchHintBar() {
     if (!searchHintBar) return;
 
+    const vimEnabled = S['display.vimModeInBars'];
+
     if (commandMode) {
-      if (searchVimMode === 'normal') {
+      if (vimEnabled && searchVimMode === 'normal') {
         searchHintBar.innerHTML = `
           <span><kbd>j/k</kbd> navigate</span>
           <span><kbd>1-9</kbd> jump</span>
@@ -2596,13 +2599,13 @@
         searchHintBar.innerHTML = `
           <span><kbd>↑↓</kbd> navigate</span>
           <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
-          <span><kbd>Esc</kbd> normal mode</span>
+          <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : (commandSubFlow ? 'back' : 'exit')}</span>
         `;
       }
       return;
     }
 
-    if (searchVimMode === 'normal') {
+    if (vimEnabled && searchVimMode === 'normal') {
       searchHintBar.innerHTML = `
         <span><kbd>j/k</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
@@ -2618,7 +2621,7 @@
         <span><kbd>Tab</kbd> all workspaces</span>
         <span><kbd>Ctrl+x</kbd> close tab</span>
         <span><kbd>></kbd> commands</span>
-        <span><kbd>Esc</kbd> normal mode</span>
+        <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : 'close'}</span>
       `;
     }
   }
@@ -3751,6 +3754,16 @@
   function updateSearchVimIndicator() {
     if (!searchVimIndicator) return;
 
+    // When vim mode is disabled, hide indicator and always show input
+    if (!S['display.vimModeInBars']) {
+      searchVimIndicator.style.display = 'none';
+      if (searchInputDisplay) searchInputDisplay.style.display = 'none';
+      if (searchInput) searchInput.style.display = '';
+      updateSearchHintBar();
+      return;
+    }
+    searchVimIndicator.style.display = '';
+
     if (searchVimMode === 'insert') {
       searchVimIndicator.textContent = commandMode ? 'COMMAND I' : 'INSERT';
       searchVimIndicator.classList.remove('normal');
@@ -3849,33 +3862,28 @@
       if (key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        if (searchVimMode === 'insert') {
+        if (!S['display.vimModeInBars'] || searchVimMode !== 'insert') {
+          // Vim disabled or already in normal mode: go back or exit
+          if (commandSubFlow) {
+            exitSubFlow();
+            searchVimMode = 'insert';
+            updateSearchVimIndicator();
+          } else if (commandEnteredFromSearch) {
+            exitCommandMode();
+          } else {
+            exitSearchMode();
+          }
+        } else {
           // Switch to normal mode
           searchCursorPos = searchInput?.selectionStart || 0;
           searchVimMode = 'normal';
           updateSearchVimIndicator();
-        } else {
-          // In normal mode: go back or exit
-          if (commandSubFlow) {
-            exitSubFlow();
-            // Re-enter insert mode for the previous sub-flow
-            searchVimMode = 'insert';
-            updateSearchVimIndicator();
-          } else {
-            // If entered from search (via '>'), go back to search mode
-            // If entered directly (Ctrl+Shift+/), exit entirely
-            if (commandEnteredFromSearch) {
-              exitCommandMode();
-            } else {
-              exitSearchMode();
-            }
-          }
         }
         return true;
       }
 
       // ---- COMMAND NORMAL MODE ----
-      if (searchVimMode === 'normal') {
+      if (S['display.vimModeInBars'] && searchVimMode === 'normal') {
         event.preventDefault();
         event.stopPropagation();
 
@@ -3946,21 +3954,21 @@
       event.preventDefault();
       event.stopPropagation();
 
-      if (searchVimMode === 'insert') {
+      if (!S['display.vimModeInBars'] || searchVimMode === 'normal') {
+        // Vim disabled or already in normal mode: exit search
+        exitSearchMode();
+      } else {
         // Switch to normal mode
         // Save cursor position before blurring
         searchCursorPos = searchInput.selectionStart || 0;
         searchVimMode = 'normal';
         updateSearchVimIndicator(); // This will blur the input
-      } else {
-        // Exit search mode
-        exitSearchMode();
       }
       return true;
     }
 
     // Vim normal mode handling
-    if (searchVimMode === 'normal') {
+    if (S['display.vimModeInBars'] && searchVimMode === 'normal') {
       event.preventDefault();
       event.stopPropagation();
 
