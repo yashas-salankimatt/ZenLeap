@@ -5517,11 +5517,13 @@
   function updateRelativeNumbers() {
     const tabs = getVisibleTabs();
     const currentTab = gBrowser.selectedTab;
-    const currentIndex = tabs.indexOf(currentTab);
+    let currentIndex = tabs.indexOf(currentTab);
 
+    // If the current tab isn't in the visible list (e.g. new tab page),
+    // fall back to index 0 so relative numbers still render correctly.
     if (currentIndex === -1) {
-      log('Current tab not found in visible tabs');
-      return;
+      if (tabs.length === 0) return;
+      currentIndex = 0;
     }
 
     // Clean up marks for closed tabs
@@ -6309,20 +6311,32 @@
     const currentIndex = items.indexOf(currentTab);
 
     if (currentIndex === -1) {
-      log('Cannot enter browse mode: current tab not found');
-      return;
-    }
+      // Current tab not in visible items (e.g. new tab page, empty workspace tab).
+      // Fall back to the first unpinned tab so browse mode can still start.
+      if (items.length === 0) {
+        log('Cannot enter browse mode: no visible items');
+        return;
+      }
+      const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+      const fallbackIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
 
-    browseMode = true;
-    browseDirection = direction;
-    originalTabIndex = currentIndex;
-    originalTab = items[currentIndex];
-
-    // Move highlight one step in the initial direction
-    if (direction === 'down') {
-      highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
+      browseMode = true;
+      browseDirection = direction;
+      originalTabIndex = fallbackIndex;
+      originalTab = currentTab;
+      highlightedTabIndex = fallbackIndex;
     } else {
-      highlightedTabIndex = Math.max(currentIndex - 1, 0);
+      browseMode = true;
+      browseDirection = direction;
+      originalTabIndex = currentIndex;
+      originalTab = items[currentIndex];
+
+      // Move highlight one step in the initial direction
+      if (direction === 'down') {
+        highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
+      } else {
+        highlightedTabIndex = Math.max(currentIndex - 1, 0);
+      }
     }
 
     // Clear the timeout - browse mode has no timeout
@@ -6845,13 +6859,13 @@
     const currentTab = gBrowser.selectedTab;
     const currentIndex = tabs.indexOf(currentTab);
 
-    if (currentIndex === -1) {
-      log('Cannot navigate: current tab not in visible tabs');
-      return false;
-    }
-
     let targetIndex;
-    if (direction === 'up') {
+    if (currentIndex === -1) {
+      // Current tab not in visible list (e.g. new tab page).
+      // Treat index 0 as the starting point for navigation.
+      if (tabs.length === 0) return false;
+      targetIndex = direction === 'up' ? 0 : Math.min(distance - 1, tabs.length - 1);
+    } else if (direction === 'up') {
       targetIndex = currentIndex - distance;
     } else {
       targetIndex = currentIndex + distance;
