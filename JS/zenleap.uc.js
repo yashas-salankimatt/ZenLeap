@@ -91,6 +91,7 @@
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
+    'display.tabAsEnter':           { default: false, type: 'toggle', label: 'Tab Acts as Enter', description: 'When enabled, Tab executes commands like Enter in the command palette. When off, Tab only performs its explicit bindings (e.g. toggle workspace search).', category: 'Display', group: 'Search' },
     'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
     'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
@@ -3081,7 +3082,7 @@
           <p class="zenleap-help-trigger"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd> or type <kbd>></kbd> in search</p>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>&#8593;</kbd>/<kbd>&#8595;</kbd><span>Navigate commands</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd> or <kbd>Tab</kbd><span>Execute command</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Execute command</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump + execute</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Back / close</span></div>
           </div>
@@ -4212,13 +4213,13 @@
         return true;
       }
 
-      // Tab key — toggle workspace search in tab-search/split-tab-picker sub-flows, else act as Enter
+      // Tab key — toggle workspace search in tab-search/split-tab-picker sub-flows, else act as Enter (if setting enabled)
       if (key === 'Tab') {
         event.preventDefault();
         event.stopPropagation();
         if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview')) {
           toggleCrossWorkspaceSearch();
-        } else {
+        } else if (S['display.tabAsEnter']) {
           handleCommandSelect();
         }
         return true;
