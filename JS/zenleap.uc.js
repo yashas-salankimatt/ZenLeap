@@ -294,6 +294,9 @@
   let dedupTabsToClose = [];      // tabs identified as duplicates to be closed in dedup-preview
   let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
   let commandEnteredFromSearch = false; // true if entered via '>' from search, false if via Ctrl+Shift+/
+  let browseCommandMode = false;        // true when command bar was opened from browse mode
+  let browseCommandTabs = [];           // tabs to operate on (selected tabs from browse mode, or highlighted tab)
+  let savedBrowseState = null;          // saved browse state to restore on cancel/return
 
   // Session management state
   let sessionCache = null;         // { sessions: [], loadedAt: timestamp } — brief cache for picker
@@ -1472,6 +1475,12 @@
         }
       }},
 
+      // --- Tab Sorting ---
+      { key: 'sort-tabs', label: 'Sort Tabs...', icon: '↕', tags: ['tab', 'sort', 'order', 'organize', 'domain', 'title', 'recency', 'alphabetical', 'group'], subFlow: 'sort-picker' },
+      { key: 'group-by-domain', label: 'Group Tabs by Domain', icon: '📁', tags: ['tab', 'group', 'domain', 'folder', 'host', 'url', 'site', 'organize', 'auto'],
+        condition: () => !!window.gZenFolders,
+        command: () => { groupLooseTabsByDomain(); exitSearchMode(); } },
+
       // --- Navigation ---
       { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
@@ -1679,7 +1688,37 @@
 
   // Generate dynamic commands based on current state
   function getDynamicCommands() {
-    return [];
+    if (!browseCommandMode || browseCommandTabs.length === 0) return [];
+
+    const count = browseCommandTabs.length;
+    const tabLabel = count === 1 ? 'Highlighted Tab' : `${count} Selected Tabs`;
+    const browseTags = ['browse', 'selected', 'selection', 'highlighted'];
+
+    return [
+      { key: 'browse:close', label: `Close ${tabLabel}`, icon: '✕', tags: [...browseTags, 'close', 'remove', 'delete'],
+        command: () => { closeMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:move-workspace', label: `Move ${tabLabel} to Workspace...`, icon: '🗂', tags: [...browseTags, 'move', 'workspace'],
+        condition: () => { try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; } },
+        subFlow: 'browse-workspace-picker' },
+      { key: 'browse:add-folder', label: `Add ${tabLabel} to Folder...`, icon: '📂', tags: [...browseTags, 'folder', 'add', 'group'],
+        condition: () => { try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; } },
+        subFlow: 'browse-folder-picker' },
+      { key: 'browse:create-folder', label: `Create Folder with ${tabLabel}`, icon: '📁', tags: [...browseTags, 'folder', 'create', 'new', 'group'],
+        condition: () => !!window.gZenFolders,
+        subFlow: 'browse-folder-name-input' },
+      { key: 'browse:move-top', label: `Move ${tabLabel} to Top`, icon: '⤒', tags: [...browseTags, 'move', 'top', 'first'],
+        command: () => { moveMatchedTabsToPosition(browseCommandTabs, 'top'); } },
+      { key: 'browse:move-bottom', label: `Move ${tabLabel} to Bottom`, icon: '⤓', tags: [...browseTags, 'move', 'bottom', 'last'],
+        command: () => { moveMatchedTabsToPosition(browseCommandTabs, 'bottom'); } },
+      { key: 'browse:pin-unpin', label: `Pin/Unpin ${tabLabel}`, icon: '📌', tags: [...browseTags, 'pin', 'unpin'],
+        command: () => { pinUnpinMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:mute-unmute', label: `Mute/Unmute ${tabLabel}`, icon: '🔇', tags: [...browseTags, 'mute', 'unmute', 'audio', 'sound'],
+        command: () => { muteUnmuteMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:duplicate', label: `Duplicate ${tabLabel}`, icon: '⊕', tags: [...browseTags, 'duplicate', 'copy', 'clone'],
+        command: () => { duplicateMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:unload', label: `Unload ${tabLabel} (Save Memory)`, icon: '💤', tags: [...browseTags, 'unload', 'discard', 'memory', 'suspend'],
+        command: () => { unloadMatchedTabs(browseCommandTabs); } },
+    ];
   }
 
   // Get all available commands (static + dynamic)
@@ -1767,13 +1806,18 @@
       return;
     }
     if (typeof cmd.command === 'function') {
+      // Save browse command tabs before exitSearchMode clears them,
+      // so browse command closures can still reference browseCommandTabs
+      const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
       exitSearchMode();
+      if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
       try {
         cmd.command();
         log(`Executed command: ${cmd.key}`);
       } catch (e) {
         log(`Command failed: ${cmd.key}: ${e}`);
       }
+      browseCommandTabs = [];
     }
   }
 
@@ -1823,6 +1867,11 @@
     }
 
     if (commandSubFlowStack.length === 0) {
+      if (browseCommandMode) {
+        // Return to browse mode instead of command list root
+        returnToBrowseMode();
+        return;
+      }
       // Back to command list root
       commandSubFlow = null;
       commandQuery = '';
@@ -1884,6 +1933,10 @@
       case 'list-sessions-picker': return 'Browse saved sessions...';
       case 'session-detail-view': return 'Session contents (Esc to go back)';
       case 'delete-session-confirm': return 'Press Enter to confirm deletion...';
+      case 'browse-workspace-picker': return 'Choose a workspace...';
+      case 'browse-folder-picker': return 'Choose a folder...';
+      case 'browse-folder-name-input': return 'Enter folder name...';
+      case 'sort-picker': return 'Sort by...';
       default: return 'Type a command...';
     }
   }
@@ -1960,6 +2013,14 @@
         return getSessionDetailViewResults(query);
       case 'delete-session-confirm':
         return getDeleteSessionConfirmResults();
+      case 'browse-workspace-picker':
+        return getWorkspacePickerResults(query);
+      case 'browse-folder-picker':
+        return getFolderPickerResults(query);
+      case 'browse-folder-name-input':
+        return getFolderNameInputResults(query);
+      case 'sort-picker':
+        return getSortPickerResults(query);
       default:
         return [];
     }
@@ -2211,6 +2272,17 @@
       { key: 'action:unload-all', label: `Unload ${count} matching tabs`, icon: '💤', tags: ['unload', 'discard', 'memory', 'suspend'] },
     ];
     return fuzzyFilterAndSort(actions, query);
+  }
+
+  function getSortPickerResults(query) {
+    const options = [
+      { key: 'sort:domain', label: 'By Domain', icon: '🌐', tags: ['domain', 'host', 'url', 'site'] },
+      { key: 'sort:title-az', label: 'By Title (A → Z)', icon: '🔤', tags: ['title', 'name', 'alphabetical', 'az', 'alpha'] },
+      { key: 'sort:title-za', label: 'By Title (Z → A)', icon: '🔤', tags: ['title', 'name', 'alphabetical', 'za', 'reverse'] },
+      { key: 'sort:recency-newest', label: 'By Recency (Newest First)', icon: '🕐', tags: ['recent', 'new', 'newest', 'time', 'last'] },
+      { key: 'sort:recency-oldest', label: 'By Recency (Oldest First)', icon: '🕰', tags: ['old', 'oldest', 'stale', 'time', 'first'] },
+    ];
+    return fuzzyFilterAndSort(options, query);
   }
 
   function getWorkspacePickerResults(query) {
@@ -2527,6 +2599,37 @@
           exitSubFlow();
         }
         break;
+      case 'sort-picker':
+        if (result.key === 'sort:domain') sortLooseTabsByDomain();
+        else if (result.key === 'sort:title-az') sortLooseTabsByTitle();
+        else if (result.key === 'sort:title-za') sortLooseTabsByTitleReverse();
+        else if (result.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
+        else if (result.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+        exitSearchMode();
+        break;
+
+      // Browse command mode sub-flows
+      case 'browse-workspace-picker':
+        if (result.workspaceId) {
+          moveTabsToWorkspace(browseCommandTabs, result.workspaceId);
+        }
+        break;
+
+      case 'browse-folder-picker':
+        if (result.key === 'folder:new') {
+          enterSubFlow('browse-folder-name-input', 'Name new folder');
+        } else {
+          addTabsToFolder(browseCommandTabs, result);
+        }
+        break;
+
+      case 'browse-folder-name-input': {
+        const browseFolderName = (commandQuery || '').trim();
+        if (browseFolderName) {
+          createFolderWithName(browseCommandTabs, browseFolderName);
+        }
+        break;
+      }
     }
   }
 
@@ -2615,6 +2718,138 @@
     const positionMap = new Map();
     visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
     return [...tabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
+  }
+
+  // --- Tab Sorting Helpers ---
+
+  // Extract hostname from a tab's URL (returns '' for about: pages, etc.)
+  function getDomainFromTab(tab) {
+    try {
+      const url = tab.linkedBrowser?.currentURI?.spec;
+      if (!url || url.startsWith('about:') || url.startsWith('moz-extension:')) return '';
+      return new URL(url).hostname;
+    } catch (e) { return ''; }
+  }
+
+  // Get loose tabs eligible for sorting: non-pinned, non-essential, not in folders
+  function getSortableLooseTabs() {
+    return getVisibleTabs().filter(t =>
+      !t.pinned &&
+      !t.hasAttribute('zen-essential') &&
+      !t.group &&
+      !t.closing
+    );
+  }
+
+  // Reorder loose tabs in the sidebar to match a sorted array.
+  // Pinned tabs, essential tabs, and folder contents are left in place.
+  function reorderTabsInSortedOrder(sortedTabs) {
+    if (sortedTabs.length < 2) return;
+
+    try {
+      const visibleTabs = getVisibleTabs();
+      // Find the first non-pinned, non-essential position as our anchor
+      const firstRegularIdx = visibleTabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+      if (firstRegularIdx < 0) return;
+
+      // Place first sorted tab at the first regular position
+      gBrowser.moveTabBefore(sortedTabs[0], visibleTabs[firstRegularIdx]);
+      for (let i = 1; i < sortedTabs.length; i++) {
+        gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
+      }
+    } catch (e) { log(`Tab reorder failed: ${e}`); }
+  }
+
+  // Sort all loose tabs by domain, grouping same-domain tabs together
+  function sortLooseTabsByDomain() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) => {
+      const domA = getDomainFromTab(a);
+      const domB = getDomainFromTab(b);
+      if (domA !== domB) return domA.localeCompare(domB);
+      return 0; // stable sort preserves original order within same domain
+    });
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by domain`);
+  }
+
+  // Sort all loose tabs alphabetically by title (A → Z)
+  function sortLooseTabsByTitle() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) =>
+      (a.label || '').localeCompare(b.label || '')
+    );
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by title A-Z`);
+  }
+
+  // Sort all loose tabs alphabetically by title (Z → A)
+  function sortLooseTabsByTitleReverse() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) =>
+      (b.label || '').localeCompare(a.label || '')
+    );
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by title Z-A`);
+  }
+
+  // Sort all loose tabs by recency (most recent first)
+  function sortLooseTabsByRecencyNewest() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = sortTabsByRecency(tabs); // already sorts most-recent-first
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by recency (newest first)`);
+  }
+
+  // Sort all loose tabs by recency (oldest first)
+  function sortLooseTabsByRecencyOldest() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = sortTabsByRecency(tabs).reverse();
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by recency (oldest first)`);
+  }
+
+  // Group loose tabs by domain, creating a folder per domain (2+ tabs)
+  function groupLooseTabsByDomain() {
+    if (!window.gZenFolders) { log('Folders not available'); return; }
+
+    const looseTabs = getSortableLooseTabs();
+    if (looseTabs.length === 0) return;
+
+    // Group by domain
+    const domainGroups = new Map();
+    for (const tab of looseTabs) {
+      const domain = getDomainFromTab(tab);
+      if (!domain) continue; // skip about: pages, etc.
+      if (!domainGroups.has(domain)) domainGroups.set(domain, []);
+      domainGroups.get(domain).push(tab);
+    }
+
+    // Create folders for domains with 2+ tabs
+    let folderCount = 0;
+    for (const [domain, tabs] of domainGroups) {
+      if (tabs.length < 2) continue;
+      const sortedTabs = sortTabsBySidebarPosition(tabs);
+      gZenFolders.createFolder(sortedTabs, {
+        label: domain,
+        renameFolder: false,
+      });
+      folderCount++;
+    }
+    log(`Created ${folderCount} domain folders`);
   }
 
   function moveMatchedTabsToPosition(tabs, position) {
@@ -2743,6 +2978,34 @@
       });
       log(`Created folder "${folderName}" with ${sortedTabs.length} tabs`);
     } catch (e) { log(`Create folder with name failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  // Duplicate matched tabs
+  function duplicateMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    for (const t of validTabs) gBrowser.duplicateTab(t);
+    log(`Duplicated ${validTabs.length} tabs`);
+    exitSearchMode();
+  }
+
+  // Pin or unpin matched tabs (smart toggle: if any unpinned, pin all; else unpin all)
+  function pinUnpinMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const anyUnpinned = validTabs.some(t => !t.pinned);
+    for (const t of validTabs) {
+      if (anyUnpinned) { if (!t.pinned) gBrowser.pinTab(t); }
+      else { if (t.pinned) gBrowser.unpinTab(t); }
+    }
+    log(`${anyUnpinned ? 'Pinned' : 'Unpinned'} ${validTabs.length} tabs`);
+    exitSearchMode();
+  }
+
+  // Mute or unmute matched tabs
+  function muteUnmuteMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    for (const t of validTabs) t.toggleMuteAudio();
+    log(`Toggled mute on ${validTabs.length} tabs`);
     exitSearchMode();
   }
 
@@ -5324,6 +5587,110 @@
     log('Exited settings mode');
   }
 
+  // Enter command bar from browse mode with context
+  function enterBrowseCommandMode() {
+    const tabs = getVisibleTabs();
+
+    // Collect tabs: selected tabs (sorted by position), or just highlighted tab
+    let collectedTabs;
+    if (selectedTabs.size > 0) {
+      collectedTabs = sortTabsBySidebarPosition([...selectedTabs].filter(t => t && !t.closing && t.parentNode));
+    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+      collectedTabs = [tabs[highlightedTabIndex]];
+    } else {
+      collectedTabs = [];
+    }
+
+    if (collectedTabs.length === 0) {
+      log('No tabs to operate on from browse mode');
+      return;
+    }
+
+    // Save browse state for restoration on cancel
+    savedBrowseState = saveBrowseState();
+    browseCommandMode = true;
+    browseCommandTabs = collectedTabs;
+
+    // Clear any pending 'g' timeout so it doesn't fire during command bar
+    browseGPending = false;
+    clearTimeout(browseGTimeout);
+    browseGTimeout = null;
+
+    // Hide browse UI without fully tearing down leap mode
+    clearHighlight();
+    hideLeapOverlay();
+    hidePreviewPanel();
+
+    // Reset mode flags so enterSearchMode doesn't try to exit leap mode again
+    leapMode = false;
+    browseMode = false;
+
+    // Open the full command bar (browse commands injected via getDynamicCommands)
+    enterSearchMode(true);
+    log(`Browse command mode with ${browseCommandTabs.length} tab(s)`);
+  }
+
+  // Return to browse mode from command bar (on cancel/Esc)
+  function returnToBrowseMode() {
+    if (!savedBrowseState) {
+      exitSearchMode();
+      return;
+    }
+
+    // Close search modal
+    searchMode = false;
+    if (searchModal) searchModal.classList.remove('active');
+
+    // Reset vim mode for next search open
+    searchVimMode = 'insert';
+
+    // Reset command state
+    commandMode = false;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    dedupTabsToClose = [];
+    commandResults = [];
+    commandEnteredFromSearch = false;
+    if (searchInput) searchInput.readOnly = false;
+    hidePreviewPanel();
+
+    // Restore search icon and placeholder
+    const icon = document.getElementById('zenleap-search-icon');
+    if (icon) {
+      icon.textContent = '🔍';
+      icon.classList.remove('zenleap-command-prefix');
+    }
+    if (searchBreadcrumb) searchBreadcrumb.style.display = 'none';
+
+    // Ensure input is reset for next open
+    if (searchInput) {
+      searchInput.style.display = '';
+      searchInput.placeholder = 'Search tabs...';
+      searchInput.blur();
+    }
+    if (searchInputDisplay) {
+      searchInputDisplay.style.display = 'none';
+    }
+
+    // Restore browse state
+    restoreBrowseState(savedBrowseState);
+
+    // Clean up browse command state
+    browseCommandMode = false;
+    browseCommandTabs = [];
+    savedBrowseState = null;
+
+    // Re-show browse mode UI
+    document.documentElement.setAttribute('data-zenleap-active', 'true');
+    stealFocusFromContent();
+    showLeapOverlay();
+    updateHighlight();
+    updateLeapOverlayState();
+    log('Returned to browse mode from command bar');
+  }
+
   // Enter search mode
   function enterSearchMode(asCommand = false) {
     if (searchMode) return;
@@ -5413,6 +5780,15 @@
     if (searchInputDisplay) {
       searchInputDisplay.style.display = 'none';
     }
+
+    // Clean up browse command state and restore focus/attributes from leap mode
+    if (browseCommandMode) {
+      document.documentElement.removeAttribute('data-zenleap-active');
+      restoreFocusToContent();
+    }
+    browseCommandMode = false;
+    browseCommandTabs = [];
+    savedBrowseState = null;
 
     log('Exited search mode');
   }
@@ -5679,6 +6055,8 @@
             exitSubFlow();
             searchVimMode = 'insert';
             updateSearchVimIndicator();
+          } else if (browseCommandMode) {
+            returnToBrowseMode();
           } else if (commandEnteredFromSearch) {
             exitCommandMode();
           } else {
@@ -5707,7 +6085,9 @@
       if (key === 'Backspace' && (searchInput?.value || '') === '' && !commandSubFlow) {
         event.preventDefault();
         event.stopPropagation();
-        if (commandEnteredFromSearch) {
+        if (browseCommandMode) {
+          returnToBrowseMode();
+        } else if (commandEnteredFromSearch) {
           exitCommandMode();
         } else {
           exitSearchMode();
@@ -6274,11 +6654,13 @@
   function updateRelativeNumbers() {
     const tabs = getVisibleTabs();
     const currentTab = gBrowser.selectedTab;
-    const currentIndex = tabs.indexOf(currentTab);
+    let currentIndex = tabs.indexOf(currentTab);
 
+    // If the current tab isn't in the visible list (e.g. new tab page),
+    // fall back to index 0 so relative numbers still render correctly.
     if (currentIndex === -1) {
-      log('Current tab not found in visible tabs');
-      return;
+      if (tabs.length === 0) return;
+      currentIndex = 0;
     }
 
     // Clean up marks for closed tabs
@@ -6960,9 +7342,9 @@
       } else if (yankBuffer.length > 0) {
         overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
       } else if (selectedTabs.size > 0) {
-        overlayHintLabel.textContent = 'y=yank  x=close sel  Space=toggle  j/k=move  Esc=cancel';
+        overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
       } else {
-        overlayHintLabel.textContent = 'j/k=move  Space=select  Enter=open  x=close  Esc=cancel';
+        overlayHintLabel.textContent = 'j/k=move  Space=select  Ctrl+Shift+/=cmds  Enter=open  x=close  Esc=cancel';
       }
     } else if (markMode) {
       leapOverlay.classList.add('leap-direction-set');
@@ -7066,20 +7448,32 @@
     const currentIndex = items.indexOf(currentTab);
 
     if (currentIndex === -1) {
-      log('Cannot enter browse mode: current tab not found');
-      return;
-    }
+      // Current tab not in visible items (e.g. new tab page, empty workspace tab).
+      // Fall back to the first unpinned tab so browse mode can still start.
+      if (items.length === 0) {
+        log('Cannot enter browse mode: no visible items');
+        return;
+      }
+      const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+      const fallbackIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
 
-    browseMode = true;
-    browseDirection = direction;
-    originalTabIndex = currentIndex;
-    originalTab = items[currentIndex];
-
-    // Move highlight one step in the initial direction
-    if (direction === 'down') {
-      highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
+      browseMode = true;
+      browseDirection = direction;
+      originalTabIndex = fallbackIndex;
+      originalTab = currentTab;
+      highlightedTabIndex = fallbackIndex;
     } else {
-      highlightedTabIndex = Math.max(currentIndex - 1, 0);
+      browseMode = true;
+      browseDirection = direction;
+      originalTabIndex = currentIndex;
+      originalTab = items[currentIndex];
+
+      // Move highlight one step in the initial direction
+      if (direction === 'down') {
+        highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
+      } else {
+        highlightedTabIndex = Math.max(currentIndex - 1, 0);
+      }
     }
 
     // Clear the timeout - browse mode has no timeout
@@ -7484,6 +7878,28 @@
     updateLeapOverlayState();
   }
 
+  // Save browse mode state for transition to command bar
+  function saveBrowseState() {
+    return {
+      highlightedTabIndex, originalTabIndex, originalTab,
+      browseDirection, selectedTabs: new Set(selectedTabs),
+      yankBuffer: [...yankBuffer], sidebarWasExpanded
+    };
+  }
+
+  // Restore browse mode state after returning from command bar
+  function restoreBrowseState(state) {
+    leapMode = true;
+    browseMode = true;
+    highlightedTabIndex = state.highlightedTabIndex;
+    originalTabIndex = state.originalTabIndex;
+    originalTab = state.originalTab;
+    browseDirection = state.browseDirection;
+    selectedTabs = new Set(state.selectedTabs);
+    yankBuffer = [...state.yankBuffer];
+    sidebarWasExpanded = state.sidebarWasExpanded;
+  }
+
   // Cancel browse mode - return to original tab
   function cancelBrowseMode() {
     // Use the direct tab reference to return to the original tab,
@@ -7580,13 +7996,13 @@
     const currentTab = gBrowser.selectedTab;
     const currentIndex = tabs.indexOf(currentTab);
 
-    if (currentIndex === -1) {
-      log('Cannot navigate: current tab not in visible tabs');
-      return false;
-    }
-
     let targetIndex;
-    if (direction === 'up') {
+    if (currentIndex === -1) {
+      // Current tab not in visible list (e.g. new tab page).
+      // Treat index 0 as the starting point for navigation.
+      if (tabs.length === 0) return false;
+      targetIndex = direction === 'up' ? 0 : Math.min(distance - 1, tabs.length - 1);
+    } else if (direction === 'up') {
       targetIndex = currentIndex - distance;
     } else {
       targetIndex = currentIndex + distance;
@@ -7765,7 +8181,11 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      enterSearchMode(true);
+      if (leapMode && browseMode) {
+        enterBrowseCommandMode();
+      } else {
+        enterSearchMode(true);
+      }
       return;
     }
 
