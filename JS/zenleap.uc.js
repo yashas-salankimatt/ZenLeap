@@ -1455,6 +1455,12 @@
         }
       }},
 
+      // --- Tab Sorting ---
+      { key: 'sort-tabs', label: 'Sort Tabs...', icon: '↕', tags: ['tab', 'sort', 'order', 'organize', 'domain', 'title', 'recency', 'alphabetical', 'group'], subFlow: 'sort-picker' },
+      { key: 'group-by-domain', label: 'Group Tabs by Domain', icon: '📁', tags: ['tab', 'group', 'domain', 'folder', 'host', 'url', 'site', 'organize', 'auto'],
+        condition: () => !!window.gZenFolders,
+        command: () => { groupLooseTabsByDomain(); exitSearchMode(); } },
+
       // --- Navigation ---
       { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
@@ -1893,6 +1899,7 @@
       case 'browse-workspace-picker': return 'Choose a workspace...';
       case 'browse-folder-picker': return 'Choose a folder...';
       case 'browse-folder-name-input': return 'Enter folder name...';
+      case 'sort-picker': return 'Sort by...';
       default: return 'Type a command...';
     }
   }
@@ -1961,6 +1968,8 @@
         return getFolderPickerResults(query);
       case 'browse-folder-name-input':
         return getFolderNameInputResults(query);
+      case 'sort-picker':
+        return getSortPickerResults(query);
       default:
         return [];
     }
@@ -2214,6 +2223,17 @@
     return fuzzyFilterAndSort(actions, query);
   }
 
+  function getSortPickerResults(query) {
+    const options = [
+      { key: 'sort:domain', label: 'By Domain', icon: '🌐', tags: ['domain', 'host', 'url', 'site'] },
+      { key: 'sort:title-az', label: 'By Title (A → Z)', icon: '🔤', tags: ['title', 'name', 'alphabetical', 'az', 'alpha'] },
+      { key: 'sort:title-za', label: 'By Title (Z → A)', icon: '🔤', tags: ['title', 'name', 'alphabetical', 'za', 'reverse'] },
+      { key: 'sort:recency-newest', label: 'By Recency (Newest First)', icon: '🕐', tags: ['recent', 'new', 'newest', 'time', 'last'] },
+      { key: 'sort:recency-oldest', label: 'By Recency (Oldest First)', icon: '🕰', tags: ['old', 'oldest', 'stale', 'time', 'first'] },
+    ];
+    return fuzzyFilterAndSort(options, query);
+  }
+
   function getWorkspacePickerResults(query) {
     const results = [];
     try {
@@ -2464,6 +2484,15 @@
         }
         break;
 
+      case 'sort-picker':
+        if (result.key === 'sort:domain') sortLooseTabsByDomain();
+        else if (result.key === 'sort:title-az') sortLooseTabsByTitle();
+        else if (result.key === 'sort:title-za') sortLooseTabsByTitleReverse();
+        else if (result.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
+        else if (result.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+        exitSearchMode();
+        break;
+
       // Browse command mode sub-flows
       case 'browse-workspace-picker':
         if (result.workspaceId) {
@@ -2574,6 +2603,138 @@
     const positionMap = new Map();
     visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
     return [...tabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
+  }
+
+  // --- Tab Sorting Helpers ---
+
+  // Extract hostname from a tab's URL (returns '' for about: pages, etc.)
+  function getDomainFromTab(tab) {
+    try {
+      const url = tab.linkedBrowser?.currentURI?.spec;
+      if (!url || url.startsWith('about:') || url.startsWith('moz-extension:')) return '';
+      return new URL(url).hostname;
+    } catch (e) { return ''; }
+  }
+
+  // Get loose tabs eligible for sorting: non-pinned, non-essential, not in folders
+  function getSortableLooseTabs() {
+    return getVisibleTabs().filter(t =>
+      !t.pinned &&
+      !t.hasAttribute('zen-essential') &&
+      !t.group &&
+      !t.closing
+    );
+  }
+
+  // Reorder loose tabs in the sidebar to match a sorted array.
+  // Pinned tabs, essential tabs, and folder contents are left in place.
+  function reorderTabsInSortedOrder(sortedTabs) {
+    if (sortedTabs.length < 2) return;
+
+    try {
+      const visibleTabs = getVisibleTabs();
+      // Find the first non-pinned, non-essential position as our anchor
+      const firstRegularIdx = visibleTabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+      if (firstRegularIdx < 0) return;
+
+      // Place first sorted tab at the first regular position
+      gBrowser.moveTabBefore(sortedTabs[0], visibleTabs[firstRegularIdx]);
+      for (let i = 1; i < sortedTabs.length; i++) {
+        gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
+      }
+    } catch (e) { log(`Tab reorder failed: ${e}`); }
+  }
+
+  // Sort all loose tabs by domain, grouping same-domain tabs together
+  function sortLooseTabsByDomain() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) => {
+      const domA = getDomainFromTab(a);
+      const domB = getDomainFromTab(b);
+      if (domA !== domB) return domA.localeCompare(domB);
+      return 0; // stable sort preserves original order within same domain
+    });
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by domain`);
+  }
+
+  // Sort all loose tabs alphabetically by title (A → Z)
+  function sortLooseTabsByTitle() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) =>
+      (a.label || '').localeCompare(b.label || '')
+    );
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by title A-Z`);
+  }
+
+  // Sort all loose tabs alphabetically by title (Z → A)
+  function sortLooseTabsByTitleReverse() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = [...tabs].sort((a, b) =>
+      (b.label || '').localeCompare(a.label || '')
+    );
+
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by title Z-A`);
+  }
+
+  // Sort all loose tabs by recency (most recent first)
+  function sortLooseTabsByRecencyNewest() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = sortTabsByRecency(tabs); // already sorts most-recent-first
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by recency (newest first)`);
+  }
+
+  // Sort all loose tabs by recency (oldest first)
+  function sortLooseTabsByRecencyOldest() {
+    const tabs = getSortableLooseTabs();
+    if (tabs.length < 2) return;
+
+    const sorted = sortTabsByRecency(tabs).reverse();
+    reorderTabsInSortedOrder(sorted);
+    log(`Sorted ${sorted.length} tabs by recency (oldest first)`);
+  }
+
+  // Group loose tabs by domain, creating a folder per domain (2+ tabs)
+  function groupLooseTabsByDomain() {
+    if (!window.gZenFolders) { log('Folders not available'); return; }
+
+    const looseTabs = getSortableLooseTabs();
+    if (looseTabs.length === 0) return;
+
+    // Group by domain
+    const domainGroups = new Map();
+    for (const tab of looseTabs) {
+      const domain = getDomainFromTab(tab);
+      if (!domain) continue; // skip about: pages, etc.
+      if (!domainGroups.has(domain)) domainGroups.set(domain, []);
+      domainGroups.get(domain).push(tab);
+    }
+
+    // Create folders for domains with 2+ tabs
+    let folderCount = 0;
+    for (const [domain, tabs] of domainGroups) {
+      if (tabs.length < 2) continue;
+      const sortedTabs = sortTabsBySidebarPosition(tabs);
+      gZenFolders.createFolder(sortedTabs, {
+        label: domain,
+        renameFolder: false,
+      });
+      folderCount++;
+    }
+    log(`Created ${folderCount} domain folders`);
   }
 
   function moveMatchedTabsToPosition(tabs, position) {
