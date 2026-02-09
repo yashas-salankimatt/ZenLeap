@@ -11,3 +11,10 @@
 # Sidecar worktree state files (local per-worktree, never commit)
 .sidecar/
 .sidecar-*
+
+# Sidecar worktree state files
+.sidecar-agent
+.sidecar-task
+.sidecar-pr
+.sidecar-start.sh
+.sidecar-base
