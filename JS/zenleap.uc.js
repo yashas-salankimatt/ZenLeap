@@ -1560,6 +1560,11 @@
       { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'], command: () => {
         try { document.getElementById('cmd_zenOpenWorkspaceCreation')?.doCommand(); } catch(e) { log(`Create workspace failed: ${e}`); }
       }},
+      { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy'],
+        condition: () => {
+          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
+        },
+        subFlow: 'delete-workspace-picker' },
 
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add'],
@@ -1570,6 +1575,11 @@
             gZenFolders.createFolder([tab], { renameFolder: true });
           } catch(e) { log(`Create folder failed: ${e}`); }
       }},
+      { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group'],
+        condition: () => {
+          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'delete-folder-picker' },
 
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
@@ -1860,6 +1870,8 @@
       case 'split-tab-picker': return 'Search for a tab to split with...';
       case 'dedup-preview': return 'Duplicates to close — Enter to confirm';
       case 'folder-name-input': return 'Enter folder name...';
+      case 'delete-folder-picker': return 'Select a folder to delete...';
+      case 'delete-workspace-picker': return 'Select a workspace to delete...';
       default: return 'Type a command...';
     }
   }
@@ -1904,6 +1916,10 @@
         return getDedupPreviewResults();
       case 'folder-name-input':
         return getFolderNameInputResults(query);
+      case 'delete-folder-picker':
+        return getDeleteFolderPickerResults(query);
+      case 'delete-workspace-picker':
+        return getDeleteWorkspacePickerResults(query);
       default:
         return [];
     }
@@ -1915,6 +1931,70 @@
       return [{ key: 'folder-name:prompt', label: 'Type a name for the new folder and press Enter', icon: '📁', tags: [] }];
     }
     return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
+  }
+
+  function getDeleteFolderPickerResults(query) {
+    const results = [];
+    try {
+      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        // Only show folders in the current workspace
+        const folderWsId = folder.getAttribute('zen-workspace-id');
+        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
+
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        // Exclude zen-empty-tab placeholders from count
+        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+        results.push({
+          key: `delete-folder:${folder.id}`,
+          label: name,
+          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+          icon: '🗑',
+          tags: ['folder', 'delete', name.toLowerCase()],
+          folder: folder,
+        });
+      }
+    } catch (e) { log(`Error getting folders for delete: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'delete-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getDeleteWorkspacePickerResults(query) {
+    const results = [];
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        const activeId = window.gZenWorkspaces.activeWorkspace;
+        if (workspaces && Array.isArray(workspaces)) {
+          for (const ws of workspaces) {
+            const name = ws.name || 'Unnamed';
+            const isActive = ws.uuid === activeId;
+            results.push({
+              key: `delete-workspace:${ws.uuid}`,
+              label: `${name}${isActive ? ' (current)' : ''}`,
+              icon: ws.icon || '🗑',
+              tags: ['workspace', 'delete', name.toLowerCase()],
+              workspaceId: ws.uuid,
+            });
+          }
+        }
+      }
+    } catch (e) { log(`Error getting workspaces for delete: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'delete-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
   }
 
   function getTabSearchSubFlowResults(query) {
@@ -2136,6 +2216,18 @@
         }
         hidePreviewPanel();
         exitSearchMode();
+        break;
+
+      case 'delete-folder-picker':
+        if (result.folder) {
+          deleteFolder(result.folder);
+        }
+        break;
+
+      case 'delete-workspace-picker':
+        if (result.workspaceId) {
+          deleteWorkspace(result.workspaceId);
+        }
         break;
     }
   }
@@ -2363,6 +2455,41 @@
         log(`Split view with tab: ${tab.label}`);
       }
     } catch (e) { log(`Split failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function deleteFolder(folder) {
+    try {
+      // Re-fetch folder by ID to avoid stale DOM references
+      const targetFolder = document.getElementById(folder.id);
+      if (!targetFolder) { log('Folder not found for deletion'); exitSearchMode(); return; }
+      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first
+      if (typeof targetFolder.delete === 'function') {
+        targetFolder.delete();
+      } else if (typeof gBrowser.removeTabGroup === 'function') {
+        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
+      }
+      log(`Deleted folder: ${name}`);
+    } catch (e) { log(`Delete folder failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function deleteWorkspace(workspaceId) {
+    try {
+      if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
+      // Use Zen's workspace removal API
+      if (typeof gZenWorkspaces.removeWorkspace === 'function') {
+        gZenWorkspaces.removeWorkspace(workspaceId);
+      } else if (typeof gZenWorkspaces.deleteWorkspace === 'function') {
+        gZenWorkspaces.deleteWorkspace(workspaceId);
+      } else {
+        log('No API available to delete workspace');
+        exitSearchMode();
+        return;
+      }
+      log(`Deleted workspace: ${workspaceId}`);
+    } catch (e) { log(`Delete workspace failed: ${e}`); }
     exitSearchMode();
   }
 
