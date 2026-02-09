@@ -298,6 +298,9 @@
   let browseCommandTabs = [];           // tabs to operate on (selected tabs from browse mode, or highlighted tab)
   let savedBrowseState = null;          // saved browse state to restore on cancel/return
 
+  // Session management state
+  let sessionCache = null;         // { sessions: [], loadedAt: timestamp } — brief cache for picker
+
   // Folder delete modal state (browse mode)
   let folderDeleteMode = false;
   let folderDeleteTarget = null;
@@ -1315,6 +1318,23 @@
         font-family: monospace;
         border-bottom: 1px solid rgba(255, 255, 255, 0.05);
       }
+
+      /* Session detail view styles */
+      .zenleap-command-result.zenleap-session-header {
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        padding-top: 12px;
+        pointer-events: none;
+      }
+
+      .zenleap-command-result.zenleap-session-header .zenleap-command-label {
+        font-weight: 600;
+        color: #c678dd;
+        font-size: 13px;
+      }
+
+      .zenleap-command-result.zenleap-session-header .zenleap-command-sublabel {
+        color: #666;
+      }
     `;
 
     document.head.appendChild(style);
@@ -1658,6 +1678,11 @@
         exitSearchMode();
         setTimeout(() => enterSettingsMode(), 100);
       }},
+
+      // --- Session Management ---
+      { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'], subFlow: 'save-session-scope' },
+      { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'], subFlow: 'restore-session-picker' },
+      { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'], subFlow: 'list-sessions-picker' },
     ];
   }
 
@@ -1817,7 +1842,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = getSubFlowPlaceholder(type);
-      searchInput.readOnly = (type === 'dedup-preview');
+      searchInput.readOnly = (type === 'dedup-preview' || type === 'session-detail-view' || type === 'delete-session-confirm');
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -1833,6 +1858,11 @@
     if (currentType === 'dedup-preview') {
       hidePreviewPanel();
       dedupTabsToClose = [];
+      if (searchInput) searchInput.readOnly = false;
+    }
+
+    // Clean up session readonly state when leaving session views
+    if (currentType === 'session-detail-view' || currentType === 'delete-session-confirm') {
       if (searchInput) searchInput.readOnly = false;
     }
 
@@ -1896,6 +1926,13 @@
       case 'rename-workspace-picker': return 'Select a workspace to rename...';
       case 'rename-folder-input': return 'Enter new folder name...';
       case 'rename-workspace-input': return 'Enter new workspace name...';
+      case 'save-session-scope': return 'What to save?';
+      case 'save-session-input': return 'Type a comment for this snapshot and press Enter...';
+      case 'restore-session-picker': return 'Select a session to restore...';
+      case 'restore-session-mode': return 'How to restore?';
+      case 'list-sessions-picker': return 'Browse saved sessions...';
+      case 'session-detail-view': return 'Session contents (Esc to go back)';
+      case 'delete-session-confirm': return 'Press Enter to confirm deletion...';
       case 'browse-workspace-picker': return 'Choose a workspace...';
       case 'browse-folder-picker': return 'Choose a folder...';
       case 'browse-folder-name-input': return 'Enter folder name...';
@@ -1962,6 +1999,20 @@
         return getRenameFolderInputResults(query);
       case 'rename-workspace-input':
         return getRenameWorkspaceInputResults(query);
+      case 'save-session-scope':
+        return getSaveSessionScopeResults(query);
+      case 'save-session-input':
+        return getSaveSessionInputResults(query);
+      case 'restore-session-picker':
+        return getRestoreSessionPickerResults(query);
+      case 'restore-session-mode':
+        return getRestoreSessionModeResults(query);
+      case 'list-sessions-picker':
+        return getListSessionsPickerResults(query);
+      case 'session-detail-view':
+        return getSessionDetailViewResults(query);
+      case 'delete-session-confirm':
+        return getDeleteSessionConfirmResults();
       case 'browse-workspace-picker':
         return getWorkspacePickerResults(query);
       case 'browse-folder-picker':
@@ -2484,6 +2535,70 @@
         }
         break;
 
+      // --- Session Management Sub-Flows ---
+      case 'save-session-scope': {
+        const saveScope = result.key === 'save-scope:all' ? 'all' : 'current';
+        enterSubFlow('save-session-input', 'Add Comment');
+        commandSubFlow.data = { scope: saveScope };
+        break;
+      }
+
+      case 'save-session-input':
+        handleSaveSession(commandQuery.trim());
+        break;
+
+      case 'restore-session-picker':
+        if (result.sessionData) {
+          enterSubFlow('restore-session-mode', 'Restore Mode');
+          commandSubFlow.data = { session: result.sessionData };
+          renderCommandResults(); // re-render now that data is set
+        }
+        break;
+
+      case 'restore-session-mode': {
+        const restoreSession = commandSubFlow.data?.session;
+        if (result.key === 'restore-mode:new') {
+          handleRestoreSession(restoreSession, 'new');
+        } else if (result.key === 'restore-mode:replace') {
+          handleRestoreSession(restoreSession, 'replace');
+        }
+        break;
+      }
+
+      case 'list-sessions-picker':
+        if (result.sessionData) {
+          enterSubFlow('session-detail-view', result.label);
+          commandSubFlow.data = { session: result.sessionData };
+          renderCommandResults(); // re-render now that data is set
+        }
+        break;
+
+      case 'session-detail-view': {
+        const detailSession = commandSubFlow.data?.session;
+        if (detailSession) {
+          enterSubFlow('restore-session-mode', 'Restore Mode');
+          commandSubFlow.data = { session: detailSession };
+          renderCommandResults(); // re-render now that data is set
+        }
+        break;
+      }
+
+      case 'delete-session-confirm':
+        if (result.key === 'delete-session:confirm') {
+          const sessionId = commandSubFlow.data?.sessionId;
+          if (sessionId) {
+            deleteSessionFile(sessionId).then(() => {
+              sessionCache = null;
+              exitSubFlow();
+            }).catch(e => {
+              log(`Delete session failed: ${e}`);
+              exitSubFlow();
+            });
+          }
+        } else if (result.key === 'delete-session:cancel') {
+          exitSubFlow();
+        }
+        break;
       case 'sort-picker':
         if (result.key === 'sort:domain') sortLooseTabsByDomain();
         else if (result.key === 'sort:title-az') sortLooseTabsByTitle();
@@ -3015,6 +3130,811 @@
   }
 
   // ============================================
+  // SESSION MANAGEMENT (save / restore / list)
+  // ============================================
+
+  // --- Core I/O ---
+
+  async function getSessionsDir() {
+    const dir = PathUtils.join(PathUtils.profileDir, 'zenleap-sessions');
+    await IOUtils.makeDirectory(dir, { createAncestors: true, ignoreExisting: true });
+    return dir;
+  }
+
+  async function loadAllSessions() {
+    // Return cached sessions if fresh (< 5 seconds old)
+    if (sessionCache && (Date.now() - sessionCache.loadedAt < 5000)) {
+      return sessionCache.sessions;
+    }
+    const sessions = [];
+    try {
+      const dir = await getSessionsDir();
+      const children = await IOUtils.getChildren(dir);
+      for (const filePath of children) {
+        if (!filePath.endsWith('.json')) continue;
+        try {
+          const data = await IOUtils.readJSON(filePath);
+          if (data && data.version && data.id) {
+            data._filePath = filePath;
+            sessions.push(data);
+          }
+        } catch (e) {
+          log(`Skipping corrupt session file: ${filePath}: ${e}`);
+        }
+      }
+    } catch (e) {
+      log(`Error loading sessions: ${e}`);
+    }
+    sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+    sessionCache = { sessions, loadedAt: Date.now() };
+    return sessions;
+  }
+
+  async function saveSessionToFile(sessionData) {
+    const dir = await getSessionsDir();
+    const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
+    await IOUtils.writeJSON(filePath, sessionData);
+    sessionCache = null; // invalidate cache
+    log(`Session saved: ${filePath}`);
+  }
+
+  async function deleteSessionFile(sessionId) {
+    const dir = await getSessionsDir();
+    const filePath = PathUtils.join(dir, `${sessionId}.json`);
+    try {
+      await IOUtils.remove(filePath);
+      log(`Session deleted: ${sessionId}`);
+    } catch (e) {
+      log(`Delete session file failed: ${e}`);
+    }
+    sessionCache = null;
+  }
+
+  // --- Data Collection (v2: tree-based layout matching DOM structure) ---
+
+  function collectTabItem(tab) {
+    return {
+      type: 'tab',
+      url: tab.linkedBrowser?.currentURI?.spec || 'about:blank',
+      title: tab.label || 'Untitled',
+      favicon: tab.getAttribute('image') || '',
+      pinned: !!tab.pinned,
+      essential: tab.hasAttribute('zen-essential'),
+      customLabel: (typeof tab.zenStaticLabel === 'string' && tab.zenStaticLabel) ? tab.zenStaticLabel : null,
+    };
+  }
+
+  function collectFolderTree(folder) {
+    const children = [];
+    try {
+      // allItems returns immediate children (tabs + nested folders), excluding
+      // structural elements like zen-tab-group-start and separator
+      const items = folder.allItems || [];
+      for (const item of items) {
+        if (item.isZenFolder) {
+          children.push(collectFolderTree(item));
+        } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab')) {
+          children.push(collectTabItem(item));
+        }
+      }
+    } catch (e) { log(`Error collecting folder tree: ${e}`); }
+    return {
+      type: 'folder',
+      name: folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder',
+      collapsed: !!folder.collapsed,
+      children,
+    };
+  }
+
+  function collectWorkspaceLayout(wsData) {
+    const wsId = wsData?.uuid;
+    const layout = [];
+
+    // Essential tabs are shared across workspaces (separate DOM section).
+    // Collect them first so they appear at the top of the layout.
+    const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
+      t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
+    );
+    for (const tab of essentialTabs) {
+      layout.push(collectTabItem(tab));
+    }
+
+    // Walk workspace-specific DOM containers for folders, pinned tabs, and normal tabs
+    const wsElement = window.gZenWorkspaces?.workspaceElement?.(wsId);
+
+    if (wsElement) {
+      // Pinned section: folders + standalone pinned tabs (in DOM/visual order)
+      const pinnedContainer = wsElement.pinnedTabsContainer;
+      if (pinnedContainer) {
+        for (const child of pinnedContainer.children) {
+          if (child.classList?.contains('pinned-tabs-container-separator')) continue;
+          if (child.classList?.contains('zen-tab-group-start')) continue;
+          if (child.classList?.contains('space-fake-collapsible-start')) continue;
+          if (child.id === 'tabbrowser-arrowscrollbox-periphery') continue;
+          if (child.isZenFolder) {
+            layout.push(collectFolderTree(child));
+          } else if (gBrowser.isTab(child)) {
+            if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
+            if (child.hasAttribute('zen-essential')) continue; // already collected above
+            layout.push(collectTabItem(child));
+          }
+        }
+      }
+
+      // Normal section: unpinned tabs (in DOM/visual order)
+      const normalContainer = wsElement.tabsContainer;
+      if (normalContainer) {
+        for (const child of normalContainer.children) {
+          if (!gBrowser.isTab(child)) continue;
+          if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
+          layout.push(collectTabItem(child));
+        }
+      }
+    } else {
+      // Fallback: workspace element unavailable, iterate gBrowser.tabs
+      const allTabs = Array.from(gBrowser.tabs);
+      const wsTabs = wsId
+        ? allTabs.filter(t => t.getAttribute('zen-workspace-id') === wsId && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab') && !t.hasAttribute('zen-essential'))
+        : getVisibleTabs().filter(t => !t.hasAttribute('zen-essential'));
+      for (const tab of wsTabs) {
+        layout.push(collectTabItem(tab));
+      }
+    }
+
+    const activeTab = gBrowser.selectedTab;
+    const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId)
+      ? (activeTab.linkedBrowser?.currentURI?.spec || '') : '';
+
+    return {
+      name: wsData?.name || 'Unnamed Workspace',
+      icon: wsData?.icon || '',
+      theme: wsData?.theme || null,
+      activeTabUrl: activeTabUrl || getFirstTabUrl(layout),
+      layout,
+    };
+  }
+
+  function getFirstTabUrl(items) {
+    for (const item of items) {
+      if (item.type === 'tab') return item.url;
+      if (item.type === 'folder' && item.children) {
+        const url = getFirstTabUrl(item.children);
+        if (url) return url;
+      }
+    }
+    return '';
+  }
+
+  function countLayoutStats(items) {
+    let tabs = 0, folders = 0, pinned = 0, essential = 0;
+    for (const item of items) {
+      if (item.type === 'folder') {
+        folders++;
+        const s = countLayoutStats(item.children || []);
+        tabs += s.tabs; folders += s.folders; pinned += s.pinned; essential += s.essential;
+      } else if (item.type === 'tab') {
+        tabs++;
+        if (item.pinned || item.essential) pinned++;
+        if (item.essential) essential++;
+      }
+    }
+    return { tabs, folders, pinned, essential };
+  }
+
+  // Get layout from workspace data (handles v1 and v2 session formats)
+  function getWorkspaceLayout(ws) {
+    if (ws.layout) return ws.layout;
+    // Convert v1 format (flat tabs + folders arrays) to v2 layout tree
+    if (!ws.tabs) return [];
+    const layout = [];
+    const sorted = [...ws.tabs].sort((a, b) => (a.position || 0) - (b.position || 0));
+    const folderTabs = new Map();
+    for (const tab of sorted) {
+      if (tab.folderName) {
+        if (!folderTabs.has(tab.folderName)) folderTabs.set(tab.folderName, []);
+        folderTabs.get(tab.folderName).push(tab);
+      }
+    }
+    for (const tab of sorted) {
+      if (tab.essential) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: true });
+    }
+    for (const [name, tabs] of folderTabs) {
+      const meta = ws.folders?.find(f => f.name === name);
+      layout.push({
+        type: 'folder', name, collapsed: meta?.collapsed || false,
+        children: tabs.map(t => ({ type: 'tab', url: t.url, title: t.title, favicon: t.favicon || '', pinned: true, essential: false })),
+      });
+    }
+    for (const tab of sorted) {
+      if (tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: false });
+    }
+    for (const tab of sorted) {
+      if (!tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: false, essential: false });
+    }
+    return layout;
+  }
+
+  function collectSession(scope, comment) {
+    const timestamp = Date.now();
+    const id = `session-${timestamp}`;
+    const workspacesData = [];
+
+    if (scope === 'all' && window.gZenWorkspaces) {
+      const allWs = window.gZenWorkspaces.getWorkspaces();
+      if (allWs && Array.isArray(allWs)) {
+        for (const ws of allWs) {
+          workspacesData.push(collectWorkspaceLayout(ws));
+        }
+      }
+    } else {
+      let currentWs = null;
+      if (window.gZenWorkspaces) {
+        const activeId = gZenWorkspaces.activeWorkspace;
+        const allWs = gZenWorkspaces.getWorkspaces();
+        currentWs = allWs?.find(w => w.uuid === activeId) || null;
+      }
+      workspacesData.push(collectWorkspaceLayout(currentWs));
+    }
+
+    let totalTabCount = 0, totalFolderCount = 0, totalPinnedCount = 0, totalEssentialCount = 0;
+    for (const ws of workspacesData) {
+      const s = countLayoutStats(ws.layout);
+      totalTabCount += s.tabs; totalFolderCount += s.folders;
+      totalPinnedCount += s.pinned; totalEssentialCount += s.essential;
+    }
+
+    return {
+      version: 2,
+      id,
+      savedAt: new Date(timestamp).toISOString(),
+      comment: comment || '',
+      scope,
+      workspaces: workspacesData,
+      stats: { workspaceCount: workspacesData.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount },
+    };
+  }
+
+  // --- Save Flow ---
+
+  function getSaveSessionScopeResults(query) {
+    const results = [];
+    let wsName = 'Current Workspace';
+    let wsCount = 1;
+    try {
+      if (window.gZenWorkspaces) {
+        const activeId = gZenWorkspaces.activeWorkspace;
+        const allWs = gZenWorkspaces.getWorkspaces();
+        const active = allWs?.find(w => w.uuid === activeId);
+        if (active) wsName = active.name || wsName;
+        wsCount = allWs?.length || 1;
+      }
+    } catch (e) {}
+    results.push({ key: 'save-scope:current', label: 'Current Workspace', icon: '🗂', sublabel: wsName, tags: ['current', 'workspace'] });
+    results.push({ key: 'save-scope:all', label: 'All Workspaces', icon: '📚', sublabel: `${wsCount} workspace${wsCount !== 1 ? 's' : ''}`, tags: ['all', 'workspaces'] });
+    return fuzzyFilterAndSort(results, query);
+  }
+
+  function getSaveSessionInputResults(query) {
+    const comment = (query || '').trim();
+    if (!comment) {
+      return [{ key: 'save-session:confirm', label: 'Press Enter to save (no comment)', icon: '💾', tags: [] }];
+    }
+    return [{ key: 'save-session:confirm', label: `Save: "${comment}"`, icon: '💾', tags: [] }];
+  }
+
+  function handleSaveSession(comment) {
+    const scope = commandSubFlow?.data?.scope || 'current';
+    const sessionData = collectSession(scope, comment);
+    exitSearchMode();
+    saveSessionToFile(sessionData).then(() => {
+      log(`Session saved: ${sessionData.id} (${scope}, ${sessionData.stats.totalTabCount} tabs)`);
+    }).catch(e => {
+      log(`Save session failed: ${e}`);
+    });
+  }
+
+  // --- Restore Flow ---
+
+  function formatSessionDate(isoStr) {
+    try {
+      const d = new Date(isoStr);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 60000) return 'just now';
+      if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+      if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+      if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+    } catch (e) { return isoStr; }
+  }
+
+  function buildSessionPickerResults(sessions, keyPrefix) {
+    if (sessions.length === 0) {
+      return [{ key: `${keyPrefix}:empty`, label: 'No saved sessions', icon: '📭', sublabel: 'Use "Save Workspace Session" to create one', tags: [] }];
+    }
+    return sessions.map(s => {
+      const wsNames = (s.workspaces || []).map(w => w.name).join(', ') || 'Unknown';
+      const commentPart = s.comment ? ` — ${s.comment}` : '';
+      const label = `${wsNames}${commentPart}`;
+      const scopeBadge = s.scope === 'all' ? '[all] ' : '';
+      const tabCount = s.stats?.totalTabCount || 0;
+      const folderCount = s.stats?.totalFolderCount || 0;
+      const sublabel = `${scopeBadge}${formatSessionDate(s.savedAt)} · ${tabCount} tab${tabCount !== 1 ? 's' : ''}${folderCount > 0 ? ` · ${folderCount} folder${folderCount !== 1 ? 's' : ''}` : ''}`;
+      const icon = s.workspaces?.[0]?.icon || '🗂';
+      return {
+        key: `${keyPrefix}:${s.id}`,
+        label,
+        sublabel,
+        icon,
+        tags: ['session', wsNames.toLowerCase(), (s.comment || '').toLowerCase()],
+        sessionData: s,
+      };
+    });
+  }
+
+  function getRestoreSessionPickerResults(query) {
+    // loadAllSessions is async, but subflow results are sync — use cached data
+    if (!sessionCache) {
+      // Trigger async load and show loading state
+      loadAllSessions().then(() => renderCommandResults());
+      return [{ key: 'restore:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    }
+    const results = buildSessionPickerResults(sessionCache.sessions, 'restore-session');
+    return fuzzyFilterAndSort(results, query);
+  }
+
+  function getRestoreSessionModeResults(query) {
+    const session = commandSubFlow?.data?.session;
+    const isMultiWs = session && session.workspaces.length > 1;
+    const results = [
+      { key: 'restore-mode:new', label: `Create New Workspace${isMultiWs ? 's' : ''}`, icon: '➕', sublabel: 'Opens saved tabs in new workspace(s)', tags: ['new', 'create'] },
+    ];
+    // Only offer replace for single-workspace sessions
+    if (!isMultiWs) {
+      results.push({ key: 'restore-mode:replace', label: 'Replace Current Workspace', icon: '🔄', sublabel: 'Replaces tabs in current workspace', tags: ['replace', 'current'] });
+    }
+    return fuzzyFilterAndSort(results, query);
+  }
+
+  async function handleRestoreSession(sessionData, mode) {
+    if (!sessionData || !sessionData.workspaces) { log('Invalid session data'); return; }
+    exitSearchMode();
+
+    try {
+      if (mode === 'new') {
+        for (const wsData of sessionData.workspaces) {
+          await restoreWorkspaceAsNew(wsData);
+        }
+      } else if (mode === 'replace') {
+        await restoreWorkspaceReplace(sessionData.workspaces[0]);
+      }
+      log(`Session restored: ${sessionData.id} (${mode})`);
+    } catch (e) {
+      log(`Restore session failed: ${e}`);
+    }
+  }
+
+  async function restoreWorkspaceAsNew(wsData) {
+    if (!window.gZenWorkspaces) {
+      log('gZenWorkspaces not available for restore');
+      return;
+    }
+
+    try {
+      await gZenWorkspaces.createAndSaveWorkspace(
+        wsData.name || 'Restored',
+        wsData.icon || undefined,
+        false, // dontChange = false, so it switches to the new workspace
+        0      // containerTabId
+      );
+    } catch (e) {
+      log(`Create workspace failed: ${e}`);
+      return;
+    }
+
+    await new Promise(r => setTimeout(r, 500));
+    await restoreLayout(wsData);
+  }
+
+  async function restoreWorkspaceReplace(wsData) {
+    const principal = Services.scriptSecurityManager.getSystemPrincipal();
+
+    const existingFolders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
+      const fWsId = f.getAttribute('zen-workspace-id');
+      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+      return !activeWsId || !fWsId || fWsId === activeWsId;
+    });
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+    const existingTabs = getVisibleTabs().filter(t =>
+      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
+      (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
+    );
+
+    const placeholder = gBrowser.addTab('about:blank', { triggeringPrincipal: principal });
+    await new Promise(r => setTimeout(r, 150));
+    gBrowser.selectedTab = placeholder;
+
+    for (const folder of existingFolders) {
+      try {
+        if (typeof folder.delete === 'function') folder.delete();
+        else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
+      } catch (e) { log(`Remove folder during replace failed: ${e}`); }
+    }
+    await new Promise(r => setTimeout(r, 100));
+
+    const tabsToRemove = existingTabs.filter(t => t !== placeholder && !t.closing && t.parentNode);
+    if (tabsToRemove.length > 0) {
+      try { gBrowser.removeTabs(tabsToRemove, { closeWindowWithLastTab: false }); }
+      catch (e) { for (const t of tabsToRemove) { try { gBrowser.removeTab(t); } catch (e2) {} } }
+    }
+    await new Promise(r => setTimeout(r, 200));
+
+    await restoreLayout(wsData);
+
+    try {
+      if (!placeholder.closing && placeholder.parentNode) gBrowser.removeTab(placeholder);
+    } catch (e) {}
+  }
+
+  // --- Restore: tree-based layout restoration ---
+
+  async function restoreLayout(wsData) {
+    const layout = getWorkspaceLayout(wsData);
+    if (!layout || layout.length === 0) return;
+
+    const principal = Services.scriptSecurityManager.getSystemPrincipal();
+    const openedTabs = []; // [{ item, tab }]
+    const normalTabRefs = []; // unpinned tabs for explicit reordering
+
+    for (const item of layout) {
+      if (item.type === 'tab') {
+        restoreTabItem(item, openedTabs, normalTabRefs, principal);
+      } else if (item.type === 'folder' && window.gZenFolders) {
+        await restoreFolderFromLayout(item, null, openedTabs, normalTabRefs, principal);
+      } else if (item.type === 'folder') {
+        // No folder support: open folder tabs as flat
+        for (const child of flattenLayoutTabs(item)) {
+          restoreTabItem(child, openedTabs, normalTabRefs, principal);
+        }
+      }
+    }
+
+    // Fix unpinned tab order: addTab can insert at wrong position when
+    // zen.view.show-newtab-button-top is true (every tab goes to the same
+    // position, reversing order). Explicitly move them into correct order.
+    if (normalTabRefs.length > 1) {
+      await new Promise(r => setTimeout(r, 100));
+      const normalContainer = gZenWorkspaces?.activeWorkspaceStrip;
+      if (normalContainer) {
+        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
+        for (const tab of normalTabRefs) {
+          if (tab && tab.parentNode && !tab.closing) {
+            if (periphery) normalContainer.insertBefore(tab, periphery);
+            else normalContainer.appendChild(tab);
+          }
+        }
+      }
+    }
+
+    // Verify DOM layout matches saved layout and fix remaining discrepancies.
+    // Loop until order is confirmed correct (Zen may async-reorder after our moves).
+    await verifyRestoredLayout(layout, openedTabs);
+
+    // Select the tab matching activeTabUrl
+    if (wsData.activeTabUrl) {
+      const target = openedTabs.find(o => o.item.url === wsData.activeTabUrl)?.tab
+        || Array.from(gBrowser.tabs).find(t => t.linkedBrowser?.currentURI?.spec === wsData.activeTabUrl);
+      if (target && !target.closing) gBrowser.selectedTab = target;
+    } else if (openedTabs.length > 0) {
+      gBrowser.selectedTab = openedTabs[0].tab;
+    }
+  }
+
+  function applyCustomLabel(tab, item) {
+    if (item.customLabel) {
+      tab.zenStaticLabel = item.customLabel;
+      try { gBrowser._setTabLabel(tab, item.customLabel); } catch (e) {}
+    }
+  }
+
+  function restoreTabItem(item, openedTabs, normalTabRefs, principal) {
+    if (item.essential) {
+      const existing = Array.from(gBrowser.tabs).find(t =>
+        t.hasAttribute('zen-essential') && t.linkedBrowser?.currentURI?.spec === item.url
+      );
+      if (existing) return;
+      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
+      tab.setAttribute('zen-essential', 'true');
+      gBrowser.pinTab(tab);
+      applyCustomLabel(tab, item);
+      openedTabs.push({ item, tab });
+    } else if (item.pinned) {
+      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
+      gBrowser.pinTab(tab);
+      applyCustomLabel(tab, item);
+      openedTabs.push({ item, tab });
+    } else {
+      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
+      applyCustomLabel(tab, item);
+      openedTabs.push({ item, tab });
+      normalTabRefs.push(tab);
+    }
+  }
+
+  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs, principal) {
+    // Phase 1: create direct tab children, defer subfolders
+    const directTabRefs = [];
+    const childItems = []; // { type: 'tab'|'folder', ref?, data? }
+
+    for (const child of folderItem.children) {
+      if (child.type === 'tab') {
+        const tab = gBrowser.addTab(child.url, { triggeringPrincipal: principal, skipAnimation: true });
+        applyCustomLabel(tab, child);
+        directTabRefs.push(tab);
+        openedTabs.push({ item: child, tab });
+        childItems.push({ type: 'tab', ref: tab });
+      } else if (child.type === 'folder') {
+        childItems.push({ type: 'folder', data: child, ref: null });
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 150));
+
+    // Phase 2: create folder with its direct tabs
+    const folderOpts = {
+      label: folderItem.name,
+      renameFolder: false,
+      collapsed: false, // expand first, collapse after children are placed
+    };
+    if (insertAfterElement) {
+      folderOpts.insertAfter = insertAfterElement;
+    }
+
+    let folder;
+    try {
+      folder = gZenFolders.createFolder(directTabRefs, folderOpts);
+    } catch (e) {
+      log(`Create folder "${folderItem.name}" failed: ${e}`);
+      return null;
+    }
+
+    await new Promise(r => setTimeout(r, 100));
+
+    // Phase 3: insert subfolders at correct positions.
+    // Walk children in saved order, tracking the last DOM element so we can
+    // position each subfolder right after the previous sibling.
+    let lastElement = null;
+    for (const childItem of childItems) {
+      if (childItem.type === 'tab') {
+        lastElement = childItem.ref;
+      } else if (childItem.type === 'folder') {
+        const subInsertAfter = lastElement || folder.groupStartElement;
+        const subFolder = await restoreFolderFromLayout(
+          childItem.data, subInsertAfter, openedTabs, normalTabRefs, principal
+        );
+        if (subFolder) lastElement = subFolder;
+      }
+    }
+
+    // Collapse after all children are in place (Zen needs a tick to measure heights)
+    if (folderItem.collapsed) {
+      setTimeout(() => { try { folder.collapsed = true; } catch (e) {} }, 0);
+    }
+
+    return folder;
+  }
+
+  function flattenLayoutTabs(item) {
+    const tabs = [];
+    if (item.type === 'tab') {
+      tabs.push(item);
+    } else if (item.type === 'folder' && item.children) {
+      for (const child of item.children) {
+        tabs.push(...flattenLayoutTabs(child));
+      }
+    }
+    return tabs;
+  }
+
+  // Verify restored layout matches saved order by checking the sidebar DOM.
+  // Loops until order is confirmed correct or max attempts reached, because
+  // Zen may asynchronously reorder tabs after our DOM moves.
+  async function verifyRestoredLayout(layout, openedTabs) {
+    const MAX_ATTEMPTS = 5;
+    const DELAY_MS = 200;
+
+    try {
+      const wsElement = gZenWorkspaces?.activeWorkspaceElement;
+      if (!wsElement) return;
+
+      const normalContainer = wsElement.tabsContainer;
+      if (!normalContainer) return;
+
+      // Build expected tab ref order from layout.
+      // We compare by element reference (not URL) because tabs haven't loaded
+      // yet — currentURI.spec is still about:blank right after addTab().
+      const expectedTabRefs = [];
+      const tabRefToUrl = new Map(); // for debug logging
+      for (const { item, tab } of openedTabs) {
+        if (!item.pinned && !item.essential && tab && !tab.closing) {
+          expectedTabRefs.push(tab);
+          tabRefToUrl.set(tab, item.url);
+        }
+      }
+      if (expectedTabRefs.length === 0) {
+        log('Verify: no normal tabs to verify');
+        return;
+      }
+
+      const shorten = u => { try { return new URL(u).hostname + new URL(u).pathname.slice(0, 30); } catch (e) { return (u || '').slice(0, 50); } };
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        await new Promise(r => setTimeout(r, DELAY_MS));
+
+        // Read actual tab order from DOM by element reference
+        const actualTabRefs = [];
+        for (const child of normalContainer.children) {
+          if (!gBrowser.isTab(child)) continue;
+          if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
+          actualTabRefs.push(child);
+        }
+
+        // Compare by reference
+        let isCorrect = actualTabRefs.length >= expectedTabRefs.length;
+        let firstMismatchIdx = -1;
+        if (isCorrect) {
+          for (let i = 0; i < expectedTabRefs.length; i++) {
+            if (actualTabRefs[i] !== expectedTabRefs[i]) { isCorrect = false; firstMismatchIdx = i; break; }
+          }
+        }
+
+        if (isCorrect) {
+          log(`Verify: order confirmed correct on attempt ${attempt}`);
+          return;
+        }
+
+        // Debug: show expected vs actual
+        log(`Verify: attempt ${attempt} — expected ${expectedTabRefs.length} tabs, DOM has ${actualTabRefs.length}, first mismatch at index ${firstMismatchIdx}`);
+        const debugLen = Math.max(expectedTabRefs.length, actualTabRefs.length);
+        for (let i = 0; i < Math.min(debugLen, 15); i++) {
+          const exp = tabRefToUrl.get(expectedTabRefs[i]) || '(none)';
+          const act = tabRefToUrl.get(actualTabRefs[i]) || `(unknown: ${actualTabRefs[i]?.linkedBrowser?.currentURI?.spec || '?'})`;
+          const marker = expectedTabRefs[i] === actualTabRefs[i] ? '  ' : '>>';
+          log(`  ${marker} [${i}] expected: ${shorten(exp)}  |  actual: ${shorten(act)}`);
+        }
+
+        // Reorder by moving each expected tab to correct position
+        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
+        for (const tab of expectedTabRefs) {
+          if (tab && tab.parentNode && !tab.closing) {
+            if (periphery) normalContainer.insertBefore(tab, periphery);
+            else normalContainer.appendChild(tab);
+          }
+        }
+      }
+
+      log(`Verify: gave up after ${MAX_ATTEMPTS} attempts — order may still be wrong`);
+    } catch (e) {
+      log(`Verify layout failed (non-fatal): ${e}`);
+    }
+  }
+
+  // --- List / Detail Flow ---
+
+  function getListSessionsPickerResults(query) {
+    if (!sessionCache) {
+      loadAllSessions().then(() => renderCommandResults());
+      return [{ key: 'list:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    }
+    const results = buildSessionPickerResults(sessionCache.sessions, 'list-session');
+    return fuzzyFilterAndSort(results, query);
+  }
+
+  function getSessionDetailViewResults(query) {
+    const session = commandSubFlow?.data?.session;
+    if (!session) return [{ key: 'detail:error', label: 'No session data', icon: '⚠', tags: [] }];
+
+    const results = [];
+
+    // Header with session info
+    const dateStr = formatSessionDate(session.savedAt);
+    results.push({
+      key: 'detail:info',
+      label: `${session.comment || 'No comment'} — saved ${dateStr}`,
+      icon: '💾',
+      sublabel: `${session.stats.totalTabCount} tabs · ${session.stats.workspaceCount} workspace${session.stats.workspaceCount !== 1 ? 's' : ''}`,
+      tags: [],
+    });
+
+    for (const ws of session.workspaces) {
+      if (session.workspaces.length > 1) {
+        const wsLayout = getWorkspaceLayout(ws);
+        const wsTabCount = wsLayout ? countLayoutStats(wsLayout).tabs : 0;
+        results.push({
+          key: `detail:ws-${ws.name}`,
+          label: `${ws.icon || '🗂'} ${ws.name}`,
+          icon: '',
+          sublabel: `${wsTabCount} tabs`,
+          tags: [],
+          isHeader: true,
+        });
+      }
+
+      // Render the layout tree — mirrors actual tab strip structure
+      const layout = getWorkspaceLayout(ws);
+      if (layout && layout.length > 0) {
+        buildDetailItemsFromLayout(layout, results, 0);
+      } else {
+        results.push({ key: 'detail:empty', label: 'No tabs', icon: '', tags: [] });
+      }
+    }
+
+    // Footer hint
+    results.push({
+      key: 'detail:footer',
+      label: 'Enter to restore · d to delete',
+      icon: '',
+      sublabel: '',
+      tags: [],
+      isHeader: true,
+    });
+
+    return results;
+  }
+
+  function buildDetailItemsFromLayout(layout, results, depth) {
+    const indent = '\u00A0\u00A0\u00A0'.repeat(depth); // non-breaking spaces per depth level
+
+    for (const item of layout) {
+      if (item.type === 'folder') {
+        const tabCount = countLayoutItemTabs(item);
+        const collapsedTag = item.collapsed ? ' [collapsed]' : '';
+        results.push({
+          key: `detail:folder-${depth}-${item.name}-${results.length}`,
+          label: `${indent}📁 ${item.name} (${tabCount} tab${tabCount !== 1 ? 's' : ''})${collapsedTag}`,
+          icon: '',
+          tags: [],
+          isHeader: true,
+        });
+        if (item.children && item.children.length > 0) {
+          buildDetailItemsFromLayout(item.children, results, depth + 1);
+        }
+      } else if (item.type === 'tab') {
+        const prefix = item.essential ? '⭐ ' : item.pinned ? '📌 ' : '';
+        const displayTitle = item.customLabel || item.title;
+        const labelSuffix = item.customLabel ? ` (${item.title})` : '';
+        results.push({
+          key: `detail:tab-${depth}-${results.length}`,
+          label: `${indent}${prefix}${displayTitle}${labelSuffix}`,
+          sublabel: item.url,
+          icon: '',
+          tags: [],
+        });
+      }
+    }
+  }
+
+  function countLayoutItemTabs(item) {
+    if (item.type === 'tab') return 1;
+    if (item.type === 'folder') {
+      let count = 0;
+      for (const child of (item.children || [])) {
+        count += countLayoutItemTabs(child);
+      }
+      return count;
+    }
+    return 0;
+  }
+
+  function getDeleteSessionConfirmResults() {
+    const sessionId = commandSubFlow?.data?.sessionId;
+    return [
+      { key: 'delete-session:confirm', label: 'Delete this session permanently? Press Enter.', icon: '🗑', sublabel: sessionId || '', tags: [] },
+      { key: 'delete-session:cancel', label: 'Press Esc to cancel', icon: '↩', tags: [] },
+    ];
+  }
+
+  // ============================================
   // FOLDER DELETE MODAL (browse mode)
   // ============================================
 
@@ -3497,9 +4417,10 @@
         // Command result
         const highlightedLabel = cmd.labelIndices ? highlightMatches(cmd.label, cmd.labelIndices) : escapeHtml(cmd.label);
         const hasArrow = cmd.subFlow ? ' →' : '';
+        const headerClass = cmd.isHeader ? ' zenleap-session-header' : '';
 
         html += `
-          <div class="zenleap-command-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
+          <div class="zenleap-command-result ${isSelected ? 'selected' : ''}${headerClass}" data-index="${idx}">
             <div class="zenleap-command-icon">${cmd.icon || '⚡'}</div>
             <div class="zenleap-command-info">
               <div class="zenleap-command-label">${highlightedLabel}${hasArrow}</div>
@@ -3646,6 +4567,42 @@
             <span><kbd>Tab</kbd> ${scopeLabel}</span>
             <span><kbd>Enter</kbd> confirm delete</span>
             <span><kbd>Esc</kbd> cancel</span>
+          `;
+        }
+        return;
+      }
+      if (commandSubFlow?.type === 'session-detail-view') {
+        if (vimEnabled && searchVimMode === 'normal') {
+          searchHintBar.innerHTML = `
+            <span><kbd>j/k</kbd> scroll</span>
+            <span><kbd>Enter</kbd> restore</span>
+            <span><kbd>d</kbd> delete</span>
+            <span><kbd>Esc</kbd> back</span>
+          `;
+        } else {
+          searchHintBar.innerHTML = `
+            <span><kbd>↑↓</kbd> scroll</span>
+            <span><kbd>Enter</kbd> restore</span>
+            <span><kbd>Ctrl+d</kbd> delete</span>
+            <span><kbd>Esc</kbd> back</span>
+          `;
+        }
+        return;
+      }
+      if (commandSubFlow?.type === 'list-sessions-picker') {
+        if (vimEnabled && searchVimMode === 'normal') {
+          searchHintBar.innerHTML = `
+            <span><kbd>j/k</kbd> navigate</span>
+            <span><kbd>Enter</kbd> preview</span>
+            <span><kbd>d</kbd> delete</span>
+            <span><kbd>Esc</kbd> back</span>
+          `;
+        } else {
+          searchHintBar.innerHTML = `
+            <span><kbd>↑↓</kbd> navigate</span>
+            <span><kbd>Enter</kbd> preview</span>
+            <span><kbd>Ctrl+d</kbd> delete</span>
+            <span><kbd>Esc</kbd> back</span>
           `;
         }
         return;
@@ -5044,6 +6001,25 @@
             exitSearchMode();
             gBrowser.selectedTab = selected.tab;
             log(`Dedup preview: switched to tab "${selected.tab.label}" for inspection`);
+          }
+          return true;
+        }
+      }
+
+      // In session list or detail view: 'd' (normal) or Ctrl+d (insert) to delete session
+      if (commandSubFlow?.type === 'session-detail-view' || commandSubFlow?.type === 'list-sessions-picker') {
+        if ((searchVimMode === 'normal' && key === 'd') || (event.ctrlKey && key === 'd')) {
+          event.preventDefault();
+          event.stopPropagation();
+          // Get session from data (detail view) or from currently highlighted result (list view)
+          let session = commandSubFlow.data?.session;
+          if (!session && commandSubFlow.type === 'list-sessions-picker') {
+            const selected = commandResults[searchSelectedIndex];
+            session = selected?.sessionData;
+          }
+          if (session) {
+            enterSubFlow('delete-session-confirm', 'Delete Session');
+            commandSubFlow.data = { sessionId: session.id };
           }
           return true;
         }
