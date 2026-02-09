@@ -26,6 +26,7 @@
     'keys.global.splitFocusDown':  { default: { key: 'j', code: 'KeyJ', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Down',  description: 'Focus split pane below',         category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Up',    description: 'Focus split pane above',         category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Right', description: 'Focus split pane to the right', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
 
     // --- Keybindings: Leap Mode ---
     'keys.leap.browseDown':     { default: 'j', type: 'key', label: 'Browse Down', description: 'Enter browse mode downward', category: 'Keybindings', group: 'Leap Mode' },
@@ -293,6 +294,12 @@
   let dedupTabsToClose = [];      // tabs identified as duplicates to be closed in dedup-preview
   let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
   let commandEnteredFromSearch = false; // true if entered via '>' from search, false if via Ctrl+Shift+/
+
+  // Folder delete modal state (browse mode)
+  let folderDeleteMode = false;
+  let folderDeleteTarget = null;
+  let folderDeleteModal = null;
+  let folderUndoStack = [];  // Stack of { type, folderLabel, tabRefs, ... } for undo
 
   // Help modal
   let helpMode = false;
@@ -1566,21 +1573,6 @@
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-workspace-picker' },
-      { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
-        subFlow: 'switch-workspace-picker' },
-      { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
-        },
-        subFlow: 'move-to-workspace-picker' },
-      { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
-        subFlow: 'rename-workspace-picker' },
 
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add'],
@@ -1596,16 +1588,6 @@
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-folder-picker' },
-      { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
-        subFlow: 'add-to-folder-picker' },
-      { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
-        subFlow: 'rename-folder-picker' },
 
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
@@ -1632,7 +1614,87 @@
 
   // Generate dynamic commands based on current state
   function getDynamicCommands() {
-    return [];
+    const commands = [];
+
+    // Workspace switch commands
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        if (workspaces && Array.isArray(workspaces)) {
+          const activeId = window.gZenWorkspaces.activeWorkspace;
+          for (const ws of workspaces) {
+            const icon = ws.icon || '🗂';
+            const name = ws.name || 'Unnamed';
+            const isActive = ws.uuid === activeId;
+            commands.push({
+              key: `switch-workspace:${ws.uuid}`,
+              label: `Switch to Workspace: ${name}${isActive ? ' (current)' : ''}`,
+              icon: icon,
+              tags: ['workspace', 'switch', name.toLowerCase()],
+              command: () => { window.gZenWorkspaces.changeWorkspaceWithID(ws.uuid); },
+            });
+            if (!isActive) {
+              commands.push({
+                key: `move-to-workspace:${ws.uuid}`,
+                label: `Move Tab to Workspace: ${name}`,
+                icon: icon,
+                tags: ['workspace', 'move', 'tab', name.toLowerCase()],
+                command: () => {
+                  window.gZenWorkspaces.moveTabToWorkspace(gBrowser.selectedTab, ws.uuid);
+                },
+              });
+            }
+          }
+        }
+      }
+    } catch (e) { log(`Error generating workspace commands: ${e}`); }
+
+    // Folder commands
+    try {
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        const folderId = folder.id;
+        const activeTab = gBrowser.selectedTab;
+        // Skip if tab is already in this folder
+        if (activeTab && activeTab.group === folder) continue;
+
+        commands.push({
+          key: `add-to-folder:${folderId}`,
+          label: `Add Tab to Folder: ${name}`,
+          icon: '📂',
+          tags: ['folder', 'add', 'move', 'tab', 'group', name.toLowerCase()],
+          command: () => {
+            try {
+              const tabToMove = gBrowser.selectedTab;
+              if (!tabToMove) return;
+              // Re-fetch folder by ID to avoid stale DOM references
+              const targetFolder = document.getElementById(folderId);
+              if (!targetFolder) { log(`Folder not found: ${folderId}`); return; }
+
+              // Handle cross-workspace moves
+              const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+              if (targetWorkspaceId && window.gZenWorkspaces) {
+                const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
+                if (currentWorkspaceId !== targetWorkspaceId) {
+                  window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
+                }
+              }
+
+              // Pin tab if not already pinned (Zen folders require pinned tabs)
+              if (!tabToMove.pinned) {
+                gBrowser.pinTab(tabToMove);
+              }
+
+              targetFolder.addTabs([tabToMove]);
+              log(`Added tab to folder: ${name}`);
+            } catch(e) { log(`Add to folder failed: ${e}`); }
+          },
+        });
+      }
+    } catch (e) { log(`Error generating folder commands: ${e}`); }
+
+    return commands;
   }
 
   // Get all available commands (static + dynamic)
@@ -1735,7 +1797,7 @@
   // ============================================
 
   function enterSubFlow(type, label) {
-    commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery, data: commandSubFlow?.data || null });
+    commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery });
     commandSubFlow = { type, label, data: null };
     commandQuery = '';
     // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
@@ -1818,13 +1880,6 @@
       case 'folder-name-input': return 'Enter folder name...';
       case 'delete-folder-picker': return 'Select a folder to delete...';
       case 'delete-workspace-picker': return 'Select a workspace to delete...';
-      case 'switch-workspace-picker': return 'Select a workspace to switch to...';
-      case 'move-to-workspace-picker': return 'Select a workspace to move tab to...';
-      case 'add-to-folder-picker': return 'Select a folder to add tab to...';
-      case 'rename-folder-picker': return 'Select a folder to rename...';
-      case 'rename-workspace-picker': return 'Select a workspace to rename...';
-      case 'rename-folder-input': return 'Enter new folder name...';
-      case 'rename-workspace-input': return 'Enter new workspace name...';
       default: return 'Type a command...';
     }
   }
@@ -1873,20 +1928,6 @@
         return getDeleteFolderPickerResults(query);
       case 'delete-workspace-picker':
         return getDeleteWorkspacePickerResults(query);
-      case 'switch-workspace-picker':
-        return getSwitchWorkspacePickerResults(query);
-      case 'move-to-workspace-picker':
-        return getMoveToWorkspacePickerResults(query);
-      case 'add-to-folder-picker':
-        return getAddToFolderPickerResults(query);
-      case 'rename-folder-picker':
-        return getRenameFolderPickerResults(query);
-      case 'rename-workspace-picker':
-        return getRenameWorkspacePickerResults(query);
-      case 'rename-folder-input':
-        return getRenameFolderInputResults(query);
-      case 'rename-workspace-input':
-        return getRenameWorkspaceInputResults(query);
       default:
         return [];
     }
@@ -1962,176 +2003,6 @@
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
       return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
     });
-  }
-
-  function getSwitchWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `switch-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '🗂',
-              tags: ['workspace', 'switch', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'switch-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    if (!query) return results;
-    return results.filter(r => {
-      const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
-    });
-  }
-
-  function getRenameFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `rename-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '✏',
-          tags: ['folder', 'rename', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    if (!query) return results;
-    return results.filter(r => {
-      const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
-    });
-  }
-
-  function getMoveToWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            if (ws.uuid === activeId) continue;
-            const name = ws.name || 'Unnamed';
-            results.push({
-              key: `move-to-workspace:${ws.uuid}`,
-              label: name,
-              icon: ws.icon || '🗂',
-              tags: ['workspace', 'move', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'move-to-workspace:none', label: 'No other workspaces found', icon: '🗂', tags: [] }];
-    }
-    if (!query) return results;
-    return results.filter(r => {
-      const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
-    });
-  }
-
-  function getRenameWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `rename-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '✏',
-              tags: ['workspace', 'rename', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    if (!query) return results;
-    return results.filter(r => {
-      const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
-    });
-  }
-
-  function getAddToFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeTab = gBrowser.selectedTab;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        // Skip if tab is already in this folder
-        if (activeTab && activeTab.group === folder) continue;
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `add-to-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '📂',
-          tags: ['folder', 'add', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for add: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'add-to-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    if (!query) return results;
-    return results.filter(r => {
-      const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
-    });
-  }
-
-  function getRenameFolderInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-folder-input:prompt', label: 'Type a new name for the folder and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-folder-input:confirm', label: `Rename folder to: "${name}"`, icon: '✏', tags: [] }];
-  }
-
-  function getRenameWorkspaceInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-workspace-input:prompt', label: 'Type a new name for the workspace and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-workspace-input:confirm', label: `Rename workspace to: "${name}"`, icon: '✏', tags: [] }];
   }
 
   function getTabSearchSubFlowResults(query) {
@@ -2366,63 +2237,6 @@
           deleteWorkspace(result.workspaceId);
         }
         break;
-
-      case 'switch-workspace-picker':
-        if (result.workspaceId) {
-          window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
-          exitSearchMode();
-        }
-        break;
-
-      case 'move-to-workspace-picker':
-        if (result.workspaceId) {
-          window.gZenWorkspaces.moveTabToWorkspace(gBrowser.selectedTab, result.workspaceId);
-          exitSearchMode();
-        }
-        break;
-
-      case 'add-to-folder-picker':
-        if (result.folder) {
-          addTabToFolder(result.folder);
-        }
-        break;
-      case 'rename-folder-picker':
-        if (result.folder) {
-          commandSubFlow.data = { folderId: result.folder.id };
-          enterSubFlow('rename-folder-input', `Rename: ${result.label}`);
-        }
-        break;
-
-      case 'rename-workspace-picker':
-        if (result.workspaceId) {
-          commandSubFlow.data = { workspaceId: result.workspaceId };
-          enterSubFlow('rename-workspace-input', `Rename: ${result.label}`);
-        }
-        break;
-
-      case 'rename-folder-input': {
-        const newFolderName = (commandQuery || '').trim();
-        if (newFolderName) {
-          const prevData = commandSubFlowStack[commandSubFlowStack.length - 1]?.data;
-          const folderId = prevData?.folderId || commandSubFlow.data?.folderId;
-          if (folderId) {
-            renameFolder(folderId, newFolderName);
-          }
-        }
-        break;
-      }
-
-      case 'rename-workspace-input': {
-        const newWsName = (commandQuery || '').trim();
-        if (newWsName) {
-          const prevData = commandSubFlowStack[commandSubFlowStack.length - 1]?.data;
-          const wsId = prevData?.workspaceId || commandSubFlow.data?.workspaceId;
-          if (wsId) {
-            renameWorkspace(wsId, newWsName);
-          }
-        }
-        break;
-      }
     }
   }
 
@@ -2652,35 +2466,6 @@
     exitSearchMode();
   }
 
-  function addTabToFolder(folder) {
-    try {
-      const tabToMove = gBrowser.selectedTab;
-      if (!tabToMove) { exitSearchMode(); return; }
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { log(`Folder not found: ${folder.id}`); exitSearchMode(); return; }
-
-      // Handle cross-workspace moves
-      const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
-      if (targetWorkspaceId && window.gZenWorkspaces) {
-        const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-        if (currentWorkspaceId !== targetWorkspaceId) {
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
-        }
-      }
-
-      // Pin tab if not already pinned (Zen folders require pinned tabs)
-      if (!tabToMove.pinned) {
-        gBrowser.pinTab(tabToMove);
-      }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      targetFolder.addTabs([tabToMove]);
-      log(`Added tab to folder: ${name}`);
-    } catch(e) { log(`Add to folder failed: ${e}`); }
-    exitSearchMode();
-  }
-
   function deleteFolder(folder) {
     try {
       // Re-fetch folder by ID to avoid stale DOM references
@@ -2716,50 +2501,209 @@
     exitSearchMode();
   }
 
-  function renameFolder(folderId, newName) {
-    try {
-      const targetFolder = document.getElementById(folderId);
-      if (!targetFolder) { log('Folder not found for rename'); exitSearchMode(); return; }
-      const oldName = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      // Use the folder's name setter which triggers ZenFolderRenamed event
-      if ('name' in targetFolder) {
-        targetFolder.name = newName;
-      } else if (targetFolder.labelElement) {
-        targetFolder.label = newName;
-      } else {
-        targetFolder.setAttribute('zen-folder-name', newName);
-      }
-      log(`Renamed folder: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename folder failed: ${e}`); }
-    exitSearchMode();
+  // ============================================
+  // FOLDER DELETE MODAL (browse mode)
+  // ============================================
+
+  function showFolderDeleteModal(folder) {
+    folderDeleteMode = true;
+    folderDeleteTarget = folder;
+
+    const folderName = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+    const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+
+    if (!folderDeleteModal) {
+      folderDeleteModal = document.createElement('div');
+      folderDeleteModal.id = 'zenleap-folder-delete-modal';
+      document.documentElement.appendChild(folderDeleteModal);
+    }
+
+    folderDeleteModal.innerHTML = '';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zenleap-folder-delete-backdrop';
+    backdrop.addEventListener('click', () => closeFolderDeleteModal());
+
+    const container = document.createElement('div');
+    container.className = 'zenleap-folder-delete-container';
+
+    const title = document.createElement('div');
+    title.className = 'zenleap-folder-delete-title';
+    title.textContent = `Delete "${folderName}" (${tabCount} tab${tabCount !== 1 ? 's' : ''})?`;
+    container.appendChild(title);
+
+    container.appendChild(createDeleteOption('1', 'Delete folder and all tabs', 'Removes the folder and closes all tabs inside it', () => deleteFolderAndContents(folderDeleteTarget)));
+    container.appendChild(createDeleteOption('2', 'Delete folder only (keep tabs)', 'Removes the folder but keeps all tabs', () => deleteFolderKeepTabs(folderDeleteTarget)));
+    container.appendChild(createDeleteOption('Esc', 'Cancel', '', () => closeFolderDeleteModal()));
+
+    folderDeleteModal.appendChild(backdrop);
+    folderDeleteModal.appendChild(container);
+    folderDeleteModal.classList.add('active');
+    log(`Showing folder delete modal for "${folderName}"`);
   }
 
-  function renameWorkspace(workspaceId, newName) {
+  function createDeleteOption(shortcut, label, sublabel, action) {
+    const option = document.createElement('div');
+    option.className = 'zenleap-folder-delete-option';
+    option.addEventListener('click', action);
+
+    const kbd = document.createElement('kbd');
+    kbd.textContent = shortcut;
+
+    const text = document.createElement('div');
+    text.className = 'zenleap-folder-delete-option-text';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'zenleap-folder-delete-label';
+    labelEl.textContent = label;
+    text.appendChild(labelEl);
+
+    if (sublabel) {
+      const sub = document.createElement('span');
+      sub.className = 'zenleap-folder-delete-sublabel';
+      sub.textContent = sublabel;
+      text.appendChild(sub);
+    }
+
+    option.appendChild(kbd);
+    option.appendChild(text);
+    return option;
+  }
+
+  function closeFolderDeleteModal() {
+    folderDeleteMode = false;
+    folderDeleteTarget = null;
+    if (folderDeleteModal) {
+      folderDeleteModal.classList.remove('active');
+    }
+    // Return to browse mode (it was never exited)
+    updateHighlight();
+  }
+
+  function deleteFolderAndContents(folder) {
     try {
-      if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
-      const workspaces = window.gZenWorkspaces.getWorkspaces();
-      const workspaceData = workspaces.find(ws => ws.uuid === workspaceId);
-      if (!workspaceData) { log('Workspace not found for rename'); exitSearchMode(); return; }
-      const oldName = workspaceData.name || 'Unnamed';
-      workspaceData.name = newName;
-      if (typeof gZenWorkspaces.saveWorkspace === 'function') {
-        gZenWorkspaces.saveWorkspace(workspaceData);
-      } else {
-        log('No API available to save workspace');
-        exitSearchMode();
-        return;
+      const targetFolder = document.getElementById(folder.id);
+      if (!targetFolder) { closeFolderDeleteModal(); return; }
+
+      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
+
+      // Store undo data BEFORE deleting
+      folderUndoStack.push({
+        type: 'folder-and-contents',
+        folderLabel: name,
+        folderId: folder.id,
+        tabCount: tabs.length,
+        timestamp: Date.now(),
+      });
+
+      // Use gBrowser.removeTabGroup with isUserTriggered so SessionStore tracks it
+      // This enables native Cmd+Shift+T undo
+      if (typeof gBrowser.removeTabGroup === 'function') {
+        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
+      } else if (typeof targetFolder.delete === 'function') {
+        targetFolder.delete();
       }
-      // Update the workspace indicator UI if this is the active workspace
-      if (workspaceId === window.gZenWorkspaces.activeWorkspace) {
-        const indicator = gZenWorkspaces.workspaceElement?.(workspaceId)?.indicator;
-        if (indicator) {
-          const nameEl = indicator.querySelector('.zen-current-workspace-indicator-name');
-          if (nameEl) nameEl.textContent = newName;
+
+      log(`Deleted folder and contents: ${name} (${tabs.length} tabs)`);
+    } catch (e) { log(`Delete folder+contents failed: ${e}`); }
+
+    closeFolderDeleteModal();
+    adjustHighlightAfterDeletion();
+  }
+
+  function deleteFolderKeepTabs(folder) {
+    try {
+      const targetFolder = document.getElementById(folder.id);
+      if (!targetFolder) { closeFolderDeleteModal(); return; }
+
+      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
+
+      // Store undo data: folder metadata + tab references for recreation
+      folderUndoStack.push({
+        type: 'folder-only',
+        folderLabel: name,
+        folderId: folder.id,
+        tabRefs: tabs.map(t => t),
+        timestamp: Date.now(),
+      });
+
+      // Unpack tabs from the folder (keeps tabs, removes folder structure)
+      if (typeof targetFolder.unpackTabs === 'function') {
+        targetFolder.unpackTabs();
+      } else {
+        // Fallback: delete folder which may also remove tabs
+        if (typeof targetFolder.delete === 'function') {
+          targetFolder.delete();
         }
       }
-      log(`Renamed workspace: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename workspace failed: ${e}`); }
-    exitSearchMode();
+
+      log(`Deleted folder (kept tabs): ${name} (${tabs.length} tabs freed)`);
+    } catch (e) { log(`Delete folder (keep tabs) failed: ${e}`); }
+
+    closeFolderDeleteModal();
+    adjustHighlightAfterDeletion();
+  }
+
+  function adjustHighlightAfterDeletion() {
+    const newItems = getVisibleItems();
+    if (newItems.length === 0) {
+      exitLeapMode(false);
+      return;
+    }
+    if (highlightedTabIndex >= newItems.length) {
+      highlightedTabIndex = newItems.length - 1;
+    }
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
+  // Undo the last folder deletion. Returns true if handled, false to let browser handle.
+  function undoLastFolderDelete() {
+    if (folderUndoStack.length === 0) {
+      return false; // Nothing to undo, let browser's native Cmd+Shift+T handle it
+    }
+
+    const entry = folderUndoStack[folderUndoStack.length - 1];
+
+    // Only undo if recent (within 30 seconds)
+    if (Date.now() - entry.timestamp > 30000) {
+      folderUndoStack.length = 0;
+      return false;
+    }
+
+    if (entry.type === 'folder-and-contents') {
+      // For folder+contents: native SessionStore handles this since we used isUserTriggered: true
+      // Pop the entry and let the browser's Cmd+Shift+T restore it
+      folderUndoStack.pop();
+      return false; // Do NOT prevent default — let browser handle
+    }
+
+    if (entry.type === 'folder-only') {
+      // Recreate folder with the tabs that are still alive
+      folderUndoStack.pop();
+      const liveTabs = entry.tabRefs.filter(t => t && !t.closing && t.parentNode);
+      if (liveTabs.length === 0) {
+        log('Undo: all tabs from deleted folder are gone');
+        return true;
+      }
+      try {
+        if (window.gZenFolders) {
+          gZenFolders.createFolder(liveTabs, {
+            label: entry.folderLabel,
+            renameFolder: false,
+          });
+          log(`Undo: recreated folder "${entry.folderLabel}" with ${liveTabs.length} tabs`);
+        } else {
+          log('Undo: gZenFolders not available');
+          return false;
+        }
+      } catch (e) { log(`Undo folder recreation failed: ${e}`); }
+      return true; // We handled it
+    }
+
+    return false;
   }
 
   // Switch focus to the split pane in the given direction
@@ -5028,6 +4972,32 @@
     });
   }
 
+  // Check if an item is a zen-folder element
+  function isFolder(item) {
+    return item && item.tagName && item.tagName.toLowerCase() === 'zen-folder';
+  }
+
+  // Get visible tabs AND folders in DOM order (for browse mode navigation)
+  function getVisibleItems() {
+    const tabs = getVisibleTabs();
+    const folders = Array.from(
+      gBrowser.tabContainer.querySelectorAll('zen-folder')
+    ).filter(folder => {
+      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+      const folderWsId = folder.getAttribute('zen-workspace-id');
+      if (activeWsId && folderWsId && folderWsId !== activeWsId) return false;
+      return true;
+    });
+    const combined = [...tabs, ...folders];
+    combined.sort((a, b) => {
+      const position = a.compareDocumentPosition(b);
+      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    return combined;
+  }
+
   // Get tabs for search — respects cross-workspace setting
   function getSearchableTabs() {
     if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
@@ -5728,15 +5698,28 @@
       // Browse mode
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'BROWSE';
-      const tabs = getVisibleTabs();
-      const pos = `${highlightedTabIndex + 1}/${tabs.length}`;
+      const items = getVisibleItems();
+      const pos = `${highlightedTabIndex + 1}/${items.length}`;
       let statusParts = [pos];
+
+      // Show folder info when highlighted
+      if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+        const highlightedItem = items[highlightedTabIndex];
+        if (isFolder(highlightedItem)) {
+          const tabCount = highlightedItem.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+          statusParts.push(`folder (${tabCount})`);
+        }
+      }
+
       if (selectedTabs.size > 0) statusParts.push(`${selectedTabs.size} sel`);
       if (yankBuffer.length > 0) statusParts.push(`${yankBuffer.length} yanked`);
       overlayDirectionLabel.textContent = statusParts.join(' | ');
 
-      // Show contextual hints
-      if (yankBuffer.length > 0) {
+      // Show contextual hints based on highlighted item type
+      const onFolder = highlightedTabIndex >= 0 && highlightedTabIndex < items.length && isFolder(items[highlightedTabIndex]);
+      if (onFolder) {
+        overlayHintLabel.textContent = 'Enter=toggle fold  x=delete folder  j/k=move  Esc=cancel';
+      } else if (yankBuffer.length > 0) {
         overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
       } else if (selectedTabs.size > 0) {
         overlayHintLabel.textContent = 'y=yank  x=close sel  Space=toggle  j/k=move  Esc=cancel';
@@ -5840,9 +5823,9 @@
 
   // Enter browse mode
   function enterBrowseMode(direction) {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
     const currentTab = gBrowser.selectedTab;
-    const currentIndex = tabs.indexOf(currentTab);
+    const currentIndex = items.indexOf(currentTab);
 
     if (currentIndex === -1) {
       log('Cannot enter browse mode: current tab not found');
@@ -5852,11 +5835,11 @@
     browseMode = true;
     browseDirection = direction;
     originalTabIndex = currentIndex;
-    originalTab = tabs[currentIndex];
+    originalTab = items[currentIndex];
 
     // Move highlight one step in the initial direction
     if (direction === 'down') {
-      highlightedTabIndex = Math.min(currentIndex + 1, tabs.length - 1);
+      highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
     } else {
       highlightedTabIndex = Math.max(currentIndex - 1, 0);
     }
@@ -5869,57 +5852,70 @@
     log(`Entered browse mode, direction=${direction}, highlight=${highlightedTabIndex}`);
   }
 
-  // Update the visual highlight on the browsed tab
+  // Update the visual highlight on the browsed item (tab or folder)
   function updateHighlight() {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
-    // Remove highlight from all tabs, update selection markers
-    tabs.forEach(tab => {
-      tab.removeAttribute('data-zenleap-highlight');
-      if (selectedTabs.has(tab)) {
-        tab.setAttribute('data-zenleap-selected', 'true');
+    // Remove highlight from all items, update selection markers
+    items.forEach(item => {
+      item.removeAttribute('data-zenleap-highlight');
+      if (selectedTabs.has(item)) {
+        item.setAttribute('data-zenleap-selected', 'true');
       } else {
-        tab.removeAttribute('data-zenleap-selected');
+        item.removeAttribute('data-zenleap-selected');
       }
     });
 
-    // Add highlight to the current browsed tab
-    if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-      const highlightedTab = tabs[highlightedTabIndex];
-      highlightedTab.setAttribute('data-zenleap-highlight', 'true');
+    // Add highlight to the current browsed item
+    if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+      const highlightedItem = items[highlightedTabIndex];
+      highlightedItem.setAttribute('data-zenleap-highlight', 'true');
 
-      // Scroll the highlighted tab into view
-      scrollTabToView(highlightedTab, 'center');
+      // Scroll the highlighted item into view
+      scrollTabToView(highlightedItem, 'center');
 
       // Trigger preview panel update (debounced by configurable delay)
-      if (S['display.browsePreview'] && browseMode) {
+      // Only show preview for tabs, not folders
+      if (S['display.browsePreview'] && browseMode && !isFolder(highlightedItem)) {
         clearTimeout(previewDebounceTimer);
         previewCaptureId++; // Cancel any in-flight capture
         hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < getVisibleTabs().length) {
-            showPreviewForTab(getVisibleTabs()[highlightedTabIndex]);
+          const currentItems = getVisibleItems();
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < currentItems.length) {
+            const currentItem = currentItems[highlightedTabIndex];
+            if (!isFolder(currentItem)) {
+              showPreviewForTab(currentItem);
+            }
           }
         }, S['timing.previewDelay']);
+      } else if (isFolder(highlightedItem)) {
+        // Hide preview when navigating over a folder
+        clearTimeout(previewDebounceTimer);
+        hidePreviewPanel();
       }
     }
   }
 
   // Clear all highlights and selections
   function clearHighlight() {
-    const tabs = getVisibleTabs();
-    tabs.forEach(tab => {
-      tab.removeAttribute('data-zenleap-highlight');
-      tab.removeAttribute('data-zenleap-selected');
+    const items = getVisibleItems();
+    items.forEach(item => {
+      item.removeAttribute('data-zenleap-highlight');
+      item.removeAttribute('data-zenleap-selected');
     });
+    // Dismiss folder delete modal if open
+    if (folderDeleteMode) {
+      closeFolderDeleteModal();
+    }
   }
 
   // Move highlight up or down
   function moveHighlight(direction) {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
     if (direction === 'down') {
-      highlightedTabIndex = Math.min(highlightedTabIndex + 1, tabs.length - 1);
+      highlightedTabIndex = Math.min(highlightedTabIndex + 1, items.length - 1);
     } else {
       highlightedTabIndex = Math.max(highlightedTabIndex - 1, 0);
     }
@@ -5955,15 +5951,15 @@
 
       // After workspace switch, highlight the active tab in the new workspace
       setTimeout(() => {
-        const newTabs = getVisibleTabs();
-        const activeIdx = newTabs.indexOf(gBrowser.selectedTab);
+        const newItems = getVisibleItems();
+        const activeIdx = newItems.indexOf(gBrowser.selectedTab);
         highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
-        if (newTabs.length > 0) {
+        if (newItems.length > 0) {
           updateHighlight();
           updateRelativeNumbers();
           updateLeapOverlayState();
         }
-        log(`Browse: workspace switched, ${newTabs.length} tabs visible, highlight=${highlightedTabIndex}`);
+        log(`Browse: workspace switched, ${newItems.length} items visible, highlight=${highlightedTabIndex}`);
       }, S['timing.workspaceSwitchDelay']);
     } catch (e) { log(`Workspace switch failed: ${e}`); }
   }
@@ -5971,7 +5967,7 @@
   // Jump directly to a tab N positions from original and open it
   // Direction is determined by where the highlight currently is relative to original
   function jumpAndOpenTab(distance) {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
     // Determine direction based on current highlight position vs original
     let direction;
@@ -5992,93 +5988,129 @@
     }
 
     // Clamp to valid range
-    targetIndex = Math.max(0, Math.min(tabs.length - 1, targetIndex));
+    targetIndex = Math.max(0, Math.min(items.length - 1, targetIndex));
 
-    if (targetIndex >= 0 && targetIndex < tabs.length) {
-      gBrowser.selectedTab = tabs[targetIndex];
+    if (targetIndex >= 0 && targetIndex < items.length) {
+      const target = items[targetIndex];
+      if (isFolder(target)) {
+        // If jumping lands on a folder, toggle it instead
+        target.collapsed = !target.collapsed;
+        log(`Jumped ${direction} ${distance} from original, toggled folder "${target.label}"`);
+        exitLeapMode(true);
+        return;
+      }
+      gBrowser.selectedTab = target;
       log(`Jumped ${direction} ${distance} from original (highlight was ${highlightedTabIndex < originalTabIndex ? 'above' : 'below'}), opened tab ${targetIndex}`);
     }
 
     exitLeapMode(true); // Center scroll on new tab
   }
 
-  // Confirm selection - open the highlighted tab
+  // Confirm selection - open the highlighted tab, or toggle folder collapse
   function confirmBrowseSelection() {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
-    if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-      gBrowser.selectedTab = tabs[highlightedTabIndex];
+    if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+      const item = items[highlightedTabIndex];
+      if (isFolder(item)) {
+        // Toggle folder collapse/expand and stay in browse mode
+        item.collapsed = !item.collapsed;
+        log(`Toggled folder "${item.label}" collapsed=${item.collapsed}`);
+        // After toggling, the visible items list changes. Re-index after DOM settles.
+        setTimeout(() => {
+          const newItems = getVisibleItems();
+          const newIdx = newItems.indexOf(item);
+          if (newIdx >= 0) {
+            highlightedTabIndex = newIdx;
+          }
+          updateHighlight();
+          updateLeapOverlayState();
+        }, 50);
+        return; // Stay in browse mode
+      }
+      gBrowser.selectedTab = item;
       log(`Confirmed selection: opened tab ${highlightedTabIndex}`);
     }
 
     exitLeapMode(true); // true = center scroll on new tab
   }
 
-  // Close the highlighted tab (or all selected tabs if any are selected)
+  // Close the highlighted tab/folder (or all selected tabs if any are selected)
   function closeHighlightedTab() {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
-    // If there are selected tabs, close all of them
+    // If there are selected tabs, close all of them (skip folders in selection)
     if (selectedTabs.size > 0) {
-      const tabsToClose = [...selectedTabs].filter(t => t && !t.closing && t.parentNode);
+      const tabsToClose = [...selectedTabs].filter(t => t && !t.closing && t.parentNode && !isFolder(t));
       log(`Closing ${tabsToClose.length} selected tabs`);
       for (const tab of tabsToClose) {
         gBrowser.removeTab(tab);
       }
       selectedTabs.clear();
 
-      const newTabs = getVisibleTabs();
-      if (newTabs.length === 0) {
+      const newItems = getVisibleItems();
+      if (newItems.length === 0) {
         exitLeapMode(false);
         return;
       }
       // Clamp highlight index
-      if (highlightedTabIndex >= newTabs.length) {
-        highlightedTabIndex = newTabs.length - 1;
+      if (highlightedTabIndex >= newItems.length) {
+        highlightedTabIndex = newItems.length - 1;
       }
       updateHighlight();
       updateLeapOverlayState();
       return;
     }
 
-    // Single tab close (no selection)
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) {
-      log('No valid tab to close');
+    // Single item close (no selection)
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) {
+      log('No valid item to close');
       return;
     }
 
-    const tabToClose = tabs[highlightedTabIndex];
-    const wasLastTab = highlightedTabIndex === tabs.length - 1;
+    const item = items[highlightedTabIndex];
 
-    gBrowser.removeTab(tabToClose);
+    // If it's a folder, show the deletion modal instead
+    if (isFolder(item)) {
+      showFolderDeleteModal(item);
+      return;
+    }
+
+    const wasLast = highlightedTabIndex === items.length - 1;
+
+    gBrowser.removeTab(item);
     log(`Closed tab at index ${highlightedTabIndex}`);
 
-    const newTabs = getVisibleTabs();
+    const newItems = getVisibleItems();
 
-    if (newTabs.length === 0) {
+    if (newItems.length === 0) {
       exitLeapMode(false);
       return;
     }
 
-    if (wasLastTab || highlightedTabIndex >= newTabs.length) {
-      highlightedTabIndex = newTabs.length - 1;
+    if (wasLast || highlightedTabIndex >= newItems.length) {
+      highlightedTabIndex = newItems.length - 1;
     }
 
     updateHighlight();
     updateLeapOverlayState();
   }
 
-  // Toggle selection on the highlighted tab
+  // Toggle selection on the highlighted tab (folders cannot be selected)
   function toggleTabSelection() {
-    const tabs = getVisibleTabs();
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) return;
+    const items = getVisibleItems();
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
 
-    const tab = tabs[highlightedTabIndex];
-    if (selectedTabs.has(tab)) {
-      selectedTabs.delete(tab);
+    const item = items[highlightedTabIndex];
+    if (isFolder(item)) {
+      log('Cannot select a folder');
+      return;
+    }
+    if (selectedTabs.has(item)) {
+      selectedTabs.delete(item);
       log(`Deselected tab at index ${highlightedTabIndex}`);
     } else {
-      selectedTabs.add(tab);
+      selectedTabs.add(item);
       log(`Selected tab at index ${highlightedTabIndex} (${selectedTabs.size} total)`);
     }
 
@@ -6093,9 +6125,9 @@
       return;
     }
 
-    // Store references in order of their current position
-    const tabs = getVisibleTabs();
-    yankBuffer = tabs.filter(t => selectedTabs.has(t));
+    // Store references in order of their current position (only tabs, not folders)
+    const items = getVisibleItems();
+    yankBuffer = items.filter(t => selectedTabs.has(t) && !isFolder(t));
     const count = yankBuffer.length;
 
     // Clear selection visuals
@@ -6114,10 +6146,16 @@
       return;
     }
 
-    const tabs = getVisibleTabs();
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= tabs.length) return;
+    const items = getVisibleItems();
+    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
 
-    const anchorTab = tabs[highlightedTabIndex];
+    const anchorItem = items[highlightedTabIndex];
+    // Cannot paste onto a folder
+    if (isFolder(anchorItem)) {
+      log('Cannot paste onto a folder');
+      return;
+    }
+    const anchorTab = anchorItem;
 
     // Filter out any yanked tabs that have been closed since yanking
     yankBuffer = yankBuffer.filter(t => t && !t.closing && t.parentNode);
@@ -6206,10 +6244,13 @@
       log(`Cancelled, returned to original tab "${originalTab.label}"`);
     } else {
       // Fallback to index if the tab reference is gone
-      const tabs = getVisibleTabs();
-      if (originalTabIndex >= 0 && originalTabIndex < tabs.length) {
-        gBrowser.selectedTab = tabs[originalTabIndex];
-        log(`Cancelled, returned to original tab by index ${originalTabIndex}`);
+      const items = getVisibleItems();
+      if (originalTabIndex >= 0 && originalTabIndex < items.length) {
+        const fallback = items[originalTabIndex];
+        if (!isFolder(fallback)) {
+          gBrowser.selectedTab = fallback;
+        }
+        log(`Cancelled, returned to original item by index ${originalTabIndex}`);
       }
     }
 
@@ -6248,6 +6289,13 @@
     browseGTimeout = null;
     selectedTabs.clear();
     yankBuffer = [];
+
+    // Reset folder delete modal state
+    folderDeleteMode = false;
+    folderDeleteTarget = null;
+    if (folderDeleteModal) {
+      folderDeleteModal.classList.remove('active');
+    }
 
     clearTimeout(leapModeTimeout);
     document.documentElement.removeAttribute('data-zenleap-active');
@@ -6434,6 +6482,26 @@
       return;
     }
 
+    // Handle folder delete modal
+    if (folderDeleteMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      if (event.key === 'Escape') {
+        closeFolderDeleteModal();
+        return;
+      }
+      if (event.key === '1') {
+        deleteFolderAndContents(folderDeleteTarget);
+        return;
+      }
+      if (event.key === '2') {
+        deleteFolderKeepTabs(folderDeleteTarget);
+        return;
+      }
+      return; // Swallow all other keys while modal is open
+    }
+
     // Handle search mode input first
     if (searchMode) {
       if (handleSearchKeyDown(event)) {
@@ -6495,6 +6563,19 @@
       return;
     }
 
+    // Check for undo folder delete (Cmd+Shift+T)
+    if (matchCombo(event, S['keys.global.undoFolderDelete'])) {
+      const handled = undoLastFolderDelete();
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        return;
+      }
+      // If not handled, let browser's native Cmd+Shift+T proceed
+      return;
+    }
+
     // Check for split view focus switching (global combos, only when split is active)
     if (window.gZenViewSplitter?.splitViewActive) {
       if (matchCombo(event, S['keys.global.splitFocusLeft'])) {
@@ -6550,10 +6631,10 @@
 
       if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
         if (event.shiftKey) {
-          const tabs = getVisibleTabs();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
+          const items = getVisibleItems();
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
           moveHighlight('down');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
           updateHighlight();
           updateLeapOverlayState();
         } else {
@@ -6563,10 +6644,10 @@
       }
       if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt']) {
         if (event.shiftKey) {
-          const tabs = getVisibleTabs();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
+          const items = getVisibleItems();
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
           moveHighlight('up');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) selectedTabs.add(tabs[highlightedTabIndex]);
+          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
           updateHighlight();
           updateLeapOverlayState();
         } else {
@@ -6605,26 +6686,26 @@
         return;
       }
 
-      // G = move highlight to last tab
+      // G = move highlight to last item
       if (originalKey === S['keys.browse.lastTab']) {
-        const tabs = getVisibleTabs();
-        highlightedTabIndex = tabs.length - 1;
+        const items = getVisibleItems();
+        highlightedTabIndex = items.length - 1;
         updateHighlight();
         updateLeapOverlayState();
-        log(`Browse: jumped to last tab (index ${highlightedTabIndex})`);
+        log(`Browse: jumped to last item (index ${highlightedTabIndex})`);
         return;
       }
 
-      // g = pending gg (move highlight to first tab)
+      // g = pending gg (move highlight to first item)
       if (key === S['keys.browse.gMode'] && originalKey === S['keys.browse.gMode']) {
         if (browseGPending) {
-          // Second g pressed - move to first tab (or first unpinned if setting enabled)
+          // Second g pressed - move to first item (or first unpinned if setting enabled)
           clearTimeout(browseGTimeout);
           browseGPending = false;
           browseGTimeout = null;
           if (S['display.ggSkipPinned']) {
-            const tabs = getVisibleTabs();
-            const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+            const items = getVisibleItems();
+            const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
             highlightedTabIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
           } else {
             highlightedTabIndex = 0;
@@ -7061,6 +7142,108 @@
 
       tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] > .tab-stack > .tab-content {
         background-color: var(--zl-highlight-selected-15) !important;
+      }
+
+      /* Highlighted folder in browse mode */
+      zen-folder[data-zenleap-highlight="true"] {
+        outline: 2px solid var(--zl-highlight) !important;
+        outline-offset: -2px;
+        background-color: var(--zl-highlight-20) !important;
+        border-radius: 4px;
+      }
+
+      /* Selected folder in browse mode */
+      zen-folder[data-zenleap-selected="true"] {
+        outline: 2px solid var(--zl-selected) !important;
+        outline-offset: -2px;
+        background-color: var(--zl-selected-20) !important;
+        border-radius: 4px;
+      }
+
+      /* Folder delete modal */
+      #zenleap-folder-delete-modal {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 10001;
+      }
+
+      #zenleap-folder-delete-modal.active {
+        display: block;
+      }
+
+      .zenleap-folder-delete-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      .zenleap-folder-delete-container {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: var(--zen-themed-color-secondary, #1e1e1e);
+        border: 1px solid var(--zen-themed-color-border, #3c3c3c);
+        border-radius: 12px;
+        padding: 20px;
+        min-width: 360px;
+        max-width: 480px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      .zenleap-folder-delete-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--zen-themed-color-text, #e0e0e0);
+        margin-bottom: 16px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid var(--zen-themed-color-border, #3c3c3c);
+      }
+
+      .zenleap-folder-delete-option {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background-color 0.1s;
+      }
+
+      .zenleap-folder-delete-option:hover {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .zenleap-folder-delete-option kbd {
+        display: inline-block;
+        min-width: 28px;
+        padding: 2px 8px;
+        text-align: center;
+        background: var(--zen-themed-color-tertiary, #2d2d2d);
+        border: 1px solid var(--zen-themed-color-border, #555);
+        border-radius: 4px;
+        color: var(--zl-highlight, #61afef);
+        font-family: monospace;
+        font-size: 12px;
+        font-weight: bold;
+      }
+
+      .zenleap-folder-delete-option-text {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .zenleap-folder-delete-label {
+        color: var(--zen-themed-color-text, #e0e0e0);
+        font-size: 13px;
+      }
+
+      .zenleap-folder-delete-sublabel {
+        color: var(--zen-themed-color-text-muted, #888);
+        font-size: 11px;
+        margin-top: 2px;
       }
 
       /* Expanded sidebar mode */

@@ -8,7 +8,7 @@ set -e
 ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="$ZENLEAP_REPO/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="$ZENLEAP_REPO/chrome.css"
-FXAUTOCONFIG_URL="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
+FXAUTOCONFIG_URL="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip"
 
 # Find profile base
 PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
@@ -118,12 +118,12 @@ install_fxautoconfig() {
     curl -sL "$FXAUTOCONFIG_URL" -o "$TEMP_DIR/fxautoconfig.zip" || return 1
     unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR" || return 1
 
-    local extracted_dir=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "user-chrome-scripts*" | head -1)
+    local extracted_dir=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "fx-autoconfig*" | head -1)
     [ -z "$extracted_dir" ] && return 1
 
     # Install to Zen Resources (needs admin)
     if [ -d "$extracted_dir/program" ]; then
-        osascript -e "do shell script \"cp -r '$extracted_dir/program/'* '$ZEN_RESOURCES/'\" with administrator privileges" || return 1
+        osascript -e "do shell script \"mkdir -p '$ZEN_RESOURCES/defaults/pref' && cp '$extracted_dir/program/config.js' '$ZEN_RESOURCES/config.js' && cp '$extracted_dir/program/defaults/pref/config-prefs.js' '$ZEN_RESOURCES/defaults/pref/config-prefs.js'\" with administrator privileges" || return 1
     fi
 
     # Install to profile
@@ -185,6 +185,25 @@ uninstall_zenleap() {
     if [ -f "$chrome_dir/userChrome.css" ] && grep -q "ZenLeap Styles" "$chrome_dir/userChrome.css" 2>/dev/null; then
         perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$chrome_dir/userChrome.css"
     fi
+
+    return 0
+}
+
+# Uninstall fx-autoconfig
+uninstall_fxautoconfig() {
+    local profile_path="$1"
+
+    # Remove program-level files (requires admin)
+    local cmds=""
+    [ -f "$ZEN_RESOURCES/config.js" ] && cmds+="rm -f '$ZEN_RESOURCES/config.js'; "
+    [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ] && cmds+="rm -f '$ZEN_RESOURCES/defaults/pref/config-prefs.js'; "
+
+    if [ -n "$cmds" ]; then
+        osascript -e "do shell script \"$cmds\" with administrator privileges" || return 1
+    fi
+
+    # Remove profile-level utils directory (no admin needed)
+    [ -d "$profile_path/chrome/utils" ] && rm -rf "$profile_path/chrome/utils"
 
     return 0
 }
@@ -419,6 +438,16 @@ do_uninstall() {
 
     # Uninstall
     uninstall_zenleap "$selected_path"
+
+    # Offer to uninstall fx-autoconfig
+    if [ -f "$ZEN_RESOURCES/config.js" ] || [ -d "$selected_path/chrome/utils" ]; then
+        if ask_yes_no "Also remove fx-autoconfig?\n\nNote: Other userscripts may depend on it."; then
+            if ! uninstall_fxautoconfig "$selected_path"; then
+                show_error "Failed to remove fx-autoconfig.\n\nYou may need to remove it manually."
+            fi
+        fi
+    fi
+
     clear_cache
 
     # Success

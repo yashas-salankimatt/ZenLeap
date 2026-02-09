@@ -1,17 +1,24 @@
 #!/bin/bash
 # ZenLeap Installer/Uninstaller
-# Usage: ./install.sh [install|uninstall] [--remote]
+# Usage: ./install.sh [install|uninstall|check] [OPTIONS]
 #
 # Options:
-#   --remote    Download latest ZenLeap from GitHub instead of using local files
-#   --check     Check if installed version is outdated (returns 0 if up-to-date, 1 if outdated)
-#   --gui       Run in GUI mode (use osascript dialogs instead of terminal prompts)
+#   --remote                Download latest ZenLeap from GitHub instead of using local files
+#   --check                 Check if installed version is outdated (returns 0 if up-to-date, 1 if outdated)
+#   --gui                   Run in GUI mode (use osascript dialogs instead of terminal prompts)
+#   --profile <index>       Select profile by index (1-based), skip interactive prompt
+#   --yes, -y               Auto-confirm all prompts (non-interactive mode)
+#   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
 #
 # This script handles everything:
 # 1. Downloads and installs fx-autoconfig (if needed)
 # 2. Installs ZenLeap files
 # 3. Sets required preferences
 # 4. Clears startup cache
+#
+# Non-interactive examples:
+#   ./install.sh install --remote --profile 1 --yes
+#   ./install.sh uninstall --profile 1 --yes --remove-fxautoconfig
 
 set -e
 
@@ -22,9 +29,21 @@ YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'
 NC=$'\033[0m' # No Color
 
+# Pre-scan for non-interactive flags (needed before tty setup)
+_NON_INTERACTIVE=false
+for _arg in "$@"; do
+    case "$_arg" in
+        --yes|-y) _NON_INTERACTIVE=true ;;
+        --help|-h) _NON_INTERACTIVE=true ;;
+    esac
+done
+
 # Open /dev/tty for interactive input (needed when piped from curl)
 # This must happen early, before any functions try to read
-if [ -t 0 ]; then
+if [ "$_NON_INTERACTIVE" = true ]; then
+    # Non-interactive mode: no tty needed, set fd 3 to /dev/null
+    exec 3</dev/null
+elif [ -t 0 ]; then
     # stdin is a terminal, use it directly
     exec 3<&0
 else
@@ -33,7 +52,8 @@ else
         exec 3</dev/tty
     else
         echo "Error: No terminal available for interactive input"
-        echo "Please download and run the script directly instead:"
+        echo "Try using --yes (-y) and --profile <index> for non-interactive mode"
+        echo "Or download and run the script directly:"
         echo "  curl -sLO https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh"
         echo "  bash install.sh"
         exit 1
@@ -41,7 +61,7 @@ else
 fi
 
 # Configuration
-FXAUTOCONFIG_REPO="https://github.com/ArcticFoxShark/user-chrome-scripts/archive/refs/heads/main.zip"
+FXAUTOCONFIG_REPO="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip"
 ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
@@ -51,6 +71,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USE_REMOTE=false
 CHECK_ONLY=false
 GUI_MODE=false
+PROFILE_INDEX=""
+AUTO_YES=false
+REMOVE_FXAUTOCONFIG=false
 
 # Escape a string for safe use inside AppleScript double quotes
 escape_applescript() {
@@ -255,6 +278,14 @@ find_profile() {
     if [ ${#PROFILES[@]} -eq 1 ]; then
         PROFILE_DIR="${PROFILES[0]}"
         echo -e "${GREEN}✓${NC} Found profile: $(basename "$PROFILE_DIR")"
+    elif [ -n "$PROFILE_INDEX" ]; then
+        # Non-interactive: use specified profile index
+        if ! [[ "$PROFILE_INDEX" =~ ^[0-9]+$ ]] || [ "$PROFILE_INDEX" -lt 1 ] || [ "$PROFILE_INDEX" -gt ${#PROFILES[@]} ]; then
+            echo -e "${RED}Error: Invalid profile index $PROFILE_INDEX (valid range: 1-${#PROFILES[@]})${NC}"
+            exit 1
+        fi
+        PROFILE_DIR="${PROFILES[$((PROFILE_INDEX-1))]}"
+        echo -e "${GREEN}✓${NC} Selected profile (index $PROFILE_INDEX): $(basename "$PROFILE_DIR")"
     else
         # Multiple profiles - let user choose
         echo -e "${YELLOW}Multiple profiles found:${NC}"
@@ -287,10 +318,8 @@ find_profile() {
 # Check if Zen Browser is running
 check_zen_running() {
     if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
-        echo -e "${YELLOW}⚠ Zen Browser is running${NC}"
-        echo -n "Close Zen Browser to continue? (y/n): "
-        read -r response <&3
-        if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+        if [ "$AUTO_YES" = true ]; then
+            echo -e "${YELLOW}⚠ Zen Browser is running, closing it...${NC}"
             if [ "$OS" = "macos" ]; then
                 osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
             else
@@ -298,8 +327,20 @@ check_zen_running() {
             fi
             sleep 2
         else
-            echo -e "${YELLOW}Please close Zen Browser manually and run again${NC}"
-            exit 1
+            echo -e "${YELLOW}⚠ Zen Browser is running${NC}"
+            echo -n "Close Zen Browser to continue? (y/n): "
+            read -r response <&3
+            if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+                if [ "$OS" = "macos" ]; then
+                    osascript -e 'quit app "Zen"' 2>/dev/null || osascript -e 'quit app "Zen Browser"' 2>/dev/null || true
+                else
+                    pkill -x "zen" 2>/dev/null || true
+                fi
+                sleep 2
+            else
+                echo -e "${YELLOW}Please close Zen Browser manually and run again${NC}"
+                exit 1
+            fi
         fi
     fi
 }
@@ -334,7 +375,7 @@ install_fxautoconfig() {
     unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR"
 
     # Find the extracted directory
-    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "user-chrome-scripts*" | head -1)
+    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "fx-autoconfig*" | head -1)
 
     if [ -z "$EXTRACTED_DIR" ]; then
         echo -e "${RED}Error: Could not find extracted fx-autoconfig files${NC}"
@@ -344,7 +385,9 @@ install_fxautoconfig() {
     # Install to Zen Resources (requires admin)
     echo "  Installing to Zen Browser (may require admin password)..."
     if [ -d "$EXTRACTED_DIR/program" ]; then
-        sudo cp -r "$EXTRACTED_DIR/program/"* "$ZEN_RESOURCES/"
+        sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
+        sudo cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
+        sudo cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
     fi
 
     # Install to profile
@@ -461,8 +504,40 @@ uninstall_zenleap() {
         echo -e "${YELLOW}⚠${NC} ZenLeap was not installed in this profile"
     fi
 
-    echo ""
-    echo -e "${YELLOW}Note: fx-autoconfig was not removed (other scripts may depend on it)${NC}"
+}
+
+# Uninstall fx-autoconfig
+uninstall_fxautoconfig() {
+    echo -e "${BLUE}Uninstalling fx-autoconfig...${NC}"
+
+    local found_anything=false
+
+    # Remove program-level files (requires admin)
+    if [ -f "$ZEN_RESOURCES/config.js" ]; then
+        echo "  Removing config.js (may require admin password)..."
+        sudo rm -f "$ZEN_RESOURCES/config.js"
+        echo -e "${GREEN}✓${NC} Removed config.js"
+        found_anything=true
+    fi
+
+    if [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
+        sudo rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        echo -e "${GREEN}✓${NC} Removed config-prefs.js"
+        found_anything=true
+    fi
+
+    # Remove profile-level utils directory
+    if [ -d "$CHROME_DIR/utils" ]; then
+        rm -rf "$CHROME_DIR/utils"
+        echo -e "${GREEN}✓${NC} Removed chrome/utils/"
+        found_anything=true
+    fi
+
+    if [ "$found_anything" = true ]; then
+        echo -e "${GREEN}✓${NC} fx-autoconfig uninstalled"
+    else
+        echo -e "${YELLOW}⚠${NC} fx-autoconfig files not found"
+    fi
 }
 
 # Clear startup cache
@@ -515,14 +590,19 @@ do_install() {
     echo ""
     echo -e "${YELLOW}Please restart Zen Browser to activate ZenLeap${NC}"
 
-    # Offer to open Zen
-    echo -n "Open Zen Browser now? (y/n): "
-    read -r response <&3
-    if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-        if [ "$OS" = "macos" ]; then
-            open "$ZEN_APP"
-        else
-            zen &
+    if [ "$AUTO_YES" = true ]; then
+        # Non-interactive: skip opening Zen
+        :
+    else
+        # Offer to open Zen
+        echo -n "Open Zen Browser now? (y/n): "
+        read -r response <&3
+        if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+            if [ "$OS" = "macos" ]; then
+                open "$ZEN_APP"
+            else
+                zen &
+            fi
         fi
     fi
 }
@@ -540,6 +620,25 @@ do_uninstall() {
 
     check_zen_running
     uninstall_zenleap
+
+    # Offer to uninstall fx-autoconfig
+    if [ -f "$ZEN_RESOURCES/config.js" ] || [ -d "$CHROME_DIR/utils" ]; then
+        if [ "$AUTO_YES" = true ]; then
+            if [ "$REMOVE_FXAUTOCONFIG" = true ]; then
+                uninstall_fxautoconfig
+            else
+                echo -e "${YELLOW}Skipping fx-autoconfig removal (use --remove-fxautoconfig to include)${NC}"
+            fi
+        else
+            echo ""
+            echo -n "Also remove fx-autoconfig? Other userscripts may depend on it. (y/n): "
+            read -r response <&3
+            if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+                uninstall_fxautoconfig
+            fi
+        fi
+    fi
+
     clear_cache
 
     echo ""
@@ -547,14 +646,19 @@ do_uninstall() {
 
     # Offer to reopen Zen if it was running
     if [ "$ZEN_WAS_RUNNING" = true ]; then
-        echo ""
-        echo -n "Reopen Zen Browser? (y/n): "
-        read -r response <&3
-        if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-            if [ "$OS" = "macos" ]; then
-                open "$ZEN_APP"
-            else
-                zen &
+        if [ "$AUTO_YES" = true ]; then
+            # Non-interactive: skip reopening Zen
+            :
+        else
+            echo ""
+            echo -n "Reopen Zen Browser? (y/n): "
+            read -r response <&3
+            if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+                if [ "$OS" = "macos" ]; then
+                    open "$ZEN_APP"
+                else
+                    zen &
+                fi
             fi
         fi
     else
@@ -591,8 +695,8 @@ do_check() {
 
 # Parse arguments
 ACTION="install"
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         install)
             ACTION="install"
             ;;
@@ -611,8 +715,22 @@ for arg in "$@"; do
         --gui)
             GUI_MODE=true
             ;;
+        --profile)
+            shift
+            if [ -z "$1" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --profile requires an index argument${NC}"
+                exit 1
+            fi
+            PROFILE_INDEX="$1"
+            ;;
+        --yes|-y)
+            AUTO_YES=true
+            ;;
+        --remove-fxautoconfig)
+            REMOVE_FXAUTOCONFIG=true
+            ;;
         --help|-h)
-            echo "Usage: $0 [install|uninstall|check] [--remote] [--gui]"
+            echo "Usage: $0 [install|uninstall|check] [OPTIONS]"
             echo ""
             echo "Actions:"
             echo "  install     Install ZenLeap (default)"
@@ -620,11 +738,24 @@ for arg in "$@"; do
             echo "  check       Check if installed version is outdated"
             echo ""
             echo "Options:"
-            echo "  --remote    Download latest from GitHub instead of local files"
-            echo "  --gui       Use GUI dialogs (macOS only)"
+            echo "  --remote                Download latest from GitHub instead of local files"
+            echo "  --gui                   Use GUI dialogs (macOS only)"
+            echo "  --profile <index>       Select profile by index (1-based), skip prompt"
+            echo "  --yes, -y               Auto-confirm all prompts (non-interactive mode)"
+            echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
+            echo ""
+            echo "Non-interactive examples:"
+            echo "  $0 install --remote --profile 1 --yes"
+            echo "  $0 uninstall --profile 1 --yes --remove-fxautoconfig"
             exit 0
             ;;
+        *)
+            echo -e "${RED}Unknown argument: $1${NC}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
     esac
+    shift
 done
 
 # Show banner (unless in check mode or GUI mode)
