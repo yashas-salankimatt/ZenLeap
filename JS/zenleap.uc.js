@@ -88,6 +88,7 @@
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
+    'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
     'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
@@ -285,6 +286,7 @@
   let commandSubFlow = null;      // current sub-flow: { type, data, label }
   let commandSubFlowStack = [];   // breadcrumb stack for nested sub-flows
   let commandMatchedTabs = [];    // tabs matched during select-matching-tabs flow
+  let dedupTabsToClose = [];      // tabs identified as duplicates to be closed in dedup-preview
   let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
   let commandEnteredFromSearch = false; // true if entered via '>' from search, false if via Ctrl+Shift+/
 
@@ -1398,9 +1400,7 @@
 
       // --- Tab Selection (Multi-Step) ---
       { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch'], subFlow: 'tab-search' },
-      { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique'], command: () => {
-        deduplicateTabs();
-      }},
+      { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique'], subFlow: 'dedup-preview' },
 
       // --- Tab Movement ---
       { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning'], command: () => {
@@ -1792,6 +1792,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = getSubFlowPlaceholder(type);
+      searchInput.readOnly = (type === 'dedup-preview');
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -1802,6 +1803,13 @@
   function exitSubFlow() {
     searchSelectedIndex = 0;
     const currentType = commandSubFlow?.type;
+
+    // Clean up dedup-preview state when leaving it
+    if (currentType === 'dedup-preview') {
+      hidePreviewPanel();
+      dedupTabsToClose = [];
+      if (searchInput) searchInput.readOnly = false;
+    }
 
     if (commandSubFlowStack.length === 0) {
       // Back to command list root
@@ -1847,6 +1855,7 @@
       case 'workspace-picker': return 'Choose a workspace...';
       case 'folder-picker': return 'Choose a folder...';
       case 'split-tab-picker': return 'Search for a tab to split with...';
+      case 'dedup-preview': return 'Duplicates to close — Enter to confirm';
       case 'folder-name-input': return 'Enter folder name...';
       default: return 'Type a command...';
     }
@@ -1888,6 +1897,8 @@
         return getFolderPickerResults(query);
       case 'split-tab-picker':
         return getSplitTabPickerResults(query);
+      case 'dedup-preview':
+        return getDedupPreviewResults();
       case 'folder-name-input':
         return getFolderNameInputResults(query);
       default:
@@ -2003,6 +2014,63 @@
     }));
   }
 
+  function getDedupPreviewResults() {
+    // Get tabs based on current cross-workspace setting
+    let allTabs;
+    if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
+      try {
+        const stored = gZenWorkspaces.allStoredTabs;
+        allTabs = stored && stored.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
+      } catch (e) {
+        allTabs = Array.from(gBrowser.tabs);
+      }
+    } else {
+      allTabs = getVisibleTabs();
+    }
+
+    // Filter to valid, non-essential, non-pinned tabs (same logic as deduplicateTabs)
+    const validTabs = allTabs.filter(t =>
+      t && !t.closing && t.parentNode &&
+      !t.pinned &&
+      !t.hasAttribute('zen-essential') &&
+      !t.hasAttribute('zen-glance-tab') &&
+      !t.hasAttribute('zen-empty-tab')
+    );
+
+    // Group by URL
+    const urlGroups = new Map();
+    for (const tab of validTabs) {
+      const url = tab.linkedBrowser?.currentURI?.spec;
+      if (!url || url === 'about:blank' || url === 'about:newtab') continue;
+      if (!urlGroups.has(url)) urlGroups.set(url, []);
+      urlGroups.get(url).push(tab);
+    }
+
+    // For each group with >1 tab, keep the most recently accessed, collect the rest
+    const tabsToClose = [];
+    for (const [url, tabs] of urlGroups) {
+      if (tabs.length < 2) continue;
+      tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+      for (let i = 1; i < tabs.length; i++) {
+        tabsToClose.push(tabs[i]);
+      }
+    }
+
+    dedupTabsToClose = tabsToClose;
+
+    return tabsToClose.map(tab => ({
+      key: `dedup-tab:${tab._tPos}`,
+      label: tab.label || 'Untitled',
+      sublabel: tab.linkedBrowser?.currentURI?.spec || '',
+      icon: '🧹',
+      isTab: true,
+      tab: tab,
+      titleIndices: [],
+      urlIndices: [],
+      workspaceName: getTabWorkspaceName(tab),
+    }));
+  }
+
   // Handle sub-flow selection (Enter on a result)
   function handleSubFlowSelect(result) {
     if (!commandSubFlow) return;
@@ -2052,6 +2120,19 @@
 
       case 'split-tab-picker':
         splitWithTab(result.tab);
+        break;
+
+      case 'dedup-preview':
+        if (dedupTabsToClose.length > 0) {
+          const count = dedupTabsToClose.length;
+          for (const t of dedupTabsToClose) {
+            try { gBrowser.removeTab(t); } catch (e) { log(`Failed to close duplicate tab: ${e}`); }
+          }
+          log(`Deduplicated: closed ${count} duplicate tab(s)`);
+          dedupTabsToClose = [];
+        }
+        hidePreviewPanel();
+        exitSearchMode();
         break;
     }
   }
@@ -2515,6 +2596,16 @@
       html += `<div class="zenleap-command-count">${commandMatchedTabs.length} tab${commandMatchedTabs.length !== 1 ? 's' : ''} match${commandMatchedTabs.length === 1 ? 'es' : ''} — press Enter to choose action</div>`;
     }
 
+    // Show count header for dedup-preview sub-flow
+    if (commandSubFlow?.type === 'dedup-preview') {
+      const count = dedupTabsToClose.length;
+      if (count === 0) {
+        html += `<div class="zenleap-command-count">No duplicate tabs found</div>`;
+      } else {
+        html += `<div class="zenleap-command-count">${count} duplicate${count !== 1 ? 's' : ''} will be closed — press Enter to confirm</div>`;
+      }
+    }
+
     results.forEach((cmd, idx) => {
       const isSelected = idx === searchSelectedIndex;
       const label = idx < 9 ? idx + 1 : '';
@@ -2576,6 +2667,15 @@
     // Scroll selected into view
     const selectedEl = searchResultsList.querySelector('.zenleap-command-result.selected');
     if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+    // Show preview panel for dedup-preview sub-flow
+    if (commandSubFlow?.type === 'dedup-preview' && commandResults.length > 0) {
+      const selectedResult = commandResults[searchSelectedIndex];
+      if (selectedResult?.tab) {
+        showPreviewForTab(selectedResult.tab, { force: true });
+        positionPreviewPanelForModal();
+      }
+    }
   }
 
   // Handle selecting a command result (Enter or click)
@@ -2630,6 +2730,7 @@
     commandSubFlow = null;
     commandSubFlowStack = [];
     commandMatchedTabs = [];
+    dedupTabsToClose = [];
     commandResults = [];
     commandEnteredFromSearch = false;
     searchSelectedIndex = 0;
@@ -2640,6 +2741,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = 'Search tabs...';
+      searchInput.readOnly = false;
     }
 
     // Restore search icon
@@ -2661,8 +2763,32 @@
   function updateSearchHintBar() {
     if (!searchHintBar) return;
 
+    const vimEnabled = S['display.vimModeInBars'];
+
     if (commandMode) {
-      if (searchVimMode === 'normal') {
+      if (commandSubFlow?.type === 'dedup-preview') {
+        const scopeLabel = S['display.searchAllWorkspaces'] ? 'this workspace' : 'all workspaces';
+        if (vimEnabled && searchVimMode === 'normal') {
+          searchHintBar.innerHTML = `
+            <span><kbd>j/k</kbd> navigate</span>
+            <span><kbd>1-9</kbd> jump</span>
+            <span><kbd>o</kbd> go to tab</span>
+            <span><kbd>Tab</kbd> ${scopeLabel}</span>
+            <span><kbd>Enter</kbd> confirm delete</span>
+            <span><kbd>Esc</kbd> cancel</span>
+          `;
+        } else {
+          searchHintBar.innerHTML = `
+            <span><kbd>↑↓</kbd> navigate</span>
+            <span><kbd>Ctrl+o</kbd> go to tab</span>
+            <span><kbd>Tab</kbd> ${scopeLabel}</span>
+            <span><kbd>Enter</kbd> confirm delete</span>
+            <span><kbd>Esc</kbd> cancel</span>
+          `;
+        }
+        return;
+      }
+      if (vimEnabled && searchVimMode === 'normal') {
         searchHintBar.innerHTML = `
           <span><kbd>j/k</kbd> navigate</span>
           <span><kbd>1-9</kbd> jump</span>
@@ -2674,13 +2800,13 @@
         searchHintBar.innerHTML = `
           <span><kbd>↑↓</kbd> navigate</span>
           <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
-          <span><kbd>Esc</kbd> normal mode</span>
+          <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : (commandSubFlow ? 'back' : 'exit')}</span>
         `;
       }
       return;
     }
 
-    if (searchVimMode === 'normal') {
+    if (vimEnabled && searchVimMode === 'normal') {
       searchHintBar.innerHTML = `
         <span><kbd>j/k</kbd> navigate</span>
         <span><kbd>Enter</kbd> open</span>
@@ -2696,7 +2822,7 @@
         <span><kbd>Tab</kbd> all workspaces</span>
         <span><kbd>Ctrl+x</kbd> close tab</span>
         <span><kbd>></kbd> commands</span>
-        <span><kbd>Esc</kbd> normal mode</span>
+        <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : 'close'}</span>
       `;
     }
   }
@@ -3687,6 +3813,7 @@
     // Use updateSearchVimIndicator to properly set up input/display visibility
     // This ensures input is shown and display is hidden for insert mode
     updateSearchVimIndicator();
+    updateWsToggleVisibility();
 
     log(`Entered search mode${asCommand ? ' (command)' : ''}`);
   }
@@ -3707,8 +3834,11 @@
     commandSubFlow = null;
     commandSubFlowStack = [];
     commandMatchedTabs = [];
+    dedupTabsToClose = [];
     commandResults = [];
     commandEnteredFromSearch = false;
+    if (searchInput) searchInput.readOnly = false;
+    hidePreviewPanel();
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -3764,7 +3894,7 @@
     const wsBtn = document.getElementById('zenleap-search-ws-toggle');
     if (!wsBtn) return;
     // Show only in tab search (not command mode) or tab-search/split-tab-picker sub-flows
-    const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker');
+    const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview');
     const shouldShow = !commandMode || isTabSearchSubFlow;
     wsBtn.style.display = shouldShow ? '' : 'none';
   }
@@ -3841,6 +3971,19 @@
   function updateSearchVimIndicator() {
     if (!searchVimIndicator) return;
 
+    // When vim mode is disabled, hide indicator and always show input
+    if (!S['display.vimModeInBars']) {
+      searchVimIndicator.style.display = 'none';
+      if (searchInputDisplay) searchInputDisplay.style.display = 'none';
+      if (searchInput) {
+        searchInput.style.display = '';
+        searchInput.focus();
+      }
+      updateSearchHintBar();
+      return;
+    }
+    searchVimIndicator.style.display = '';
+
     if (searchVimMode === 'insert') {
       searchVimIndicator.textContent = commandMode ? 'COMMAND I' : 'INSERT';
       searchVimIndicator.classList.remove('normal');
@@ -3915,6 +4058,22 @@
         return true;
       }
 
+      // In dedup-preview: 'o' (normal) or Ctrl+o (insert) to go to the selected tab for inspection
+      if (commandSubFlow?.type === 'dedup-preview') {
+        if ((searchVimMode === 'normal' && key === 'o') || (event.ctrlKey && key === 'o')) {
+          event.preventDefault();
+          event.stopPropagation();
+          const selected = commandResults[searchSelectedIndex];
+          if (selected?.tab) {
+            hidePreviewPanel();
+            exitSearchMode();
+            gBrowser.selectedTab = selected.tab;
+            log(`Dedup preview: switched to tab "${selected.tab.label}" for inspection`);
+          }
+          return true;
+        }
+      }
+
       // Enter to execute/select (both modes)
       if (key === 'Enter') {
         event.preventDefault();
@@ -3927,7 +4086,7 @@
       if (key === 'Tab') {
         event.preventDefault();
         event.stopPropagation();
-        if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker')) {
+        if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview')) {
           toggleCrossWorkspaceSearch();
         } else {
           handleCommandSelect();
@@ -3939,33 +4098,28 @@
       if (key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        if (searchVimMode === 'insert') {
+        if (!S['display.vimModeInBars'] || searchVimMode !== 'insert') {
+          // Vim disabled or already in normal mode: go back or exit
+          if (commandSubFlow) {
+            exitSubFlow();
+            searchVimMode = 'insert';
+            updateSearchVimIndicator();
+          } else if (commandEnteredFromSearch) {
+            exitCommandMode();
+          } else {
+            exitSearchMode();
+          }
+        } else {
           // Switch to normal mode
           searchCursorPos = searchInput?.selectionStart || 0;
           searchVimMode = 'normal';
           updateSearchVimIndicator();
-        } else {
-          // In normal mode: go back or exit
-          if (commandSubFlow) {
-            exitSubFlow();
-            // Re-enter insert mode for the previous sub-flow
-            searchVimMode = 'insert';
-            updateSearchVimIndicator();
-          } else {
-            // If entered from search (via '>'), go back to search mode
-            // If entered directly (Ctrl+Shift+/), exit entirely
-            if (commandEnteredFromSearch) {
-              exitCommandMode();
-            } else {
-              exitSearchMode();
-            }
-          }
         }
         return true;
       }
 
       // ---- COMMAND NORMAL MODE ----
-      if (searchVimMode === 'normal') {
+      if (S['display.vimModeInBars'] && searchVimMode === 'normal') {
         event.preventDefault();
         event.stopPropagation();
 
@@ -4036,21 +4190,21 @@
       event.preventDefault();
       event.stopPropagation();
 
-      if (searchVimMode === 'insert') {
+      if (!S['display.vimModeInBars'] || searchVimMode === 'normal') {
+        // Vim disabled or already in normal mode: exit search
+        exitSearchMode();
+      } else {
         // Switch to normal mode
         // Save cursor position before blurring
         searchCursorPos = searchInput.selectionStart || 0;
         searchVimMode = 'normal';
         updateSearchVimIndicator(); // This will blur the input
-      } else {
-        // Exit search mode
-        exitSearchMode();
       }
       return true;
     }
 
     // Vim normal mode handling
-    if (searchVimMode === 'normal') {
+    if (S['display.vimModeInBars'] && searchVimMode === 'normal') {
       event.preventDefault();
       event.stopPropagation();
 
@@ -4696,7 +4850,7 @@
     style.textContent = `
       #zenleap-preview-panel {
         position: fixed;
-        z-index: 10001;
+        z-index: 100003;
         width: 320px;
         background: rgba(30, 30, 30, 0.95);
         border: 1px solid rgba(255, 255, 255, 0.1);
@@ -4725,6 +4879,7 @@
         width: 100%;
         height: 100%;
         object-fit: cover;
+        object-position: top;
         display: none;
       }
       #zenleap-preview-placeholder {
@@ -4770,8 +4925,8 @@
     log('Preview panel created');
   }
 
-  function showPreviewForTab(tab) {
-    if (!S['display.browsePreview']) return;
+  function showPreviewForTab(tab, { force = false } = {}) {
+    if (!force && !S['display.browsePreview']) return;
     if (!previewPanel) createPreviewPanel();
 
     // Clean expired cache entries
@@ -4826,6 +4981,44 @@
     captureTabThumbnail(tab, captureId);
   }
 
+  // Get scroll position from a tab's content process
+  function getTabScrollPosition(browser) {
+    // Method 1: direct contentWindow access
+    try {
+      const win = browser.contentWindow;
+      if (win && typeof win.scrollY === 'number') {
+        return Promise.resolve({ x: win.scrollX || 0, y: win.scrollY || 0 });
+      }
+    } catch (e) {}
+    // Method 2: unwrapped access (bypass Xray wrappers)
+    try {
+      const win = browser.contentWindow?.wrappedJSObject;
+      if (win && typeof win.scrollY === 'number') {
+        return Promise.resolve({ x: win.scrollX || 0, y: win.scrollY || 0 });
+      }
+    } catch (e) {}
+    // Method 3: frame script injection (Fission-compatible, queries content process directly)
+    try {
+      return new Promise((resolve) => {
+        const mm = browser.messageManager;
+        if (!mm) { resolve({ x: 0, y: 0 }); return; }
+        const msgId = 'ZenLeap:ScrollPos:' + Date.now() + Math.random();
+        const timer = setTimeout(() => {
+          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          resolve({ x: 0, y: 0 });
+        }, 300);
+        function handler(msg) {
+          clearTimeout(timer);
+          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          resolve(msg.data || { x: 0, y: 0 });
+        }
+        mm.addMessageListener(msgId, handler);
+        mm.loadFrameScript(`data:,sendAsyncMessage('${msgId}', {x: content.scrollX || 0, y: content.scrollY || 0})`, false);
+      });
+    } catch (e) {}
+    return Promise.resolve({ x: 0, y: 0 });
+  }
+
   async function captureTabThumbnail(tab, captureId) {
     try {
       const browser = tab.linkedBrowser;
@@ -4839,7 +5032,9 @@
 
       const w = browser.clientWidth || 1280;
       const h = browser.clientHeight || 720;
-      const rect = new DOMRect(0, 0, w, h);
+      // Get the tab's scroll position to capture what the user was actually looking at
+      const scroll = await getTabScrollPosition(browser);
+      const rect = new DOMRect(scroll.x, scroll.y, w, h);
       const scale = 320 / w;
       const imageBitmap = await browser.browsingContext.currentWindowGlobal
         .drawSnapshot(rect, scale, 'white');
@@ -4905,6 +5100,44 @@
     const viewportWidth = window.innerWidth;
     topPos = Math.max(8, Math.min(topPos, viewportHeight - panelHeight - 8));
     leftPos = Math.min(leftPos, viewportWidth - 340);
+
+    previewPanel.style.left = `${leftPos}px`;
+    previewPanel.style.top = `${topPos}px`;
+  }
+
+  function positionPreviewPanelForModal() {
+    if (!previewPanel) return;
+
+    const container = document.getElementById('zenleap-search-container');
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const selectedEl = searchResultsList?.querySelector('.zenleap-command-result.selected');
+
+    // Position to the right of the search container
+    let leftPos = containerRect.right + 12;
+
+    // Vertically: align with the selected result row, or center on container
+    const panelHeight = 250;
+    let topPos;
+    if (selectedEl) {
+      const selectedRect = selectedEl.getBoundingClientRect();
+      topPos = selectedRect.top + (selectedRect.height / 2) - (panelHeight / 2);
+    } else {
+      topPos = containerRect.top + 50;
+    }
+
+    // Clamp to viewport
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+    topPos = Math.max(8, Math.min(topPos, viewportHeight - panelHeight - 8));
+    leftPos = Math.min(leftPos, viewportWidth - 340);
+
+    // If it would go off the right edge, place on the left
+    if (leftPos + 320 > viewportWidth) {
+      leftPos = containerRect.left - 332;
+      if (leftPos < 8) leftPos = 8;
+    }
 
     previewPanel.style.left = `${leftPos}px`;
     previewPanel.style.top = `${topPos}px`;
