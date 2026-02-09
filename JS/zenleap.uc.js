@@ -6381,6 +6381,17 @@
 
   // Yank selected tabs into buffer
   function yankSelectedTabs() {
+    // If no tabs explicitly selected, yank the highlighted tab as a single selection
+    if (selectedTabs.size === 0) {
+      const items = getVisibleItems();
+      if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+        const highlightedItem = items[highlightedTabIndex];
+        if (!isFolder(highlightedItem)) {
+          selectedTabs.add(highlightedItem);
+        }
+      }
+    }
+
     if (selectedTabs.size === 0) {
       log('No tabs selected to yank');
       return;
