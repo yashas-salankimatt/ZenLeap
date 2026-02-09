@@ -2420,13 +2420,13 @@
     setTimeout(() => {
       enterLeapMode();
       // Enter browse mode at the first matched tab
-      const visibleTabs = getVisibleTabs();
-      const firstMatchIdx = tabs.length > 0 ? visibleTabs.indexOf(tabs[0]) : -1;
+      const visibleItems = getVisibleItems();
+      const firstMatchIdx = tabs.length > 0 ? visibleItems.indexOf(tabs[0]) : -1;
 
       browseMode = true;
       browseDirection = 'down';
       const currentTab = gBrowser.selectedTab;
-      const currentIdx = visibleTabs.indexOf(currentTab);
+      const currentIdx = visibleItems.indexOf(currentTab);
       originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
       originalTab = currentTab;
       highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
@@ -2846,12 +2846,12 @@
         timestamp: Date.now(),
       });
 
-      // Use gBrowser.removeTabGroup with isUserTriggered so SessionStore tracks it
-      // This enables native Cmd+Shift+T undo
-      if (typeof gBrowser.removeTabGroup === 'function') {
-        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
-      } else if (typeof targetFolder.delete === 'function') {
+      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first,
+      // matching the command bar's deleteFolder() behavior
+      if (typeof targetFolder.delete === 'function') {
         targetFolder.delete();
+      } else if (typeof gBrowser.removeTabGroup === 'function') {
+        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
       }
 
       log(`Deleted folder and contents: ${name} (${tabs.length} tabs)`);
@@ -2882,8 +2882,14 @@
       if (typeof targetFolder.unpackTabs === 'function') {
         targetFolder.unpackTabs();
       } else {
-        // Fallback: delete folder which may also remove tabs
-        if (typeof targetFolder.delete === 'function') {
+        // Fallback: manually ungroup each tab, then delete the empty folder
+        for (const tab of tabs) {
+          try { gBrowser.ungroupTab(tab); } catch (e) { /* tab may already be ungrouped */ }
+        }
+        // Now delete the empty folder shell
+        if (typeof gBrowser.removeTabGroup === 'function') {
+          gBrowser.removeTabGroup(targetFolder, { isUserTriggered: false });
+        } else if (typeof targetFolder.delete === 'function') {
           targetFolder.delete();
         }
       }
@@ -5228,7 +5234,13 @@
 
   // Get visible tabs AND folders in DOM order (for browse mode navigation)
   function getVisibleItems() {
-    const tabs = getVisibleTabs();
+    const tabs = getVisibleTabs().filter(tab => {
+      // Exclude tabs inside collapsed folders — Zen hides the container,
+      // not individual tabs, so tab.hidden stays false
+      const folder = tab.group;
+      if (folder && folder.isZenFolder && folder.collapsed) return false;
+      return true;
+    });
     const folders = Array.from(
       gBrowser.tabContainer.querySelectorAll('zen-folder')
     ).filter(folder => {
