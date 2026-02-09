@@ -2402,19 +2402,19 @@
         switch (direction) {
           case 'left':
             isInDirection = dx < -0.1;
-            distance = Math.abs(dx) + Math.abs(dy) * 0.5;
+            distance = Math.abs(dx) + Math.abs(dy) * 2;
             break;
           case 'right':
             isInDirection = dx > 0.1;
-            distance = Math.abs(dx) + Math.abs(dy) * 0.5;
+            distance = Math.abs(dx) + Math.abs(dy) * 2;
             break;
           case 'up':
             isInDirection = dy < -0.1;
-            distance = Math.abs(dy) + Math.abs(dx) * 0.5;
+            distance = Math.abs(dy) + Math.abs(dx) * 2;
             break;
           case 'down':
             isInDirection = dy > 0.1;
-            distance = Math.abs(dy) + Math.abs(dx) * 0.5;
+            distance = Math.abs(dy) + Math.abs(dx) * 2;
             break;
         }
 
