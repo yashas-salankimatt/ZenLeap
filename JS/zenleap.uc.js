@@ -22,6 +22,10 @@
     'keys.global.search':          { default: { key: '/', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Tab Search', description: 'Open tab search', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.commandPalette':  { default: { key: '?', ctrl: true, shift: true, alt: false, meta: false }, type: 'combo', label: 'Command Palette', description: 'Open command palette directly (Ctrl+Shift+/)', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.quickMark':       { default: { key: "'", ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Quick Jump to Mark', description: 'Jump to mark without leap mode', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusLeft':  { default: { key: 'h', code: 'KeyH', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Left',  description: 'Focus split pane to the left',  category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusDown':  { default: { key: 'j', code: 'KeyJ', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Down',  description: 'Focus split pane below',         category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Up',    description: 'Focus split pane above',         category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Right', description: 'Focus split pane to the right', category: 'Keybindings', group: 'Global Triggers' },
 
     // --- Keybindings: Leap Mode ---
     'keys.leap.browseDown':     { default: 'j', type: 'key', label: 'Browse Down', description: 'Enter browse mode downward', category: 'Keybindings', group: 'Leap Mode' },
@@ -169,7 +173,9 @@
   // Helper: check if a keyboard event matches a combo-type setting
   function matchCombo(event, combo) {
     if (!combo || typeof combo !== 'object') return false;
-    return event.key === combo.key &&
+    const keyMatch = event.key === combo.key ||
+      (combo.code && event.code === combo.code);
+    return keyMatch &&
       !!event.ctrlKey === !!combo.ctrl &&
       !!event.shiftKey === !!combo.shift &&
       !!event.altKey === !!combo.alt &&
@@ -2357,6 +2363,78 @@
     exitSearchMode();
   }
 
+  // Switch focus to the split pane in the given direction
+  function splitFocusInDirection(direction) {
+    try {
+      const splitter = window.gZenViewSplitter;
+      if (!splitter?.splitViewActive) return;
+
+      const viewData = splitter._data[splitter.currentView];
+      if (!viewData?.tabs || viewData.tabs.length < 2) return;
+
+      const currentTab = gBrowser.selectedTab;
+      const currentNode = splitter.getSplitNodeFromTab(currentTab);
+      if (!currentNode?.positionToRoot) return;
+
+      const cur = currentNode.positionToRoot;
+      const curCenterX = (cur.left + (100 - cur.right)) / 2;
+      const curCenterY = (cur.top + (100 - cur.bottom)) / 2;
+
+      let bestTab = null;
+      let bestDistance = Infinity;
+
+      for (const tab of viewData.tabs) {
+        if (tab === currentTab) continue;
+
+        const node = splitter.getSplitNodeFromTab(tab);
+        if (!node?.positionToRoot) continue;
+
+        const pos = node.positionToRoot;
+        const centerX = (pos.left + (100 - pos.right)) / 2;
+        const centerY = (pos.top + (100 - pos.bottom)) / 2;
+
+        const dx = centerX - curCenterX;
+        const dy = centerY - curCenterY;
+
+        let isInDirection = false;
+        let distance = 0;
+
+        switch (direction) {
+          case 'left':
+            isInDirection = dx < -0.1;
+            distance = Math.abs(dx) + Math.abs(dy) * 0.5;
+            break;
+          case 'right':
+            isInDirection = dx > 0.1;
+            distance = Math.abs(dx) + Math.abs(dy) * 0.5;
+            break;
+          case 'up':
+            isInDirection = dy < -0.1;
+            distance = Math.abs(dy) + Math.abs(dx) * 0.5;
+            break;
+          case 'down':
+            isInDirection = dy > 0.1;
+            distance = Math.abs(dy) + Math.abs(dx) * 0.5;
+            break;
+        }
+
+        if (isInDirection && distance < bestDistance) {
+          bestDistance = distance;
+          bestTab = tab;
+        }
+      }
+
+      if (bestTab) {
+        gBrowser.selectedTab = bestTab;
+        log(`Split focus: moved ${direction} to tab "${bestTab.label}"`);
+      } else {
+        log(`Split focus: no pane found ${direction} of current`);
+      }
+    } catch (e) {
+      log(`Split focus failed: ${e}`);
+    }
+  }
+
   // Deduplicate tabs: find tabs with same URL, keep most recent, close the rest
   function deduplicateTabs() {
     // Get ALL tabs across all workspaces
@@ -2876,6 +2954,17 @@
             <div class="zenleap-help-item"><kbd>Enter</kbd> or <kbd>Tab</kbd><span>Execute command</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump + execute</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Back / close</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>&#9638; Split View</h2>
+          <p class="zenleap-help-trigger">When split view is active (works globally)</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>h</kbd><span>Focus pane to the left</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>j</kbd><span>Focus pane below</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>k</kbd><span>Focus pane above</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>l</kbd><span>Focus pane to the right</span></div>
           </div>
         </div>
       </div>
@@ -3627,6 +3716,7 @@
       if (schema.type === 'combo') {
         S[settingId] = {
           key: event.key,
+          code: event.code,
           ctrl: event.ctrlKey,
           shift: event.shiftKey,
           alt: event.altKey,
@@ -5967,6 +6057,34 @@
         log('Quick goto mark mode via Ctrl+\'');
       }
       return;
+    }
+
+    // Check for split view focus switching (global combos, only when split is active)
+    if (window.gZenViewSplitter?.splitViewActive) {
+      if (matchCombo(event, S['keys.global.splitFocusLeft'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        splitFocusInDirection('left');
+        return;
+      }
+      if (matchCombo(event, S['keys.global.splitFocusDown'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        splitFocusInDirection('down');
+        return;
+      }
+      if (matchCombo(event, S['keys.global.splitFocusUp'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        splitFocusInDirection('up');
+        return;
+      }
+      if (matchCombo(event, S['keys.global.splitFocusRight'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        splitFocusInDirection('right');
+        return;
+      }
     }
 
     // Handle keys when in leap mode

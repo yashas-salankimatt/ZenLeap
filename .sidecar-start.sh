@@ -9,9 +9,9 @@ if ! command -v node &>/dev/null; then
 fi
 
 claude --dangerously-skip-permissions "$(cat <<'SIDECAR_PROMPT_EOF'
-Task: Add option to turn off vim mode in search and command bar
+Task: Add focus switching between split windows with alt and then hjkl
 
-In the settings window, add an option to turn off vim mode in the search bar and command bars so that we only have to press escape once to leave each bar and there is no weirdness with insert and normal mode for non-vim users.
+When we are in split windows, we want to be able to easily switch focus between the windows in the split mode with our keyboard so that we can then use vimium to navigate quickly. Don't build any vimium features- we will use the vimium extension. I just want to be able to switch focus between the tabs in the split view properly. Inspect the code from zenleap_scratch/zen-desktop folder to find the source code for zen if you need info on how things work. Make this be configurable in settings
 SIDECAR_PROMPT_EOF
 )"
-rm -f "/Users/yashas/Documents/scratch/zenleap_scratch/ZenLeap-vim-mode/.sidecar-start.sh"
+rm -f "/Users/yashas/Documents/scratch/zenleap_scratch/ZenLeap-zenleap-workspace-focus/.sidecar-start.sh"
