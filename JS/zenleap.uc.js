@@ -294,6 +294,9 @@
   let dedupTabsToClose = [];      // tabs identified as duplicates to be closed in dedup-preview
   let commandRecency = new Map(); // key -> timestamp of last execution (for recency ranking)
   let commandEnteredFromSearch = false; // true if entered via '>' from search, false if via Ctrl+Shift+/
+  let browseCommandMode = false;        // true when command bar was opened from browse mode
+  let browseCommandTabs = [];           // tabs to operate on (selected tabs from browse mode, or highlighted tab)
+  let savedBrowseState = null;          // saved browse state to restore on cancel/return
 
   // Folder delete modal state (browse mode)
   let folderDeleteMode = false;
@@ -1654,7 +1657,37 @@
 
   // Generate dynamic commands based on current state
   function getDynamicCommands() {
-    return [];
+    if (!browseCommandMode || browseCommandTabs.length === 0) return [];
+
+    const count = browseCommandTabs.length;
+    const tabLabel = count === 1 ? 'Highlighted Tab' : `${count} Selected Tabs`;
+    const browseTags = ['browse', 'selected', 'selection', 'highlighted'];
+
+    return [
+      { key: 'browse:close', label: `Close ${tabLabel}`, icon: '✕', tags: [...browseTags, 'close', 'remove', 'delete'],
+        command: () => { closeMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:move-workspace', label: `Move ${tabLabel} to Workspace...`, icon: '🗂', tags: [...browseTags, 'move', 'workspace'],
+        condition: () => { try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; } },
+        subFlow: 'browse-workspace-picker' },
+      { key: 'browse:add-folder', label: `Add ${tabLabel} to Folder...`, icon: '📂', tags: [...browseTags, 'folder', 'add', 'group'],
+        condition: () => { try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; } },
+        subFlow: 'browse-folder-picker' },
+      { key: 'browse:create-folder', label: `Create Folder with ${tabLabel}`, icon: '📁', tags: [...browseTags, 'folder', 'create', 'new', 'group'],
+        condition: () => !!window.gZenFolders,
+        subFlow: 'browse-folder-name-input' },
+      { key: 'browse:move-top', label: `Move ${tabLabel} to Top`, icon: '⤒', tags: [...browseTags, 'move', 'top', 'first'],
+        command: () => { moveMatchedTabsToPosition(browseCommandTabs, 'top'); } },
+      { key: 'browse:move-bottom', label: `Move ${tabLabel} to Bottom`, icon: '⤓', tags: [...browseTags, 'move', 'bottom', 'last'],
+        command: () => { moveMatchedTabsToPosition(browseCommandTabs, 'bottom'); } },
+      { key: 'browse:pin-unpin', label: `Pin/Unpin ${tabLabel}`, icon: '📌', tags: [...browseTags, 'pin', 'unpin'],
+        command: () => { pinUnpinMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:mute-unmute', label: `Mute/Unmute ${tabLabel}`, icon: '🔇', tags: [...browseTags, 'mute', 'unmute', 'audio', 'sound'],
+        command: () => { muteUnmuteMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:duplicate', label: `Duplicate ${tabLabel}`, icon: '⊕', tags: [...browseTags, 'duplicate', 'copy', 'clone'],
+        command: () => { duplicateMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:unload', label: `Unload ${tabLabel} (Save Memory)`, icon: '💤', tags: [...browseTags, 'unload', 'discard', 'memory', 'suspend'],
+        command: () => { unloadMatchedTabs(browseCommandTabs); } },
+    ];
   }
 
   // Get all available commands (static + dynamic)
@@ -1742,13 +1775,18 @@
       return;
     }
     if (typeof cmd.command === 'function') {
+      // Save browse command tabs before exitSearchMode clears them,
+      // so browse command closures can still reference browseCommandTabs
+      const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
       exitSearchMode();
+      if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
       try {
         cmd.command();
         log(`Executed command: ${cmd.key}`);
       } catch (e) {
         log(`Command failed: ${cmd.key}: ${e}`);
       }
+      browseCommandTabs = [];
     }
   }
 
@@ -1793,6 +1831,11 @@
     }
 
     if (commandSubFlowStack.length === 0) {
+      if (browseCommandMode) {
+        // Return to browse mode instead of command list root
+        returnToBrowseMode();
+        return;
+      }
       // Back to command list root
       commandSubFlow = null;
       commandQuery = '';
@@ -1847,6 +1890,9 @@
       case 'rename-workspace-picker': return 'Select a workspace to rename...';
       case 'rename-folder-input': return 'Enter new folder name...';
       case 'rename-workspace-input': return 'Enter new workspace name...';
+      case 'browse-workspace-picker': return 'Choose a workspace...';
+      case 'browse-folder-picker': return 'Choose a folder...';
+      case 'browse-folder-name-input': return 'Enter folder name...';
       default: return 'Type a command...';
     }
   }
@@ -1909,6 +1955,12 @@
         return getRenameFolderInputResults(query);
       case 'rename-workspace-input':
         return getRenameWorkspaceInputResults(query);
+      case 'browse-workspace-picker':
+        return getWorkspacePickerResults(query);
+      case 'browse-folder-picker':
+        return getFolderPickerResults(query);
+      case 'browse-folder-name-input':
+        return getFolderNameInputResults(query);
       default:
         return [];
     }
@@ -2411,6 +2463,29 @@
           }
         }
         break;
+
+      // Browse command mode sub-flows
+      case 'browse-workspace-picker':
+        if (result.workspaceId) {
+          moveTabsToWorkspace(browseCommandTabs, result.workspaceId);
+        }
+        break;
+
+      case 'browse-folder-picker':
+        if (result.key === 'folder:new') {
+          enterSubFlow('browse-folder-name-input', 'Name new folder');
+        } else {
+          addTabsToFolder(browseCommandTabs, result);
+        }
+        break;
+
+      case 'browse-folder-name-input': {
+        const browseFolderName = (commandQuery || '').trim();
+        if (browseFolderName) {
+          createFolderWithName(browseCommandTabs, browseFolderName);
+        }
+        break;
+      }
     }
   }
 
@@ -2627,6 +2702,34 @@
       });
       log(`Created folder "${folderName}" with ${sortedTabs.length} tabs`);
     } catch (e) { log(`Create folder with name failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  // Duplicate matched tabs
+  function duplicateMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    for (const t of validTabs) gBrowser.duplicateTab(t);
+    log(`Duplicated ${validTabs.length} tabs`);
+    exitSearchMode();
+  }
+
+  // Pin or unpin matched tabs (smart toggle: if any unpinned, pin all; else unpin all)
+  function pinUnpinMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const anyUnpinned = validTabs.some(t => !t.pinned);
+    for (const t of validTabs) {
+      if (anyUnpinned) { if (!t.pinned) gBrowser.pinTab(t); }
+      else { if (t.pinned) gBrowser.unpinTab(t); }
+    }
+    log(`${anyUnpinned ? 'Pinned' : 'Unpinned'} ${validTabs.length} tabs`);
+    exitSearchMode();
+  }
+
+  // Mute or unmute matched tabs
+  function muteUnmuteMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    for (const t of validTabs) t.toggleMuteAudio();
+    log(`Toggled mute on ${validTabs.length} tabs`);
     exitSearchMode();
   }
 
@@ -4366,6 +4469,110 @@
     log('Exited settings mode');
   }
 
+  // Enter command bar from browse mode with context
+  function enterBrowseCommandMode() {
+    const tabs = getVisibleTabs();
+
+    // Collect tabs: selected tabs (sorted by position), or just highlighted tab
+    let collectedTabs;
+    if (selectedTabs.size > 0) {
+      collectedTabs = sortTabsBySidebarPosition([...selectedTabs].filter(t => t && !t.closing && t.parentNode));
+    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
+      collectedTabs = [tabs[highlightedTabIndex]];
+    } else {
+      collectedTabs = [];
+    }
+
+    if (collectedTabs.length === 0) {
+      log('No tabs to operate on from browse mode');
+      return;
+    }
+
+    // Save browse state for restoration on cancel
+    savedBrowseState = saveBrowseState();
+    browseCommandMode = true;
+    browseCommandTabs = collectedTabs;
+
+    // Clear any pending 'g' timeout so it doesn't fire during command bar
+    browseGPending = false;
+    clearTimeout(browseGTimeout);
+    browseGTimeout = null;
+
+    // Hide browse UI without fully tearing down leap mode
+    clearHighlight();
+    hideLeapOverlay();
+    hidePreviewPanel();
+
+    // Reset mode flags so enterSearchMode doesn't try to exit leap mode again
+    leapMode = false;
+    browseMode = false;
+
+    // Open the full command bar (browse commands injected via getDynamicCommands)
+    enterSearchMode(true);
+    log(`Browse command mode with ${browseCommandTabs.length} tab(s)`);
+  }
+
+  // Return to browse mode from command bar (on cancel/Esc)
+  function returnToBrowseMode() {
+    if (!savedBrowseState) {
+      exitSearchMode();
+      return;
+    }
+
+    // Close search modal
+    searchMode = false;
+    if (searchModal) searchModal.classList.remove('active');
+
+    // Reset vim mode for next search open
+    searchVimMode = 'insert';
+
+    // Reset command state
+    commandMode = false;
+    commandQuery = '';
+    commandSubFlow = null;
+    commandSubFlowStack = [];
+    commandMatchedTabs = [];
+    dedupTabsToClose = [];
+    commandResults = [];
+    commandEnteredFromSearch = false;
+    if (searchInput) searchInput.readOnly = false;
+    hidePreviewPanel();
+
+    // Restore search icon and placeholder
+    const icon = document.getElementById('zenleap-search-icon');
+    if (icon) {
+      icon.textContent = '🔍';
+      icon.classList.remove('zenleap-command-prefix');
+    }
+    if (searchBreadcrumb) searchBreadcrumb.style.display = 'none';
+
+    // Ensure input is reset for next open
+    if (searchInput) {
+      searchInput.style.display = '';
+      searchInput.placeholder = 'Search tabs...';
+      searchInput.blur();
+    }
+    if (searchInputDisplay) {
+      searchInputDisplay.style.display = 'none';
+    }
+
+    // Restore browse state
+    restoreBrowseState(savedBrowseState);
+
+    // Clean up browse command state
+    browseCommandMode = false;
+    browseCommandTabs = [];
+    savedBrowseState = null;
+
+    // Re-show browse mode UI
+    document.documentElement.setAttribute('data-zenleap-active', 'true');
+    stealFocusFromContent();
+    showLeapOverlay();
+    updateHighlight();
+    updateLeapOverlayState();
+    log('Returned to browse mode from command bar');
+  }
+
   // Enter search mode
   function enterSearchMode(asCommand = false) {
     if (searchMode) return;
@@ -4455,6 +4662,15 @@
     if (searchInputDisplay) {
       searchInputDisplay.style.display = 'none';
     }
+
+    // Clean up browse command state and restore focus/attributes from leap mode
+    if (browseCommandMode) {
+      document.documentElement.removeAttribute('data-zenleap-active');
+      restoreFocusToContent();
+    }
+    browseCommandMode = false;
+    browseCommandTabs = [];
+    savedBrowseState = null;
 
     log('Exited search mode');
   }
@@ -4702,6 +4918,8 @@
             exitSubFlow();
             searchVimMode = 'insert';
             updateSearchVimIndicator();
+          } else if (browseCommandMode) {
+            returnToBrowseMode();
           } else if (commandEnteredFromSearch) {
             exitCommandMode();
           } else {
@@ -4730,7 +4948,9 @@
       if (key === 'Backspace' && (searchInput?.value || '') === '' && !commandSubFlow) {
         event.preventDefault();
         event.stopPropagation();
-        if (commandEnteredFromSearch) {
+        if (browseCommandMode) {
+          returnToBrowseMode();
+        } else if (commandEnteredFromSearch) {
           exitCommandMode();
         } else {
           exitSearchMode();
@@ -5983,9 +6203,9 @@
       } else if (yankBuffer.length > 0) {
         overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
       } else if (selectedTabs.size > 0) {
-        overlayHintLabel.textContent = 'y=yank  x=close sel  Space=toggle  j/k=move  Esc=cancel';
+        overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
       } else {
-        overlayHintLabel.textContent = 'j/k=move  Space=select  Enter=open  x=close  Esc=cancel';
+        overlayHintLabel.textContent = 'j/k=move  Space=select  Ctrl+Shift+/=cmds  Enter=open  x=close  Esc=cancel';
       }
     } else if (markMode) {
       leapOverlay.classList.add('leap-direction-set');
@@ -6507,6 +6727,28 @@
     updateLeapOverlayState();
   }
 
+  // Save browse mode state for transition to command bar
+  function saveBrowseState() {
+    return {
+      highlightedTabIndex, originalTabIndex, originalTab,
+      browseDirection, selectedTabs: new Set(selectedTabs),
+      yankBuffer: [...yankBuffer], sidebarWasExpanded
+    };
+  }
+
+  // Restore browse mode state after returning from command bar
+  function restoreBrowseState(state) {
+    leapMode = true;
+    browseMode = true;
+    highlightedTabIndex = state.highlightedTabIndex;
+    originalTabIndex = state.originalTabIndex;
+    originalTab = state.originalTab;
+    browseDirection = state.browseDirection;
+    selectedTabs = new Set(state.selectedTabs);
+    yankBuffer = [...state.yankBuffer];
+    sidebarWasExpanded = state.sidebarWasExpanded;
+  }
+
   // Cancel browse mode - return to original tab
   function cancelBrowseMode() {
     // Use the direct tab reference to return to the original tab,
@@ -6788,7 +7030,11 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      enterSearchMode(true);
+      if (leapMode && browseMode) {
+        enterBrowseCommandMode();
+      } else {
+        enterSearchMode(true);
+      }
       return;
     }
 
