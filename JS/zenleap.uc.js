@@ -1566,6 +1566,11 @@
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-workspace-picker' },
+      { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name'],
+        condition: () => {
+          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
+        },
+        subFlow: 'rename-workspace-picker' },
 
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add'],
@@ -1581,6 +1586,11 @@
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-folder-picker' },
+      { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group'],
+        condition: () => {
+          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'rename-folder-picker' },
 
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
@@ -1790,7 +1800,7 @@
   // ============================================
 
   function enterSubFlow(type, label) {
-    commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery });
+    commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery, data: commandSubFlow?.data || null });
     commandSubFlow = { type, label, data: null };
     commandQuery = '';
     // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
@@ -1873,6 +1883,10 @@
       case 'folder-name-input': return 'Enter folder name...';
       case 'delete-folder-picker': return 'Select a folder to delete...';
       case 'delete-workspace-picker': return 'Select a workspace to delete...';
+      case 'rename-folder-picker': return 'Select a folder to rename...';
+      case 'rename-workspace-picker': return 'Select a workspace to rename...';
+      case 'rename-folder-input': return 'Enter new folder name...';
+      case 'rename-workspace-input': return 'Enter new workspace name...';
       default: return 'Type a command...';
     }
   }
@@ -1921,6 +1935,14 @@
         return getDeleteFolderPickerResults(query);
       case 'delete-workspace-picker':
         return getDeleteWorkspacePickerResults(query);
+      case 'rename-folder-picker':
+        return getRenameFolderPickerResults(query);
+      case 'rename-workspace-picker':
+        return getRenameWorkspacePickerResults(query);
+      case 'rename-folder-input':
+        return getRenameFolderInputResults(query);
+      case 'rename-workspace-input':
+        return getRenameWorkspaceInputResults(query);
       default:
         return [];
     }
@@ -1996,6 +2018,84 @@
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
       return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
     });
+  }
+
+  function getRenameFolderPickerResults(query) {
+    const results = [];
+    try {
+      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        const folderWsId = folder.getAttribute('zen-workspace-id');
+        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
+
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+        results.push({
+          key: `rename-folder:${folder.id}`,
+          label: name,
+          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+          icon: '✏',
+          tags: ['folder', 'rename', name.toLowerCase()],
+          folder: folder,
+        });
+      }
+    } catch (e) { log(`Error getting folders for rename: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'rename-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getRenameWorkspacePickerResults(query) {
+    const results = [];
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        const activeId = window.gZenWorkspaces.activeWorkspace;
+        if (workspaces && Array.isArray(workspaces)) {
+          for (const ws of workspaces) {
+            const name = ws.name || 'Unnamed';
+            const isActive = ws.uuid === activeId;
+            results.push({
+              key: `rename-workspace:${ws.uuid}`,
+              label: `${name}${isActive ? ' (current)' : ''}`,
+              icon: ws.icon || '✏',
+              tags: ['workspace', 'rename', name.toLowerCase()],
+              workspaceId: ws.uuid,
+            });
+          }
+        }
+      }
+    } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getRenameFolderInputResults(query) {
+    const name = (query || '').trim();
+    if (!name) {
+      return [{ key: 'rename-folder-input:prompt', label: 'Type a new name for the folder and press Enter', icon: '✏', tags: [] }];
+    }
+    return [{ key: 'rename-folder-input:confirm', label: `Rename folder to: "${name}"`, icon: '✏', tags: [] }];
+  }
+
+  function getRenameWorkspaceInputResults(query) {
+    const name = (query || '').trim();
+    if (!name) {
+      return [{ key: 'rename-workspace-input:prompt', label: 'Type a new name for the workspace and press Enter', icon: '✏', tags: [] }];
+    }
+    return [{ key: 'rename-workspace-input:confirm', label: `Rename workspace to: "${name}"`, icon: '✏', tags: [] }];
   }
 
   function getTabSearchSubFlowResults(query) {
@@ -2230,6 +2330,44 @@
           deleteWorkspace(result.workspaceId);
         }
         break;
+
+      case 'rename-folder-picker':
+        if (result.folder) {
+          commandSubFlow.data = { folderId: result.folder.id };
+          enterSubFlow('rename-folder-input', `Rename: ${result.label}`);
+        }
+        break;
+
+      case 'rename-workspace-picker':
+        if (result.workspaceId) {
+          commandSubFlow.data = { workspaceId: result.workspaceId };
+          enterSubFlow('rename-workspace-input', `Rename: ${result.label}`);
+        }
+        break;
+
+      case 'rename-folder-input': {
+        const newFolderName = (commandQuery || '').trim();
+        if (newFolderName) {
+          const prevData = commandSubFlowStack[commandSubFlowStack.length - 1]?.data;
+          const folderId = prevData?.folderId || commandSubFlow.data?.folderId;
+          if (folderId) {
+            renameFolder(folderId, newFolderName);
+          }
+        }
+        break;
+      }
+
+      case 'rename-workspace-input': {
+        const newWsName = (commandQuery || '').trim();
+        if (newWsName) {
+          const prevData = commandSubFlowStack[commandSubFlowStack.length - 1]?.data;
+          const wsId = prevData?.workspaceId || commandSubFlow.data?.workspaceId;
+          if (wsId) {
+            renameWorkspace(wsId, newWsName);
+          }
+        }
+        break;
+      }
     }
   }
 
@@ -2491,6 +2629,52 @@
       }
       log(`Deleted workspace: ${workspaceId}`);
     } catch (e) { log(`Delete workspace failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function renameFolder(folderId, newName) {
+    try {
+      const targetFolder = document.getElementById(folderId);
+      if (!targetFolder) { log('Folder not found for rename'); exitSearchMode(); return; }
+      const oldName = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+      // Use the folder's name setter which triggers ZenFolderRenamed event
+      if ('name' in targetFolder) {
+        targetFolder.name = newName;
+      } else if (targetFolder.labelElement) {
+        targetFolder.label = newName;
+      } else {
+        targetFolder.setAttribute('zen-folder-name', newName);
+      }
+      log(`Renamed folder: "${oldName}" → "${newName}"`);
+    } catch (e) { log(`Rename folder failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function renameWorkspace(workspaceId, newName) {
+    try {
+      if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
+      const workspaces = window.gZenWorkspaces.getWorkspaces();
+      const workspaceData = workspaces.find(ws => ws.uuid === workspaceId);
+      if (!workspaceData) { log('Workspace not found for rename'); exitSearchMode(); return; }
+      const oldName = workspaceData.name || 'Unnamed';
+      workspaceData.name = newName;
+      if (typeof gZenWorkspaces.saveWorkspace === 'function') {
+        gZenWorkspaces.saveWorkspace(workspaceData);
+      } else {
+        log('No API available to save workspace');
+        exitSearchMode();
+        return;
+      }
+      // Update the workspace indicator UI if this is the active workspace
+      if (workspaceId === window.gZenWorkspaces.activeWorkspace) {
+        const indicator = gZenWorkspaces.workspaceElement?.(workspaceId)?.indicator;
+        if (indicator) {
+          const nameEl = indicator.querySelector('.zen-current-workspace-indicator-name');
+          if (nameEl) nameEl.textContent = newName;
+        }
+      }
+      log(`Renamed workspace: "${oldName}" → "${newName}"`);
+    } catch (e) { log(`Rename workspace failed: ${e}`); }
     exitSearchMode();
   }
 
