@@ -1987,6 +1987,14 @@
     } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
     if (results.length === 0) {
       return [{ key: 'switch-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
   function getRenameFolderPickerResults(query) {
     const results = [];
     try {
@@ -2019,7 +2027,6 @@
   }
 
   function getMoveToWorkspacePickerResults(query) {
-  function getRenameWorkspacePickerResults(query) {
     const results = [];
     try {
       if (window.gZenWorkspaces) {
@@ -2034,6 +2041,30 @@
               label: name,
               icon: ws.icon || '🗂',
               tags: ['workspace', 'move', name.toLowerCase()],
+              workspaceId: ws.uuid,
+            });
+          }
+        }
+      }
+    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: 'move-to-workspace:none', label: 'No other workspaces found', icon: '🗂', tags: [] }];
+    }
+    if (!query) return results;
+    return results.filter(r => {
+      const target = `${r.label} ${(r.tags || []).join(' ')}`;
+      return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+    });
+  }
+
+  function getRenameWorkspacePickerResults(query) {
+    const results = [];
+    try {
+      if (window.gZenWorkspaces) {
+        const workspaces = window.gZenWorkspaces.getWorkspaces();
+        const activeId = window.gZenWorkspaces.activeWorkspace;
+        if (workspaces && Array.isArray(workspaces)) {
+          for (const ws of workspaces) {
             const name = ws.name || 'Unnamed';
             const isActive = ws.uuid === activeId;
             results.push({
@@ -2046,9 +2077,6 @@
           }
         }
       }
-    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'move-to-workspace:none', label: 'No other workspaces found', icon: '🗂', tags: [] }];
     } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
     if (results.length === 0) {
       return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
@@ -2088,6 +2116,8 @@
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
       return fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
     });
+  }
+
   function getRenameFolderInputResults(query) {
     const name = (query || '').trim();
     if (!name) {
