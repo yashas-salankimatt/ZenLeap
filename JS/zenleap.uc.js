@@ -1363,24 +1363,24 @@
   function getStaticCommands() {
     return [
       // --- Tab Management ---
-      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open'], command: () => { gBrowser.addTab('about:newtab', { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); } },
-      { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
-      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other'], command: () => {
+      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { gBrowser.addTab('about:newtab', { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); } },
+      { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove', 'del', 'rm', 'cl'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
+      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'], command: () => {
         const current = gBrowser.selectedTab;
         const tabs = getVisibleTabs().filter(t => t !== current && !t.pinned);
         for (const t of tabs) gBrowser.removeTab(t);
       }},
-      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right'], command: () => {
+      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'], command: () => {
         const tabs = getVisibleTabs();
         const idx = tabs.indexOf(gBrowser.selectedTab);
         if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
       }},
-      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left'], command: () => {
+      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'], command: () => {
         const tabs = getVisibleTabs();
         const idx = tabs.indexOf(gBrowser.selectedTab);
         if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
       }},
-      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone'], command: () => { gBrowser.duplicateTab(gBrowser.selectedTab); } },
+      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => { gBrowser.duplicateTab(gBrowser.selectedTab); } },
       { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
         const tab = gBrowser.selectedTab;
         if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
@@ -1403,11 +1403,11 @@
       }},
 
       // --- Tab Selection (Multi-Step) ---
-      { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch'], subFlow: 'tab-search' },
-      { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique'], subFlow: 'dedup-preview' },
+      { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch', 'sel', 'find'], subFlow: 'tab-search' },
+      { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique', 'dedup'], subFlow: 'dedup-preview' },
 
       // --- Tab Movement ---
-      { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning'], command: () => {
+      { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning', 'mv'], command: () => {
         const tab = gBrowser.selectedTab;
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
@@ -1419,7 +1419,7 @@
           log('Moved tab to top (below pinned/essential)');
         }
       }},
-      { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end'], command: () => {
+      { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end', 'mv'], command: () => {
         const tab = gBrowser.selectedTab;
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
@@ -1431,7 +1431,7 @@
       }},
 
       // --- Navigation ---
-      { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg'], command: () => {
+      { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
         if (tabs.length === 0) return;
         if (S['display.ggSkipPinned']) {
@@ -1441,7 +1441,7 @@
           gBrowser.selectedTab = tabs[0];
         }
       }},
-      { key: 'go-last-tab', label: 'Go to Last Tab', icon: '⇥', tags: ['navigate', 'last', 'bottom', 'end'], command: () => {
+      { key: 'go-last-tab', label: 'Go to Last Tab', icon: '⇥', tags: ['navigate', 'last', 'bottom', 'end', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
         if (tabs.length > 0) gBrowser.selectedTab = tabs[tabs.length - 1];
       }},
@@ -1459,7 +1459,7 @@
 
       // --- View & Browser ---
       { key: 'toggle-fullscreen', label: 'Toggle Fullscreen', icon: '⛶', tags: ['view', 'fullscreen', 'screen'], command: () => { window.fullScreen = !window.fullScreen; } },
-      { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle'], command: () => {
+      { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle', 'tog', 'sb'], command: () => {
         try {
           const current = Services.prefs.getBoolPref('zen.view.sidebar-expanded');
           Services.prefs.setBoolPref('zen.view.sidebar-expanded', !current);
@@ -1470,7 +1470,7 @@
       { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => { ZoomManager.reset(); } },
 
       // --- Split View ---
-      { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close'], command: () => {
+      { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close', 'cl'], command: () => {
         try { if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView(); } catch (e) { log(`Unsplit failed: ${e}`); }
       }, condition: () => { try { return window.gZenViewSplitter?.splitViewActive; } catch(e) { return false; } } },
       { key: 'split-with-tab', label: 'Split View with Tab...', icon: '◫', tags: ['split', 'view', 'side'], subFlow: 'split-tab-picker' },
@@ -1558,32 +1558,32 @@
       }},
 
       // --- Workspace Management ---
-      { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'], command: () => {
+      { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'], command: () => {
         try { document.getElementById('cmd_zenOpenWorkspaceCreation')?.doCommand(); } catch(e) { log(`Create workspace failed: ${e}`); }
       }},
-      { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy'],
+      { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy', 'del', 'rm', 'ws'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-workspace-picker' },
-      { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change'],
+      { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change', 'sw', 'ws', 'go'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'switch-workspace-picker' },
-      { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab'],
+      { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab', 'mv', 'ws'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
         },
         subFlow: 'move-to-workspace-picker' },
-      { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name'],
+      { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name', 'ren', 'ws'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'rename-workspace-picker' },
 
       // --- Folder Management ---
-      { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add'],
+      { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
         condition: () => !!window.gZenFolders,
         command: () => {
           try {
@@ -1591,17 +1591,17 @@
             gZenFolders.createFolder([tab], { renameFolder: true });
           } catch(e) { log(`Create folder failed: ${e}`); }
       }},
-      { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group'],
+      { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group', 'del', 'rm', 'fld', 'fol'],
         condition: () => {
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'delete-folder-picker' },
-      { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group'],
+      { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group', 'mv', 'fld', 'fol'],
         condition: () => {
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'add-to-folder-picker' },
-      { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group'],
+      { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group', 'ren', 'fld', 'fol'],
         condition: () => {
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
@@ -1623,7 +1623,7 @@
         exitSearchMode();
         setTimeout(() => enterHelpMode(), 100);
       }},
-      { key: 'open-settings', label: 'Open Settings', icon: '⚙', tags: ['settings', 'config', 'preferences', 'customize', 'keybindings'], command: () => {
+      { key: 'open-settings', label: 'Open Settings', icon: '⚙', tags: ['settings', 'config', 'preferences', 'customize', 'keybindings', 'cfg', 'prefs'], command: () => {
         exitSearchMode();
         setTimeout(() => enterSettingsMode(), 100);
       }},
