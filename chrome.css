@@ -159,6 +159,26 @@ tab[data-zenleap-highlight="true"][data-zenleap-selected="true"] > .tab-stack > 
 }
 
 /* ============================================
+   BROWSE MODE FOLDER STYLES
+   ============================================ */
+
+/* Highlighted folder in browse mode */
+zen-folder[data-zenleap-highlight="true"] {
+  outline: 2px solid #61afef !important;
+  outline-offset: -2px;
+  background-color: rgba(97, 175, 239, 0.2) !important;
+  border-radius: 4px;
+}
+
+/* Selected folder in browse mode */
+zen-folder[data-zenleap-selected="true"] {
+  outline: 2px solid #c678dd !important;
+  outline-offset: -2px;
+  background-color: rgba(198, 120, 221, 0.2) !important;
+  border-radius: 4px;
+}
+
+/* ============================================
    MARK MODE STYLES
    When in mark mode, gray out non-marked tabs and highlight marked tabs
    ============================================ */
