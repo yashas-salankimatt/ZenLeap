@@ -3,3 +3,11 @@
 
 # Plan files
 *[Pp][Ll][Aa][Nn]*.[Mm][Dd]
+
+# td task management (local per-worktree, never commit)
+.todos/
+.td-root
+
+# Sidecar worktree state files (local per-worktree, never commit)
+.sidecar/
+.sidecar-*
