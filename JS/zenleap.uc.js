@@ -2628,7 +2628,8 @@
           const sessionId = commandSubFlow.data?.sessionId;
           if (sessionId) {
             deleteSessionFile(sessionId).then(() => {
-              sessionCache = null; sessionLoadPromise = null;
+              sessionCache = null;
+              sessionLoadPromise = null;
               exitSubFlow();
             }).catch(e => {
               log(`Delete session failed: ${e}`);
@@ -3222,7 +3223,8 @@
     const dir = await getSessionsDir();
     const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
     await IOUtils.writeJSON(filePath, sessionData);
-    sessionCache = null; sessionLoadPromise = null; // invalidate cache
+    sessionCache = null;
+    sessionLoadPromise = null;
     log(`Session saved: ${filePath}`);
   }
 
@@ -6712,18 +6714,27 @@
   function getWorkspaceNameMap() {
     const now = Date.now();
     if (_wsNameMap && (now - _wsNameMapTime) < WS_NAME_MAP_TTL) return _wsNameMap;
-    _wsNameMap = new Map();
+    const map = new Map();
     try {
-      if (!window.gZenWorkspaces) return _wsNameMap;
+      if (!window.gZenWorkspaces) {
+        _wsNameMap = map;
+        _wsNameMapTime = now;
+        return map;
+      }
       const workspaces = gZenWorkspaces.getWorkspaces();
-      if (workspaces) {
+      if (Array.isArray(workspaces)) {
         for (const ws of workspaces) {
-          _wsNameMap.set(ws.uuid, ws.name);
+          map.set(ws.uuid, ws.name);
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      // Don't cache on error — allow retry on next call
+      log(`getWorkspaceNameMap failed: ${e}`);
+      return map;
+    }
+    _wsNameMap = map;
     _wsNameMapTime = now;
-    return _wsNameMap;
+    return map;
   }
 
   // Get workspace name for a tab (returns null if same as active workspace)
@@ -7077,16 +7088,19 @@
       }
     } catch (e) {}
     // Method 3: frame script injection (Fission-compatible, queries content process directly)
-    // Uses a single static message channel to avoid accumulating frame scripts
+    // Uses a single static frame script per browser to avoid accumulating scripts,
+    // but includes a per-call requestId so concurrent responses don't collide.
     try {
       return new Promise((resolve) => {
         const mm = browser.messageManager;
         if (!mm) { resolve({ x: 0, y: 0 }); return; }
+        const requestId = Date.now() + '_' + Math.random();
         const timer = setTimeout(() => {
           try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve({ x: 0, y: 0 });
         }, 300);
         function handler(msg) {
+          if (msg.data?.requestId !== requestId) return; // Not our response
           clearTimeout(timer);
           try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve(msg.data || { x: 0, y: 0 });
@@ -7095,13 +7109,17 @@
         // Install the static frame script once per browser (allowDelayedLoad=false prevents re-injection)
         if (!browser._zenleapScrollScriptLoaded) {
           mm.loadFrameScript(`data:,
-            addMessageListener('ZenLeap:ScrollPos:Request', function() {
-              sendAsyncMessage('ZenLeap:ScrollPos:Response', {x: content.scrollX || 0, y: content.scrollY || 0});
+            addMessageListener('ZenLeap:ScrollPos:Request', function(msg) {
+              sendAsyncMessage('ZenLeap:ScrollPos:Response', {
+                requestId: msg.data && msg.data.requestId,
+                x: content.scrollX || 0,
+                y: content.scrollY || 0
+              });
             });
           `, false);
           browser._zenleapScrollScriptLoaded = true;
         }
-        mm.sendAsyncMessage('ZenLeap:ScrollPos:Request');
+        mm.sendAsyncMessage('ZenLeap:ScrollPos:Request', { requestId });
       });
     } catch (e) {}
     return Promise.resolve({ x: 0, y: 0 });
@@ -7616,6 +7634,8 @@
       if (S['display.browsePreview'] && browseMode && !isFolder(highlightedItem)) {
         clearTimeout(previewDebounceTimer);
         previewCaptureId++; // Cancel any in-flight capture
+        // Hide panel visually but preserve cache — during browse navigation we want
+        // to reuse cached thumbnails when revisiting tabs, not recapture each time.
         hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
           const currentItems = getVisibleItems();
@@ -7627,7 +7647,7 @@
           }
         }, S['timing.previewDelay']);
       } else if (isFolder(highlightedItem)) {
-        // Hide preview when navigating over a folder
+        // Hide preview when navigating over a folder (preserve cache for same reason)
         clearTimeout(previewDebounceTimer);
         hidePreviewPanel();
       }
@@ -7709,6 +7729,7 @@
 
       // After workspace switch, highlight the active tab in the new workspace
       setTimeout(() => {
+        _visibleItemsCache = null; // Ensure fresh data after workspace switch
         const newItems = getVisibleItems();
         const activeIdx = newItems.indexOf(gBrowser.selectedTab);
         highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
