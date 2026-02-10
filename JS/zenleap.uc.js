@@ -715,6 +715,17 @@
     };
   }
 
+  // Centralized accessor for tab last-accessed time.
+  // Firefox exposes `tab.lastAccessed` (public API) and `tab._lastAccessed`
+  // (internal). Using a single helper avoids inconsistent field access.
+  function getTabLastAccessed(tab) {
+    const pub = tab.lastAccessed;
+    if (pub && typeof pub === 'number' && pub > 0) return pub;
+    const priv = tab._lastAccessed;
+    if (priv && typeof priv === 'number' && priv > 0) return priv;
+    return 0;
+  }
+
   // Calculate recency multiplier for a tab (0.8 to 1.8)
   // Uses exponential decay: recently accessed tabs get boosted, old tabs get penalized
   // Formula: multiplier = 0.8 + 1.0 × e^(-ageMinutes / 12)
@@ -730,10 +741,9 @@
   // | 1 day+     | 0.80       | -20% floor   |
   //
   function calculateRecencyMultiplier(tab) {
-    const lastAccessed = tab.lastAccessed;
+    const lastAccessed = getTabLastAccessed(tab);
 
-    // Check if lastAccessed is available and valid
-    if (lastAccessed && typeof lastAccessed === 'number' && lastAccessed > 0) {
+    if (lastAccessed > 0) {
       const now = Date.now();
       const ageMs = Math.max(0, now - lastAccessed);
       const ageMinutes = ageMs / (1000 * 60);
@@ -752,9 +762,7 @@
     if (tabs.length === 0) return tabs;
 
     // Check if any tab has lastAccessed data
-    const hasAnyRecency = tabs.some(t =>
-      t.lastAccessed && typeof t.lastAccessed === 'number' && t.lastAccessed > 0
-    );
+    const hasAnyRecency = tabs.some(t => getTabLastAccessed(t) > 0);
 
     if (!hasAnyRecency) {
       log('lastAccessed not available on any tab, using default order');
@@ -762,11 +770,7 @@
     }
 
     // Sort by lastAccessed descending (most recent first)
-    return [...tabs].sort((a, b) => {
-      const aTime = a.lastAccessed || 0;
-      const bTime = b.lastAccessed || 0;
-      return bTime - aTime;
-    });
+    return [...tabs].sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
   }
 
   // Search tabs and return sorted results
@@ -1493,7 +1497,7 @@
         // Find the most recently accessed tab to switch to
         const tabs = Array.from(gBrowser.tabs)
           .filter(t => t !== current && !t.hasAttribute('pending') && !t.hidden);
-        tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+        tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
         const target = tabs[0];
         if (target) {
           gBrowser.selectedTab = target;
@@ -2453,7 +2457,7 @@
     const tabsToClose = [];
     for (const [url, tabs] of urlGroups) {
       if (tabs.length < 2) continue;
-      tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+      tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
       for (let i = 1; i < tabs.length; i++) {
         tabsToClose.push(tabs[i]);
       }
@@ -2766,7 +2770,7 @@
       const alternates = Array.from(gBrowser.tabs)
         .filter(t => t && !t.closing && t.parentNode && !matchedSet.has(t) &&
                       !t.hasAttribute('pending') && !t.hidden);
-      alternates.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
+      alternates.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
       if (alternates[0]) {
         gBrowser.selectedTab = alternates[0];
       }
@@ -3601,11 +3605,30 @@
     }
   }
 
+  // Poll for a condition to become true, with a timeout fallback.
+  // Replaces fixed setTimeout sleeps in the restore pipeline for robustness:
+  // finishes as soon as the condition holds (fast machines), but never hangs
+  // indefinitely (slow machines).
+  function waitFor(condition, { timeout = 2000, interval = 50 } = {}) {
+    return new Promise((resolve) => {
+      if (condition()) { resolve(true); return; }
+      const start = Date.now();
+      const timer = setInterval(() => {
+        if (condition() || Date.now() - start >= timeout) {
+          clearInterval(timer);
+          resolve(condition());
+        }
+      }, interval);
+    });
+  }
+
   async function restoreWorkspaceAsNew(wsData) {
     if (!window.gZenWorkspaces) {
       log('gZenWorkspaces not available for restore');
       return;
     }
+
+    const prevWsId = gZenWorkspaces.activeWorkspace;
 
     try {
       await gZenWorkspaces.createAndSaveWorkspace(
@@ -3619,7 +3642,8 @@
       return;
     }
 
-    await new Promise(r => setTimeout(r, 500));
+    // Wait for workspace switch to complete (new workspace becomes active)
+    await waitFor(() => gZenWorkspaces.activeWorkspace && gZenWorkspaces.activeWorkspace !== prevWsId, { timeout: 3000 });
     await restoreLayout(wsData);
   }
 
@@ -3638,7 +3662,8 @@
     );
 
     const placeholder = gBrowser.addTab('about:blank', { triggeringPrincipal: principal });
-    await new Promise(r => setTimeout(r, 150));
+    // Wait for placeholder tab to be in the DOM before selecting it
+    await waitFor(() => placeholder.parentNode && !placeholder.closing);
     gBrowser.selectedTab = placeholder;
 
     for (const folder of existingFolders) {
@@ -3647,14 +3672,16 @@
         else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
       } catch (e) { log(`Remove folder during replace failed: ${e}`); }
     }
-    await new Promise(r => setTimeout(r, 100));
+    // Wait for folders to be removed from the DOM
+    await waitFor(() => existingFolders.every(f => !f.parentNode));
 
     const tabsToRemove = existingTabs.filter(t => t !== placeholder && !t.closing && t.parentNode);
     if (tabsToRemove.length > 0) {
       try { gBrowser.removeTabs(tabsToRemove, { closeWindowWithLastTab: false }); }
       catch (e) { for (const t of tabsToRemove) { try { gBrowser.removeTab(t); } catch (e2) {} } }
     }
-    await new Promise(r => setTimeout(r, 200));
+    // Wait for old tabs to start closing / leave the DOM
+    await waitFor(() => tabsToRemove.every(t => t.closing || !t.parentNode));
 
     await restoreLayout(wsData);
 
@@ -3690,7 +3717,8 @@
     // zen.view.show-newtab-button-top is true (every tab goes to the same
     // position, reversing order). Explicitly move them into correct order.
     if (normalTabRefs.length > 1) {
-      await new Promise(r => setTimeout(r, 100));
+      // Wait for all normal tabs to be in the DOM before reordering
+      await waitFor(() => normalTabRefs.every(t => t && t.parentNode && !t.closing));
       const normalContainer = gZenWorkspaces?.activeWorkspaceStrip;
       if (normalContainer) {
         const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
@@ -3765,7 +3793,8 @@
       }
     }
 
-    await new Promise(r => setTimeout(r, 150));
+    // Wait for all folder tabs to be present in the DOM before creating the folder
+    await waitFor(() => directTabRefs.every(t => t.parentNode && !t.closing));
 
     // Phase 2: create folder with its direct tabs
     const folderOpts = {
@@ -3785,7 +3814,8 @@
       return null;
     }
 
-    await new Promise(r => setTimeout(r, 100));
+    // Wait for the folder element to be present in the DOM
+    await waitFor(() => folder && folder.parentNode);
 
     // Phase 3: insert subfolders at correct positions.
     // Walk children in saved order, tracking the last DOM element so we can
@@ -3826,9 +3856,11 @@
   // Verify restored layout matches saved order by checking the sidebar DOM.
   // Loops until order is confirmed correct or max attempts reached, because
   // Zen may asynchronously reorder tabs after our DOM moves.
+  // Uses waitFor() instead of fixed delays so verification completes as soon
+  // as Zen's async reorders finish.
   async function verifyRestoredLayout(layout, openedTabs) {
     const MAX_ATTEMPTS = 5;
-    const DELAY_MS = 200;
+    const ATTEMPT_TIMEOUT_MS = 500;
 
     try {
       const wsElement = gZenWorkspaces?.activeWorkspaceElement;
@@ -3855,30 +3887,30 @@
 
       const shorten = u => { try { return new URL(u).hostname + new URL(u).pathname.slice(0, 30); } catch (e) { return (u || '').slice(0, 50); } };
 
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        await new Promise(r => setTimeout(r, DELAY_MS));
-
-        // Read actual tab order from DOM by element reference
+      // Helper: read current DOM order and check against expected
+      function checkOrder() {
         const actualTabRefs = [];
         for (const child of normalContainer.children) {
           if (!gBrowser.isTab(child)) continue;
           if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
           actualTabRefs.push(child);
         }
-
-        // Compare by reference
-        let isCorrect = actualTabRefs.length >= expectedTabRefs.length;
-        let firstMismatchIdx = -1;
-        if (isCorrect) {
-          for (let i = 0; i < expectedTabRefs.length; i++) {
-            if (actualTabRefs[i] !== expectedTabRefs[i]) { isCorrect = false; firstMismatchIdx = i; break; }
-          }
+        if (actualTabRefs.length < expectedTabRefs.length) return { correct: false, actualTabRefs, firstMismatchIdx: -1 };
+        for (let i = 0; i < expectedTabRefs.length; i++) {
+          if (actualTabRefs[i] !== expectedTabRefs[i]) return { correct: false, actualTabRefs, firstMismatchIdx: i };
         }
+        return { correct: true, actualTabRefs, firstMismatchIdx: -1 };
+      }
 
-        if (isCorrect) {
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        // Wait for order to become correct (exits early if Zen finishes reorder)
+        const settled = await waitFor(() => checkOrder().correct, { timeout: ATTEMPT_TIMEOUT_MS });
+        if (settled) {
           log(`Verify: order confirmed correct on attempt ${attempt}`);
           return;
         }
+
+        const { actualTabRefs, firstMismatchIdx } = checkOrder();
 
         // Debug: show expected vs actual
         log(`Verify: attempt ${attempt} — expected ${expectedTabRefs.length} tabs, DOM has ${actualTabRefs.length}, first mismatch at index ${firstMismatchIdx}`);
@@ -5708,6 +5740,7 @@
     dedupTabsToClose = [];
     commandResults = [];
     commandEnteredFromSearch = false;
+    invalidateCommandCache();
     if (searchInput) searchInput.readOnly = false;
     hidePreviewPanel(true);
 
@@ -5773,6 +5806,7 @@
     commandMatchedTabs = [];
     commandResults = [];
     commandEnteredFromSearch = false;
+    invalidateCommandCache();
 
     // Reset input value
     searchInput.value = '';
@@ -5804,6 +5838,7 @@
     searchMode = false;
     searchModal.classList.remove('active');
     cancelPendingJJ();
+    clearTimeout(_searchInputDebounceTimer);
 
     // Reset vim mode to insert for next time
     searchVimMode = 'insert';
@@ -5817,6 +5852,7 @@
     dedupTabsToClose = [];
     commandResults = [];
     commandEnteredFromSearch = false;
+    invalidateCommandCache();
     if (searchInput) searchInput.readOnly = false;
     hidePreviewPanel(true);
 
@@ -6635,11 +6671,6 @@
     return Math.max(0, pos - 1);
   }
 
-  // Update input cursor position
-  function updateInputCursor() {
-    if (!searchInput) return;
-    searchInput.setSelectionRange(searchCursorPos, searchCursorPos);
-  }
 
   // Render the display element with block cursor for normal mode
   function renderSearchDisplay() {
@@ -6671,30 +6702,37 @@
     }
   }
 
-  // Handle search input changes
+  // Handle search input changes (debounced to avoid re-running the full
+  // search pipeline on every keystroke during fast typing).
+  let _searchInputDebounceTimer = null;
+  const SEARCH_INPUT_DEBOUNCE_MS = 32; // ~2 animation frames
+
   function handleSearchInput(event) {
     const value = searchInput.value;
 
-    if (commandMode) {
-      // In command mode, update command query and re-render
-      commandQuery = value;
-      searchSelectedIndex = 0;
-      renderCommandResults();
-      return;
-    }
-
-    // Detect command prefix to enter command mode
-    if (value === S['keys.search.commandPrefix']) {
+    // Command prefix detection must be synchronous (don't debounce mode switches)
+    if (!commandMode && value === S['keys.search.commandPrefix']) {
+      clearTimeout(_searchInputDebounceTimer);
       searchInput.value = '';
       commandEnteredFromSearch = true;
       enterCommandMode();
       return;
     }
 
-    searchQuery = value;
-    searchCursorPos = searchInput.selectionStart;
-    searchSelectedIndex = 0; // Reset selection on query change
-    renderSearchResults();
+    // Debounce the search/command pipeline
+    clearTimeout(_searchInputDebounceTimer);
+    _searchInputDebounceTimer = setTimeout(() => {
+      if (commandMode) {
+        commandQuery = value;
+        searchSelectedIndex = 0;
+        renderCommandResults();
+      } else {
+        searchQuery = value;
+        searchCursorPos = searchInput.selectionStart;
+        searchSelectedIndex = 0;
+        renderSearchResults();
+      }
+    }, SEARCH_INPUT_DEBOUNCE_MS);
   }
 
   // Get visible tabs
@@ -6816,6 +6854,8 @@
   }
 
   // Update relative numbers on all tabs
+  // Optimized: builds a reverse mark map (tab→char) once per call for O(1) lookup
+  // instead of iterating the marks map per tab.
   function updateRelativeNumbers() {
     const tabs = getVisibleTabs();
     const currentTab = gBrowser.selectedTab;
@@ -6831,13 +6871,18 @@
     // Clean up marks for closed tabs
     cleanupMarks();
 
+    // Build reverse mark map for O(1) lookup per tab (instead of O(marks) via getMarkForTab)
+    const tabToMark = new Map();
+    for (const [char, markedTab] of marks) {
+      tabToMark.set(markedTab, char);
+    }
+
     tabs.forEach((tab, index) => {
       const relativeDistance = Math.abs(index - currentIndex);
       const direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
       const displayChar = numberToDisplay(relativeDistance);
 
-      // Check if this tab has a mark
-      const mark = getMarkForTab(tab);
+      const mark = tabToMark.get(tab) || null;
 
       tab.setAttribute('data-zenleap-direction', direction);
       tab.setAttribute('data-zenleap-distance', relativeDistance);
@@ -6859,6 +6904,18 @@
     });
 
     log(`Updated ${tabs.length} tabs, current at index ${currentIndex}`);
+  }
+
+  // Coalesce rapid relative-number updates into a single animation frame.
+  // Used by event listeners that can fire in quick succession (TabOpen, TabClose,
+  // ZenWorkspaceChanged) to avoid redundant DOM writes.
+  let _relNumRafId = 0;
+  function scheduleRelativeNumberUpdate() {
+    if (_relNumRafId) return;
+    _relNumRafId = requestAnimationFrame(() => {
+      _relNumRafId = 0;
+      updateRelativeNumbers();
+    });
   }
 
   // Overlay element references
@@ -6893,50 +6950,6 @@
     content.appendChild(overlayHintLabel);
     leapOverlay.appendChild(content);
 
-    const style = document.createElement('style');
-    style.id = 'zenleap-overlay-styles';
-    style.textContent = `
-      #zenleap-overlay {
-        position: fixed;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 10000;
-        background: rgba(30, 30, 30, 0.95);
-        border: 2px solid #61afef;
-        border-radius: 8px;
-        padding: 12px 24px;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        pointer-events: none;
-        display: none;
-      }
-      #zenleap-overlay-content {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-      #zenleap-mode-label {
-        font-size: 14px;
-        font-weight: bold;
-        color: #61afef;
-        font-family: monospace;
-      }
-      #zenleap-direction-label {
-        font-size: 14px;
-        font-weight: bold;
-        color: #98c379;
-        font-family: monospace;
-      }
-      #zenleap-hint-label {
-        font-size: 12px;
-        color: #abb2bf;
-        font-family: monospace;
-      }
-      #zenleap-overlay.leap-direction-set #zenleap-hint-label {
-        color: #e5c07b;
-      }
-    `;
-    document.head.appendChild(style);
     document.documentElement.appendChild(leapOverlay);
     log('Leap overlay created');
   }
@@ -7673,24 +7686,37 @@
     log(`Entered browse mode, direction=${direction}, highlight=${highlightedTabIndex}`);
   }
 
-  // Update the visual highlight on the browsed item (tab or folder)
-  function updateHighlight() {
+  // Update the visual highlight on the browsed item (tab or folder).
+  // When syncSelection is false (the hot j/k path), only the old and new
+  // highlighted items are touched — O(1) instead of O(N).
+  let _previousHighlightedItem = null;
+
+  function updateHighlight({ syncSelection = true } = {}) {
     const items = getVisibleItems();
 
-    // Remove highlight from all items, update selection markers
-    items.forEach(item => {
-      item.removeAttribute('data-zenleap-highlight');
-      if (selectedItems.has(item)) {
-        item.setAttribute('data-zenleap-selected', 'true');
-      } else {
-        item.removeAttribute('data-zenleap-selected');
+    if (syncSelection) {
+      // Full sync: iterate all items to reconcile selection markers.
+      // Needed when selection state changed (shift+move, toggle, clear, etc.)
+      items.forEach(item => {
+        item.removeAttribute('data-zenleap-highlight');
+        if (selectedItems.has(item)) {
+          item.setAttribute('data-zenleap-selected', 'true');
+        } else {
+          item.removeAttribute('data-zenleap-selected');
+        }
+      });
+    } else {
+      // Fast path: only remove highlight from the previous item
+      if (_previousHighlightedItem) {
+        _previousHighlightedItem.removeAttribute('data-zenleap-highlight');
       }
-    });
+    }
 
     // Add highlight to the current browsed item
     if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
       const highlightedItem = items[highlightedTabIndex];
       highlightedItem.setAttribute('data-zenleap-highlight', 'true');
+      _previousHighlightedItem = highlightedItem;
 
       // Scroll the highlighted item into view
       scrollTabToView(highlightedItem, 'center');
@@ -7717,6 +7743,8 @@
         clearTimeout(previewDebounceTimer);
         hidePreviewPanel();
       }
+    } else {
+      _previousHighlightedItem = null;
     }
   }
 
@@ -7727,6 +7755,7 @@
       item.removeAttribute('data-zenleap-highlight');
       item.removeAttribute('data-zenleap-selected');
     });
+    _previousHighlightedItem = null;
     // Dismiss folder delete modal if open
     if (folderDeleteMode) {
       closeFolderDeleteModal();
@@ -7743,7 +7772,8 @@
       highlightedTabIndex = Math.max(highlightedTabIndex - 1, 0);
     }
 
-    updateHighlight();
+    // Fast path: only update old/new highlight items, skip full selection sync
+    updateHighlight({ syncSelection: false });
     updateLeapOverlayState();
     log(`Moved highlight ${direction} to ${highlightedTabIndex}`);
   }
@@ -9034,19 +9064,19 @@
     });
 
     gBrowser.tabContainer.addEventListener('TabOpen', () => {
-      setTimeout(updateRelativeNumbers, 50);
+      scheduleRelativeNumberUpdate();
     });
 
     gBrowser.tabContainer.addEventListener('TabClose', () => {
-      setTimeout(updateRelativeNumbers, 50);
+      scheduleRelativeNumberUpdate();
     });
 
     gBrowser.tabContainer.addEventListener('TabMove', () => {
-      updateRelativeNumbers();
+      scheduleRelativeNumberUpdate();
     });
 
     document.addEventListener('ZenWorkspaceChanged', () => {
-      setTimeout(updateRelativeNumbers, 100);
+      scheduleRelativeNumberUpdate();
     });
 
     log('Tab listeners set up');
@@ -9126,6 +9156,10 @@
   }
 
   function injectStyles() {
+    // Remove any existing style element for idempotent reinjection
+    const existing = document.getElementById('zenleap-styles');
+    if (existing) existing.remove();
+
     const style = document.createElement('style');
     style.id = 'zenleap-styles';
     style.textContent = `
@@ -9411,6 +9445,58 @@
         color: var(--zl-mark) !important;
         text-shadow: 0 0 6px var(--zl-mark-90) !important;
       }
+
+      /* Leap mode overlay (positioned fixed at bottom center, hidden until shown) */
+      #zenleap-overlay {
+        display: none;
+        position: fixed !important;
+        bottom: 20px !important;
+        left: 50% !important;
+        transform: translateX(-50%) !important;
+        z-index: 10000 !important;
+        background: rgba(30, 30, 30, 0.95) !important;
+        border: 2px solid var(--zl-accent, #61afef) !important;
+        border-radius: 8px !important;
+        padding: 12px 24px !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+        pointer-events: none !important;
+        animation: zenleap-fadein 0.15s ease-out;
+      }
+
+      @keyframes zenleap-fadein {
+        from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+
+      #zenleap-overlay-content {
+        display: flex !important;
+        align-items: center !important;
+        gap: 12px !important;
+      }
+
+      #zenleap-mode-label {
+        font-size: 14px !important;
+        font-weight: bold !important;
+        color: var(--zl-accent, #61afef) !important;
+        font-family: monospace !important;
+      }
+
+      #zenleap-direction-label {
+        font-size: 14px !important;
+        font-weight: bold !important;
+        color: #98c379 !important;
+        font-family: monospace !important;
+      }
+
+      #zenleap-hint-label {
+        font-size: 12px !important;
+        color: #abb2bf !important;
+        font-family: monospace !important;
+      }
+
+      #zenleap-overlay.leap-direction-set #zenleap-hint-label {
+        color: #e5c07b !important;
+      }
     `;
     document.head.appendChild(style);
     applyThemeColors();
@@ -9427,8 +9513,14 @@
   // Initialize
   let initRetries = 0;
   const MAX_INIT_RETRIES = 20;
+  let _zenleapInitDone = false;
 
   function init() {
+    if (_zenleapInitDone) {
+      log('ZenLeap already initialized, skipping re-init');
+      return;
+    }
+
     log(`Initializing ZenLeap v${VERSION}...`);
 
     if (!gBrowser || !gBrowser.tabs) {
@@ -9441,6 +9533,8 @@
       setTimeout(init, 500);
       return;
     }
+
+    _zenleapInitDone = true;
 
     injectStyles();
     setupTabListeners();
