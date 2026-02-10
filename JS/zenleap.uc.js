@@ -22,10 +22,10 @@
     'keys.global.search':          { default: { key: '/', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Tab Search', description: 'Open tab search', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.commandPalette':  { default: { key: '?', ctrl: true, shift: true, alt: false, meta: false }, type: 'combo', label: 'Command Palette', description: 'Open command palette directly (Ctrl+Shift+/)', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.quickMark':       { default: { key: "'", ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Quick Jump to Mark', description: 'Jump to mark without leap mode', category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.splitFocusLeft':  { default: { key: 'h', code: 'KeyH', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Left',  description: 'Focus split pane to the left',  category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.splitFocusDown':  { default: { key: 'j', code: 'KeyJ', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Down',  description: 'Focus split pane below',         category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Up',    description: 'Focus split pane above',         category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Focus Right', description: 'Focus split pane to the right', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusLeft':  { default: { key: 'h', code: 'KeyH', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Left',  description: 'Focus split pane left, or switch to previous workspace',  category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusDown':  { default: { key: 'j', code: 'KeyJ', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Down',  description: 'Focus split pane below, or switch to next tab down',      category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Up',    description: 'Focus split pane above, or switch to previous tab up',    category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Right', description: 'Focus split pane right, or switch to next workspace',     category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
 
     // --- Keybindings: Leap Mode ---
@@ -1666,6 +1666,18 @@
           if (!viewData?.layoutTree) return false;
           const lt = viewData.layoutTree;
           return lt.direction === 'row' || lt.direction === 'column';
+        } catch(e) { return false; }
+      }},
+      { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '⊡', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
+        try {
+          const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
+          if (container) window.gZenViewSplitter.removeTabFromSplit(container);
+        } catch (e) { log(`Remove tab from split failed: ${e}`); }
+      }, condition: () => {
+        try {
+          if (!window.gZenViewSplitter?.splitViewActive) return false;
+          const viewData = window.gZenViewSplitter._data[window.gZenViewSplitter.currentView];
+          return viewData?.tabs?.includes(gBrowser.selectedTab);
         } catch(e) { return false; }
       }},
 
@@ -4269,14 +4281,14 @@
   function splitFocusInDirection(direction) {
     try {
       const splitter = window.gZenViewSplitter;
-      if (!splitter?.splitViewActive) return;
+      if (!splitter?.splitViewActive) return false;
 
-      const viewData = splitter._data[splitter.currentView];
-      if (!viewData?.tabs || viewData.tabs.length < 2) return;
+      const viewData = splitter?._data?.[splitter.currentView];
+      if (!viewData?.tabs || viewData.tabs.length < 2) return false;
 
       const currentTab = gBrowser.selectedTab;
       const currentNode = splitter.getSplitNodeFromTab(currentTab);
-      if (!currentNode?.positionToRoot) return;
+      if (!currentNode?.positionToRoot) return false;
 
       const cur = currentNode.positionToRoot;
       const curCenterX = (cur.left + (100 - cur.right)) / 2;
@@ -4329,12 +4341,83 @@
       if (bestTab) {
         gBrowser.selectedTab = bestTab;
         log(`Split focus: moved ${direction} to tab "${bestTab.label}"`);
+        return true;
       } else {
         log(`Split focus: no pane found ${direction} of current`);
+        return false;
       }
     } catch (e) {
       log(`Split focus failed: ${e}`);
+      return false;
     }
+  }
+
+  // Get the positionToRoot bounds for the currently focused split pane.
+  // Returns null when split view is inactive or the tab has no split node.
+  function getSplitBounds() {
+    try {
+      const splitter = window.gZenViewSplitter;
+      if (!splitter?.splitViewActive) return null;
+      const node = splitter.getSplitNodeFromTab(gBrowser.selectedTab);
+      return node?.positionToRoot || null;
+    } catch (e) { return null; }
+  }
+
+  // Quick-switch to adjacent tab without entering browse/leap mode.
+  // When skipSplitGroup is true, skip tabs belonging to the current split
+  // group so that navigating at a split boundary jumps directly to the
+  // first non-split tab outside the group.
+  function quickSwitchTab(direction, skipSplitGroup = false) {
+    const items = getVisibleItems().filter(item => !isFolder(item));
+    const currentTab = gBrowser.selectedTab;
+    const currentIndex = items.indexOf(currentTab);
+    if (currentIndex === -1) return;
+
+    let splitTabs = null;
+    if (skipSplitGroup) {
+      const splitter = window.gZenViewSplitter;
+      const viewData = splitter?._data?.[splitter?.currentView];
+      if (viewData?.tabs) splitTabs = new Set(viewData.tabs);
+    }
+
+    let newIndex = -1;
+    if (direction === 'down') {
+      for (let i = currentIndex + 1; i < items.length; i++) {
+        if (!splitTabs || !splitTabs.has(items[i])) { newIndex = i; break; }
+      }
+    } else {
+      for (let i = currentIndex - 1; i >= 0; i--) {
+        if (!splitTabs || !splitTabs.has(items[i])) { newIndex = i; break; }
+      }
+    }
+
+    if (newIndex !== -1 && newIndex !== currentIndex) {
+      gBrowser.selectedTab = items[newIndex];
+      log(`Quick switch tab ${direction}: "${items[newIndex].label}"`);
+    }
+  }
+
+  // Quick-switch workspace without entering browse/leap mode
+  async function quickSwitchWorkspace(direction) {
+    try {
+      if (!window.gZenWorkspaces) return;
+      const workspaces = window.gZenWorkspaces.getWorkspaces();
+      if (!Array.isArray(workspaces) || workspaces.length < 2) return;
+
+      const currentId = window.gZenWorkspaces.activeWorkspace;
+      const currentIdx = workspaces.findIndex(ws => ws.uuid === currentId);
+      if (currentIdx < 0) return;
+
+      let newIdx;
+      if (direction === 'prev') {
+        newIdx = currentIdx > 0 ? currentIdx - 1 : workspaces.length - 1;
+      } else {
+        newIdx = currentIdx < workspaces.length - 1 ? currentIdx + 1 : 0;
+      }
+
+      await window.gZenWorkspaces.changeWorkspaceWithID(workspaces[newIdx].uuid);
+      log(`Quick switch workspace ${direction}`);
+    } catch (e) { log(`Quick workspace switch failed: ${e}`); }
   }
 
   // Render search results
@@ -8614,30 +8697,57 @@
       return;
     }
 
-    // Check for split view focus switching (global combos, only when split is active)
-    if (window.gZenViewSplitter?.splitViewActive) {
-      if (matchCombo(event, S['keys.global.splitFocusLeft'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        splitFocusInDirection('left');
-        return;
-      }
+    // Alt+HJKL: Quick navigation with split-view awareness.
+    // - Not in split: J/K switch tabs, H/L switch workspaces
+    // - In split, not at boundary: focus adjacent pane (existing behavior)
+    // - In split, at boundary: J/K navigate to first non-split tab outside
+    //   the group; H/L switch workspaces
+    {
+      const EDGE = 0.1; // threshold for "pane touches edge" (percentage)
+      const pos = getSplitBounds(); // null when split view inactive
+
       if (matchCombo(event, S['keys.global.splitFocusDown'])) {
         event.preventDefault();
         event.stopPropagation();
-        splitFocusInDirection('down');
+        event.stopImmediatePropagation();
+        if (pos && pos.bottom > EDGE) {
+          splitFocusInDirection('down');
+        } else {
+          quickSwitchTab('down', !!pos);
+        }
         return;
       }
       if (matchCombo(event, S['keys.global.splitFocusUp'])) {
         event.preventDefault();
         event.stopPropagation();
-        splitFocusInDirection('up');
+        event.stopImmediatePropagation();
+        if (pos && pos.top > EDGE) {
+          splitFocusInDirection('up');
+        } else {
+          quickSwitchTab('up', !!pos);
+        }
+        return;
+      }
+      if (matchCombo(event, S['keys.global.splitFocusLeft'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (pos && pos.left > EDGE) {
+          splitFocusInDirection('left');
+        } else {
+          quickSwitchWorkspace('prev');
+        }
         return;
       }
       if (matchCombo(event, S['keys.global.splitFocusRight'])) {
         event.preventDefault();
         event.stopPropagation();
-        splitFocusInDirection('right');
+        event.stopImmediatePropagation();
+        if (pos && pos.right > EDGE) {
+          splitFocusInDirection('right');
+        } else {
+          quickSwitchWorkspace('next');
+        }
         return;
       }
     }
