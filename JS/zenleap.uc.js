@@ -4352,8 +4352,7 @@
     if (searchResults.length > 0) {
       const selectedResult = searchResults[searchSelectedIndex];
       if (selectedResult?.tab) {
-        clearTimeout(previewDebounceTimer);
-        previewCaptureId++;
+        hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
           showPreviewForTab(selectedResult.tab, { force: true });
           positionPreviewPanelForModal();
@@ -4472,8 +4471,7 @@
     if (commandSubFlow && commandResults.length > 0) {
       const selectedResult = commandResults[searchSelectedIndex];
       if (selectedResult?.tab) {
-        clearTimeout(previewDebounceTimer);
-        previewCaptureId++;
+        hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
           showPreviewForTab(selectedResult.tab, { force: true });
           positionPreviewPanelForModal();
