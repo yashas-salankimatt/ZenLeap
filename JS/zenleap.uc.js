@@ -300,6 +300,7 @@
 
   // Session management state
   let sessionCache = null;         // { sessions: [], loadedAt: timestamp } — brief cache for picker
+  let sessionLoadPromise = null;   // In-flight load promise to prevent duplicate disk reads
 
   // Folder delete modal state (browse mode)
   let folderDeleteMode = false;
@@ -1683,7 +1684,7 @@
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
         S['display.browsePreview'] = !S['display.browsePreview'];
         saveSettings();
-        if (!S['display.browsePreview']) hidePreviewPanel();
+        if (!S['display.browsePreview']) hidePreviewPanel(true);
         log(`Browse preview ${S['display.browsePreview'] ? 'enabled' : 'disabled'}`);
       }},
       { key: 'toggle-debug', label: 'Toggle Debug Logging', icon: '🐛', tags: ['debug', 'log', 'zenleap'], command: () => {
@@ -1743,12 +1744,30 @@
   }
 
   // Get all available commands (static + dynamic)
+  // Caches the condition-filtered command list briefly to avoid re-evaluating
+  // expensive conditions (DOM queries, workspace lookups) on every keystroke.
+  // Cache is invalidated after 500ms or when command mode is exited.
+  let _commandListCache = null;
+  let _commandListCacheTime = 0;
+  const COMMAND_CACHE_TTL = 500;
+
   function getAllCommands() {
+    const now = Date.now();
+    if (_commandListCache && (now - _commandListCacheTime) < COMMAND_CACHE_TTL) {
+      return _commandListCache;
+    }
     const statics = getStaticCommands();
     const dynamics = getDynamicCommands();
     const all = [...statics, ...dynamics];
     // Filter by condition
-    return all.filter(cmd => !cmd.condition || cmd.condition());
+    _commandListCache = all.filter(cmd => !cmd.condition || cmd.condition());
+    _commandListCacheTime = now;
+    return _commandListCache;
+  }
+
+  function invalidateCommandCache() {
+    _commandListCache = null;
+    _commandListCacheTime = 0;
   }
 
   // Filter commands by query using fuzzy match
@@ -1877,7 +1896,7 @@
 
     // Clean up dedup-preview state when leaving it
     if (currentType === 'dedup-preview') {
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       dedupTabsToClose = [];
       if (searchInput) searchInput.readOnly = false;
     }
@@ -2377,7 +2396,7 @@
       allTabs = getVisibleTabs();
     }
 
-    // Filter to valid, non-essential, non-pinned tabs (same logic as deduplicateTabs)
+    // Filter to valid, non-essential, non-pinned tabs
     const validTabs = allTabs.filter(t =>
       t && !t.closing && t.parentNode &&
       !t.pinned &&
@@ -2480,7 +2499,7 @@
           log(`Deduplicated: closed ${count} duplicate tab(s)`);
           dedupTabsToClose = [];
         }
-        hidePreviewPanel();
+        hidePreviewPanel(true);
         exitSearchMode();
         break;
 
@@ -2610,6 +2629,7 @@
           if (sessionId) {
             deleteSessionFile(sessionId).then(() => {
               sessionCache = null;
+              sessionLoadPromise = null;
               exitSubFlow();
             }).catch(e => {
               log(`Delete session failed: ${e}`);
@@ -3167,35 +3187,45 @@
     if (sessionCache && (Date.now() - sessionCache.loadedAt < 5000)) {
       return sessionCache.sessions;
     }
-    const sessions = [];
-    try {
-      const dir = await getSessionsDir();
-      const children = await IOUtils.getChildren(dir);
-      for (const filePath of children) {
-        if (!filePath.endsWith('.json')) continue;
-        try {
-          const data = await IOUtils.readJSON(filePath);
-          if (data && data.version && data.id) {
-            data._filePath = filePath;
-            sessions.push(data);
+    // Reuse in-flight load to prevent duplicate concurrent disk reads
+    if (sessionLoadPromise) return sessionLoadPromise;
+
+    sessionLoadPromise = (async () => {
+      const sessions = [];
+      try {
+        const dir = await getSessionsDir();
+        const children = await IOUtils.getChildren(dir);
+        for (const filePath of children) {
+          if (!filePath.endsWith('.json')) continue;
+          try {
+            const data = await IOUtils.readJSON(filePath);
+            if (data && data.version && data.id) {
+              data._filePath = filePath;
+              sessions.push(data);
+            }
+          } catch (e) {
+            log(`Skipping corrupt session file: ${filePath}: ${e}`);
           }
-        } catch (e) {
-          log(`Skipping corrupt session file: ${filePath}: ${e}`);
         }
+      } catch (e) {
+        log(`Error loading sessions: ${e}`);
+      } finally {
+        sessionLoadPromise = null;
       }
-    } catch (e) {
-      log(`Error loading sessions: ${e}`);
-    }
-    sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-    sessionCache = { sessions, loadedAt: Date.now() };
-    return sessions;
+      sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+      sessionCache = { sessions, loadedAt: Date.now() };
+      return sessions;
+    })();
+
+    return sessionLoadPromise;
   }
 
   async function saveSessionToFile(sessionData) {
     const dir = await getSessionsDir();
     const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
     await IOUtils.writeJSON(filePath, sessionData);
-    sessionCache = null; // invalidate cache
+    sessionCache = null;
+    sessionLoadPromise = null;
     log(`Session saved: ${filePath}`);
   }
 
@@ -3209,6 +3239,7 @@
       log(`Delete session file failed: ${e}`);
     }
     sessionCache = null;
+    sessionLoadPromise = null;
   }
 
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
@@ -4107,6 +4138,7 @@
   }
 
   function adjustHighlightAfterDeletion() {
+    _visibleItemsCache = null; // Invalidate after DOM mutation (folder/tab deletion)
     const newItems = getVisibleItems();
     if (newItems.length === 0) {
       exitLeapMode(false);
@@ -4238,56 +4270,6 @@
     }
   }
 
-  // Deduplicate tabs: find tabs with same URL, keep most recent, close the rest
-  function deduplicateTabs() {
-    // Get ALL tabs across all workspaces
-    let allTabs;
-    try {
-      if (window.gZenWorkspaces?.allStoredTabs) {
-        allTabs = Array.from(gZenWorkspaces.allStoredTabs);
-      } else {
-        allTabs = Array.from(gBrowser.tabs);
-      }
-    } catch (e) {
-      allTabs = Array.from(gBrowser.tabs);
-    }
-
-    // Filter to valid, non-essential, non-pinned tabs
-    const validTabs = allTabs.filter(t =>
-      t && !t.closing && t.parentNode &&
-      !t.pinned &&
-      !t.hasAttribute('zen-essential') &&
-      !t.hasAttribute('zen-glance-tab') &&
-      !t.hasAttribute('zen-empty-tab')
-    );
-
-    // Group by URL
-    const urlGroups = new Map();
-    for (const tab of validTabs) {
-      const url = tab.linkedBrowser?.currentURI?.spec;
-      if (!url || url === 'about:blank' || url === 'about:newtab') continue;
-      if (!urlGroups.has(url)) urlGroups.set(url, []);
-      urlGroups.get(url).push(tab);
-    }
-
-    // For each group with >1 tab, keep the most recently accessed, close the rest
-    let closedCount = 0;
-    for (const [url, tabs] of urlGroups) {
-      if (tabs.length < 2) continue;
-      tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
-      for (let i = 1; i < tabs.length; i++) {
-        try {
-          gBrowser.removeTab(tabs[i]);
-          closedCount++;
-        } catch (e) {
-          log(`Failed to close duplicate tab: ${e}`);
-        }
-      }
-    }
-
-    log(`Deduplicated: closed ${closedCount} duplicate tab(s)`);
-  }
-
   // Render search results
   function renderSearchResults() {
     if (!searchResultsList) return;
@@ -4296,7 +4278,7 @@
 
     if (searchResults.length === 0) {
       searchResultsList.innerHTML = '<div class="zenleap-search-empty">No matching tabs found</div>';
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       return;
     }
 
@@ -4384,7 +4366,7 @@
       const emptyMsg = commandSubFlow ? 'No results found' : 'No matching commands';
       searchResultsList.innerHTML = `<div class="zenleap-search-empty">${emptyMsg}</div>`;
       updateSearchHintBar();
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       return;
     }
 
@@ -4530,6 +4512,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     searchSelectedIndex = 0;
+    invalidateCommandCache();
 
     // Restore to insert mode for normal search
     searchVimMode = 'insert';
@@ -5615,14 +5598,22 @@
 
   // Enter command bar from browse mode with context
   function enterBrowseCommandMode() {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
     // Collect tabs: selected tabs (sorted by position), or just highlighted tab
+    // Use getVisibleItems() to resolve highlighted item (which may be a folder),
+    // since highlightedTabIndex indexes into the items list (tabs + folders)
     let collectedTabs;
     if (selectedTabs.size > 0) {
       collectedTabs = sortTabsBySidebarPosition([...selectedTabs].filter(t => t && !t.closing && t.parentNode));
-    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-      collectedTabs = [tabs[highlightedTabIndex]];
+    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+      const highlightedItem = items[highlightedTabIndex];
+      // Only operate on tabs, not folders
+      if (isFolder(highlightedItem)) {
+        log('Cannot enter browse command mode on a folder');
+        return;
+      }
+      collectedTabs = [highlightedItem];
     } else {
       collectedTabs = [];
     }
@@ -5645,7 +5636,7 @@
     // Hide browse UI without fully tearing down leap mode
     clearHighlight();
     hideLeapOverlay();
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Reset mode flags so enterSearchMode doesn't try to exit leap mode again
     leapMode = false;
@@ -5680,7 +5671,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     if (searchInput) searchInput.readOnly = false;
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -5787,7 +5778,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     if (searchInput) searchInput.readOnly = false;
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -6065,7 +6056,7 @@
           event.stopPropagation();
           const selected = commandResults[searchSelectedIndex];
           if (selected?.tab) {
-            hidePreviewPanel();
+            hidePreviewPanel(true);
             exitSearchMode();
             gBrowser.selectedTab = selected.tab;
             log(`Dedup preview: switched to tab "${selected.tab.label}" for inspection`);
@@ -6660,7 +6651,14 @@
   }
 
   // Get visible tabs AND folders in DOM order (for browse mode navigation)
+  // Uses a microtask-scoped cache so multiple calls within the same event handler
+  // (e.g. moveHighlight -> updateHighlight -> updateLeapOverlayState) reuse one result
+  // instead of rescanning and re-sorting the DOM each time.
+  let _visibleItemsCache = null;
+
   function getVisibleItems() {
+    if (_visibleItemsCache) return _visibleItemsCache;
+
     const tabs = getVisibleTabs().filter(tab => {
       // Exclude tabs inside collapsed folders — Zen hides the container,
       // not individual tabs, so tab.hidden stays false
@@ -6683,6 +6681,10 @@
       if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
       return 0;
     });
+
+    _visibleItemsCache = combined;
+    // Invalidate at end of current microtask so next event gets fresh data
+    Promise.resolve().then(() => { _visibleItemsCache = null; });
     return combined;
   }
 
@@ -6704,6 +6706,38 @@
     return getVisibleTabs();
   }
 
+  // Build a workspace ID -> name map once, then reuse for all tabs in a search render.
+  // Avoids O(results × workspaces) repeated getWorkspaces() calls.
+  let _wsNameMap = null;
+  let _wsNameMapTime = 0;
+  const WS_NAME_MAP_TTL = 500;
+
+  function getWorkspaceNameMap() {
+    const now = Date.now();
+    if (_wsNameMap && (now - _wsNameMapTime) < WS_NAME_MAP_TTL) return _wsNameMap;
+    const map = new Map();
+    try {
+      if (!window.gZenWorkspaces) {
+        _wsNameMap = map;
+        _wsNameMapTime = now;
+        return map;
+      }
+      const workspaces = gZenWorkspaces.getWorkspaces();
+      if (Array.isArray(workspaces)) {
+        for (const ws of workspaces) {
+          map.set(ws.uuid, ws.name);
+        }
+      }
+    } catch (e) {
+      // Don't cache on error — allow retry on next call
+      log(`getWorkspaceNameMap failed: ${e}`);
+      return map;
+    }
+    _wsNameMap = map;
+    _wsNameMapTime = now;
+    return map;
+  }
+
   // Get workspace name for a tab (returns null if same as active workspace)
   function getTabWorkspaceName(tab) {
     try {
@@ -6711,10 +6745,8 @@
       const tabWsId = tab.getAttribute('zen-workspace-id');
       const activeWsId = gZenWorkspaces.activeWorkspace;
       if (!tabWsId || tabWsId === activeWsId) return null;
-      const workspaces = gZenWorkspaces.getWorkspaces();
-      if (!workspaces) return null;
-      const ws = workspaces.find(w => w.uuid === tabWsId);
-      return ws ? ws.name : null;
+      const wsMap = getWorkspaceNameMap();
+      return wsMap.get(tabWsId) || null;
     } catch (e) {
       return null;
     }
@@ -7057,22 +7089,38 @@
       }
     } catch (e) {}
     // Method 3: frame script injection (Fission-compatible, queries content process directly)
+    // Uses a single static frame script per browser to avoid accumulating scripts,
+    // but includes a per-call requestId so concurrent responses don't collide.
     try {
       return new Promise((resolve) => {
         const mm = browser.messageManager;
         if (!mm) { resolve({ x: 0, y: 0 }); return; }
-        const msgId = 'ZenLeap:ScrollPos:' + Date.now() + Math.random();
+        const requestId = Date.now() + '_' + Math.random();
         const timer = setTimeout(() => {
-          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve({ x: 0, y: 0 });
         }, 300);
         function handler(msg) {
+          if (msg.data?.requestId !== requestId) return; // Not our response
           clearTimeout(timer);
-          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve(msg.data || { x: 0, y: 0 });
         }
-        mm.addMessageListener(msgId, handler);
-        mm.loadFrameScript(`data:,sendAsyncMessage('${msgId}', {x: content.scrollX || 0, y: content.scrollY || 0})`, false);
+        mm.addMessageListener('ZenLeap:ScrollPos:Response', handler);
+        // Install the static frame script once per browser (allowDelayedLoad=false prevents re-injection)
+        if (!browser._zenleapScrollScriptLoaded) {
+          mm.loadFrameScript(`data:,
+            addMessageListener('ZenLeap:ScrollPos:Request', function(msg) {
+              sendAsyncMessage('ZenLeap:ScrollPos:Response', {
+                requestId: msg.data && msg.data.requestId,
+                x: content.scrollX || 0,
+                y: content.scrollY || 0
+              });
+            });
+          `, false);
+          browser._zenleapScrollScriptLoaded = true;
+        }
+        mm.sendAsyncMessage('ZenLeap:ScrollPos:Request', { requestId });
       });
     } catch (e) {}
     return Promise.resolve({ x: 0, y: 0 });
@@ -7202,14 +7250,16 @@
     previewPanel.style.top = `${topPos}px`;
   }
 
-  function hidePreviewPanel() {
+  function hidePreviewPanel(clearCache = false) {
     if (previewPanel) {
       previewPanel.style.display = 'none';
     }
     clearTimeout(previewDebounceTimer);
     previewCaptureId++;
     previewCurrentTab = null;
-    previewCache.clear();
+    if (clearCache) {
+      previewCache.clear();
+    }
   }
 
   function cleanPreviewCache() {
@@ -7517,6 +7567,10 @@
     const currentTab = gBrowser.selectedTab;
     const currentIndex = items.indexOf(currentTab);
 
+    // Evict the active tab's preview from cache — the user was just interacting
+    // with it (scrolling, typing, etc.) so any cached snapshot is likely stale.
+    previewCache.delete(currentTab);
+
     if (currentIndex === -1) {
       // Current tab not in visible items (e.g. new tab page, empty workspace tab).
       // Fall back to the first unpinned tab so browse mode can still start.
@@ -7581,6 +7635,8 @@
       if (S['display.browsePreview'] && browseMode && !isFolder(highlightedItem)) {
         clearTimeout(previewDebounceTimer);
         previewCaptureId++; // Cancel any in-flight capture
+        // Hide panel visually but preserve cache — during browse navigation we want
+        // to reuse cached thumbnails when revisiting tabs, not recapture each time.
         hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
           const currentItems = getVisibleItems();
@@ -7592,7 +7648,7 @@
           }
         }, S['timing.previewDelay']);
       } else if (isFolder(highlightedItem)) {
-        // Hide preview when navigating over a folder
+        // Hide preview when navigating over a folder (preserve cache for same reason)
         clearTimeout(previewDebounceTimer);
         hidePreviewPanel();
       }
@@ -7674,6 +7730,7 @@
 
       // After workspace switch, highlight the active tab in the new workspace
       setTimeout(() => {
+        _visibleItemsCache = null; // Ensure fresh data after workspace switch
         const newItems = getVisibleItems();
         const activeIdx = newItems.indexOf(gBrowser.selectedTab);
         highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
@@ -7741,6 +7798,7 @@
         log(`Toggled folder "${item.label}" collapsed=${item.collapsed}`);
         // After toggling, the visible items list changes. Re-index after DOM settles.
         setTimeout(() => {
+          _visibleItemsCache = null; // Invalidate after folder collapse/expand
           const newItems = getVisibleItems();
           const newIdx = newItems.indexOf(item);
           if (newIdx >= 0) {
@@ -7771,6 +7829,7 @@
       }
       selectedTabs.clear();
 
+      _visibleItemsCache = null; // Invalidate after DOM mutation
       const newItems = getVisibleItems();
       if (newItems.length === 0) {
         exitLeapMode(false);
@@ -7804,6 +7863,7 @@
     gBrowser.removeTab(item);
     log(`Closed tab at index ${highlightedTabIndex}`);
 
+    _visibleItemsCache = null; // Invalidate after DOM mutation
     const newItems = getVisibleItems();
 
     if (newItems.length === 0) {
@@ -8016,7 +8076,7 @@
   // Exit leap mode
   function exitLeapMode(centerScroll = false) {
     clearHighlight();
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Hide sidebar if we expanded it on entry
     if (sidebarWasExpanded) {
@@ -8079,36 +8139,6 @@
     gBrowser.selectedTab = tabs[targetIndex];
     log(`Jumped to absolute tab ${tabNumber} (index ${targetIndex})`);
     exitLeapMode(true);
-  }
-
-  // Navigate to tab by relative distance (direct jump, no browse mode)
-  function navigateToTab(direction, distance) {
-    const tabs = getVisibleTabs();
-    const currentTab = gBrowser.selectedTab;
-    const currentIndex = tabs.indexOf(currentTab);
-
-    let targetIndex;
-    if (currentIndex === -1) {
-      // Current tab not in visible list (e.g. new tab page).
-      // Treat index 0 as the starting point for navigation.
-      if (tabs.length === 0) return false;
-      targetIndex = direction === 'up' ? 0 : Math.min(distance - 1, tabs.length - 1);
-    } else if (direction === 'up') {
-      targetIndex = currentIndex - distance;
-    } else {
-      targetIndex = currentIndex + distance;
-    }
-
-    targetIndex = Math.max(0, Math.min(tabs.length - 1, targetIndex));
-
-    if (targetIndex !== currentIndex) {
-      gBrowser.selectedTab = tabs[targetIndex];
-      log(`Navigated ${direction} ${distance} tabs to index ${targetIndex}`);
-      return true;
-    }
-
-    log(`Already at boundary, cannot navigate ${direction}`);
-    return false;
   }
 
   // Find scrollable tab container
