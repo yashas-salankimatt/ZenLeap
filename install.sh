@@ -5,7 +5,7 @@
 # Options:
 #   --remote                Download latest ZenLeap from GitHub instead of using local files
 #   --check                 Check if installed version is outdated (returns 0 if up-to-date, 1 if outdated)
-#   --profile <index>       Select profile by index (1-based), skip interactive prompt
+#   --profile <index>       Select profile by index (1-based); omit to install to ALL profiles
 #   --yes, -y               Auto-confirm all prompts (non-interactive mode)
 #   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
 #
@@ -244,7 +244,7 @@ detect_os() {
 }
 
 # Find Zen profile directory
-find_profile() {
+find_profiles() {
     if [ ! -d "$PROFILE_BASE" ]; then
         echo -e "${RED}Error: Zen profile directory not found at $PROFILE_BASE${NC}"
         echo "Please run Zen Browser at least once to create a profile"
@@ -263,43 +263,40 @@ find_profile() {
         exit 1
     fi
 
-    # If only one profile, use it
-    if [ ${#PROFILES[@]} -eq 1 ]; then
-        PROFILE_DIR="${PROFILES[0]}"
-        echo -e "${GREEN}✓${NC} Found profile: $(basename "$PROFILE_DIR")"
-    elif [ -n "$PROFILE_INDEX" ]; then
-        # Non-interactive: use specified profile index
+    # Build the list of profiles to operate on
+    SELECTED_PROFILES=()
+
+    if [ -n "$PROFILE_INDEX" ]; then
+        # --profile flag: use specified profile index only
         if ! [[ "$PROFILE_INDEX" =~ ^[0-9]+$ ]] || [ "$PROFILE_INDEX" -lt 1 ] || [ "$PROFILE_INDEX" -gt ${#PROFILES[@]} ]; then
             echo -e "${RED}Error: Invalid profile index $PROFILE_INDEX (valid range: 1-${#PROFILES[@]})${NC}"
             exit 1
         fi
-        PROFILE_DIR="${PROFILES[$((PROFILE_INDEX-1))]}"
-        echo -e "${GREEN}✓${NC} Selected profile (index $PROFILE_INDEX): $(basename "$PROFILE_DIR")"
+        SELECTED_PROFILES+=("${PROFILES[$((PROFILE_INDEX-1))]}")
+        echo -e "${GREEN}✓${NC} Selected profile (index $PROFILE_INDEX): $(basename "${SELECTED_PROFILES[0]}")"
     else
-        # Multiple profiles - let user choose
-        echo -e "${YELLOW}Multiple profiles found:${NC}"
-        for i in "${!PROFILES[@]}"; do
-            profile_name=$(basename "${PROFILES[$i]}")
-            # Check if ZenLeap is installed in this profile
-            if [ -f "${PROFILES[$i]}/chrome/JS/zenleap.uc.js" ]; then
-                echo "  $((i+1)). $profile_name ${GREEN}(ZenLeap installed)${NC}"
-            else
-                echo "  $((i+1)). $profile_name"
-            fi
-        done
-        echo ""
-        echo -n "Select profile (1-${#PROFILES[@]}): "
-        read -r selection <&3
-
-        if ! [[ "$selection" =~ ^[0-9]+$ ]] || [ "$selection" -lt 1 ] || [ "$selection" -gt ${#PROFILES[@]} ]; then
-            echo -e "${RED}Invalid selection${NC}"
-            exit 1
+        # No --profile flag: install to ALL profiles
+        SELECTED_PROFILES=("${PROFILES[@]}")
+        if [ ${#SELECTED_PROFILES[@]} -eq 1 ]; then
+            echo -e "${GREEN}✓${NC} Found profile: $(basename "${SELECTED_PROFILES[0]}")"
+        else
+            echo -e "${GREEN}✓${NC} Found ${#SELECTED_PROFILES[@]} profiles (installing to all):"
+            for p in "${SELECTED_PROFILES[@]}"; do
+                local pname
+                pname=$(basename "$p")
+                if [ -f "$p/chrome/JS/zenleap.uc.js" ]; then
+                    echo "    - $pname ${GREEN}(ZenLeap installed)${NC}"
+                else
+                    echo "    - $pname"
+                fi
+            done
         fi
-
-        PROFILE_DIR="${PROFILES[$((selection-1))]}"
-        echo -e "${GREEN}✓${NC} Selected profile: $(basename "$PROFILE_DIR")"
     fi
+}
 
+# Set per-profile path variables for a given profile directory
+set_profile_paths() {
+    PROFILE_DIR="$1"
     CHROME_DIR="$PROFILE_DIR/chrome"
     JS_DIR="$CHROME_DIR/JS"
 }
@@ -551,14 +548,29 @@ clear_cache() {
 # Main install function
 do_install() {
     detect_os
-    find_profile
+    find_profiles
     check_zen_running
 
+    # Install fx-autoconfig once (uses first profile to check, installs to all)
+    set_profile_paths "${SELECTED_PROFILES[0]}"
     if ! check_fxautoconfig; then
         install_fxautoconfig
     fi
 
-    install_zenleap
+    # Install ZenLeap to each selected profile
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        set_profile_paths "$profile"
+        echo ""
+        echo -e "${BLUE}--- $(basename "$profile") ---${NC}"
+
+        # Ensure fx-autoconfig profile files exist in this profile too
+        if [ ! -f "$CHROME_DIR/utils/boot.sys.mjs" ] && [ ! -f "$CHROME_DIR/utils/chrome.manifest" ]; then
+            install_fxautoconfig
+        fi
+
+        install_zenleap
+    done
+
     clear_cache
 
     echo ""
@@ -599,7 +611,7 @@ do_install() {
 # Main uninstall function
 do_uninstall() {
     detect_os
-    find_profile
+    find_profiles
 
     # Track if Zen was running before we closed it
     ZEN_WAS_RUNNING=false
@@ -608,9 +620,17 @@ do_uninstall() {
     fi
 
     check_zen_running
-    uninstall_zenleap
 
-    # Offer to uninstall fx-autoconfig
+    # Uninstall ZenLeap from each selected profile
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        set_profile_paths "$profile"
+        echo ""
+        echo -e "${BLUE}--- $(basename "$profile") ---${NC}"
+        uninstall_zenleap
+    done
+
+    # Offer to uninstall fx-autoconfig (check first profile for utils)
+    set_profile_paths "${SELECTED_PROFILES[0]}"
     if [ -f "$ZEN_RESOURCES/config.js" ] || [ -d "$CHROME_DIR/utils" ]; then
         if [ "$AUTO_YES" = true ]; then
             if [ "$REMOVE_FXAUTOCONFIG" = true ]; then
@@ -658,28 +678,33 @@ do_uninstall() {
 # Check version and report status
 do_check() {
     detect_os
-    find_profile
+    find_profiles
 
-    local installed_version=$(get_version "$JS_DIR/zenleap.uc.js")
     local remote_version=$(get_remote_version)
+    local any_outdated=false
 
-    if [ -z "$installed_version" ]; then
-        echo "NOT_INSTALLED"
-        return 2
-    fi
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        set_profile_paths "$profile"
+        local pname
+        pname=$(basename "$profile")
+        local installed_version=$(get_version "$JS_DIR/zenleap.uc.js")
 
-    if [ -z "$remote_version" ]; then
-        echo "INSTALLED:$installed_version:UNKNOWN"
-        return 0
-    fi
+        if [ -z "$installed_version" ]; then
+            echo "$pname: NOT_INSTALLED"
+        elif [ -z "$remote_version" ]; then
+            echo "$pname: INSTALLED:$installed_version:UNKNOWN"
+        elif version_gte "$installed_version" "$remote_version"; then
+            echo "$pname: UP_TO_DATE:$installed_version:$remote_version"
+        else
+            echo "$pname: OUTDATED:$installed_version:$remote_version"
+            any_outdated=true
+        fi
+    done
 
-    if version_gte "$installed_version" "$remote_version"; then
-        echo "UP_TO_DATE:$installed_version:$remote_version"
-        return 0
-    else
-        echo "OUTDATED:$installed_version:$remote_version"
+    if [ "$any_outdated" = true ]; then
         return 1
     fi
+    return 0
 }
 
 # Parse arguments
@@ -725,7 +750,7 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Options:"
             echo "  --remote                Download latest from GitHub instead of local files"
-            echo "  --profile <index>       Select profile by index (1-based), skip prompt"
+            echo "  --profile <index>       Select profile by index (1-based); omit for ALL profiles"
             echo "  --yes, -y               Auto-confirm all prompts (non-interactive mode)"
             echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
             echo ""
