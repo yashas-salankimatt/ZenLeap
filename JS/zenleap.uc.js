@@ -276,6 +276,10 @@
   let searchSelectedIndex = 0;
   let searchVimMode = 'insert';  // 'insert' or 'normal'
   let searchCursorPos = 0;
+  // jj-to-normal-mode state
+  const JJ_THRESHOLD_MS = 150;   // Max gap between two j presses to trigger escape
+  let jjPending = false;          // true while waiting for a possible second j
+  let jjPendingTimeout = null;    // timeout handle for flushing a single j
   let searchModal = null;
   let searchInput = null;
   let searchInputDisplay = null;  // Visual display for normal mode with block cursor
@@ -1366,6 +1370,36 @@
 
     // Handle keydown on input for insert mode navigation
     searchInput.addEventListener('keydown', (e) => {
+      // --- jj-to-normal-mode intercept (insert mode only, vim enabled) ---
+      if (S['display.vimModeInBars'] && searchVimMode === 'insert' &&
+          e.key === 'j' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (jjPending) {
+          // Second j within threshold → escape to normal mode + navigate down
+          cancelPendingJJ();
+          searchCursorPos = searchInput.selectionStart || 0;
+          searchVimMode = 'normal';
+          updateSearchVimIndicator();
+          moveSearchSelection('down');
+          moveSearchSelection('down');
+        } else {
+          // First j → hold it, wait for possible second j
+          jjPending = true;
+          jjPendingTimeout = setTimeout(flushPendingJ, JJ_THRESHOLD_MS);
+        }
+        return;
+      }
+
+      // Flush/cancel pending j when any other key arrives
+      if (jjPending) {
+        if (e.key === 'Escape') {
+          cancelPendingJJ(); // discard held j on Escape
+        } else {
+          flushPendingJ();   // insert held j before processing this key
+        }
+      }
+
       // Let navigation/action keys propagate to handleSearchKeyDown
       if ((e.ctrlKey && (e.key === 'j' || e.key === 'k')) ||
           e.key === 'ArrowUp' || e.key === 'ArrowDown' ||
@@ -5734,6 +5768,7 @@
     searchSelectedIndex = 0;
     searchVimMode = 'insert';
     searchCursorPos = 0;
+    cancelPendingJJ();
 
     // Reset command state
     commandMode = false;
@@ -5773,6 +5808,7 @@
 
     searchMode = false;
     searchModal.classList.remove('active');
+    cancelPendingJJ();
 
     // Reset vim mode to insert for next time
     searchVimMode = 'insert';
@@ -6036,6 +6072,27 @@
 
     // Update hint bar to reflect current mode
     updateSearchHintBar();
+  }
+
+  // ---- jj-to-normal-mode helpers ----
+  function cancelPendingJJ() {
+    if (jjPendingTimeout) {
+      clearTimeout(jjPendingTimeout);
+      jjPendingTimeout = null;
+    }
+    jjPending = false;
+  }
+
+  function flushPendingJ() {
+    if (!jjPending) return;
+    cancelPendingJJ();
+    if (!searchInput) return;
+    const start = searchInput.selectionStart;
+    const end = searchInput.selectionEnd;
+    const value = searchInput.value;
+    searchInput.value = value.slice(0, start) + 'j' + value.slice(end);
+    searchInput.selectionStart = searchInput.selectionEnd = start + 1;
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   // Handle search mode keyboard input
