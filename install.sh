@@ -5,7 +5,6 @@
 # Options:
 #   --remote                Download latest ZenLeap from GitHub instead of using local files
 #   --check                 Check if installed version is outdated (returns 0 if up-to-date, 1 if outdated)
-#   --gui                   Run in GUI mode (use osascript dialogs instead of terminal prompts)
 #   --profile <index>       Select profile by index (1-based), skip interactive prompt
 #   --yes, -y               Auto-confirm all prompts (non-interactive mode)
 #   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
@@ -65,85 +64,15 @@ FXAUTOCONFIG_REPO="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/head
 ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
+ZENLEAP_CHECKSUMS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHECKSUMS.sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Flags
 USE_REMOTE=false
 CHECK_ONLY=false
-GUI_MODE=false
 PROFILE_INDEX=""
 AUTO_YES=false
 REMOVE_FXAUTOCONFIG=false
-
-# Escape a string for safe use inside AppleScript double quotes
-escape_applescript() {
-    local str="$1"
-    str="${str//\\/\\\\}"  # Escape backslashes first
-    str="${str//\"/\\\"}"  # Escape double quotes
-    echo "$str"
-}
-
-# GUI helper functions
-gui_prompt() {
-    local message
-    message=$(escape_applescript "$1")
-    local default="$2"
-    if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
-        result=$(osascript -e "display dialog \"$message\" buttons {\"No\", \"Yes\"} default button \"Yes\"" 2>/dev/null | grep -q "Yes" && echo "y" || echo "n")
-        echo "$result"
-    else
-        echo -n "$1 (y/n): "
-        read -r response <&3
-        echo "$response"
-    fi
-}
-
-gui_alert() {
-    local message
-    message=$(escape_applescript "$1")
-    if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
-        osascript -e "display dialog \"$message\" buttons {\"OK\"} default button \"OK\"" 2>/dev/null
-    else
-        echo -e "$1"
-    fi
-}
-
-gui_choose() {
-    local prompt
-    prompt=$(escape_applescript "$1")
-    shift
-    local options=("$@")
-    if [ "$GUI_MODE" = true ] && [ "$OS" = "macos" ]; then
-        # Build AppleScript list with escaped strings
-        local list_items=""
-        for opt in "${options[@]}"; do
-            local escaped_opt
-            escaped_opt=$(escape_applescript "$opt")
-            list_items+="\"$escaped_opt\", "
-        done
-        list_items="${list_items%, }"
-        result=$(osascript -e "choose from list {$list_items} with prompt \"$prompt\"" 2>/dev/null)
-        if [ "$result" = "false" ]; then
-            echo ""
-        else
-            # Find index of selected item
-            for i in "${!options[@]}"; do
-                if [ "${options[$i]}" = "$result" ]; then
-                    echo "$((i+1))"
-                    return
-                fi
-            done
-        fi
-    else
-        echo "$prompt"
-        for i in "${!options[@]}"; do
-            echo "  $((i+1)). ${options[$i]}"
-        done
-        echo -n "Select (1-${#options[@]}): "
-        read -r selection <&3
-        echo "$selection"
-    fi
-}
 
 # Get version from a zenleap.uc.js file
 get_version() {
@@ -175,7 +104,47 @@ version_gte() {
     [ "$(printf '%s\n' "$v2" "$v1" | sort -V | head -n1)" = "$v2" ]
 }
 
-# Download ZenLeap from remote
+# Verify a downloaded file against a SHA-256 checksums file.
+# Usage: verify_checksum <file> <relative_path> <checksums_file>
+# Returns 0 if checksum matches, 1 if mismatch, 2 if entry not found.
+verify_checksum() {
+    local file="$1"
+    local rel_path="$2"
+    local checksums_file="$3"
+
+    if [ ! -f "$checksums_file" ]; then
+        return 2
+    fi
+
+    # Extract expected hash for this relative path
+    local expected
+    expected=$(grep -E "^[0-9a-f]{64}  ${rel_path}$" "$checksums_file" | awk '{print $1}')
+    if [ -z "$expected" ]; then
+        return 2
+    fi
+
+    # Compute actual hash (shasum on macOS, sha256sum on Linux)
+    local actual
+    if command -v sha256sum &> /dev/null; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum &> /dev/null; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        echo -e "${YELLOW}⚠${NC} Cannot verify checksum (sha256sum/shasum not found)"
+        return 2
+    fi
+
+    if [ "$actual" = "$expected" ]; then
+        return 0
+    else
+        echo -e "${RED}Checksum mismatch for ${rel_path}!${NC}"
+        echo "  Expected: $expected"
+        echo "  Got:      $actual"
+        return 1
+    fi
+}
+
+# Download ZenLeap from remote (with optional checksum verification)
 download_zenleap() {
     local dest_dir="$1"
     echo "  Downloading latest ZenLeap from GitHub..."
@@ -192,20 +161,40 @@ download_zenleap() {
         return 1
     fi
 
+    # Verify integrity against repo checksums (best-effort: warn but don't
+    # block install if the checksums file is missing or doesn't have entries).
+    local checksums_file="$dest_dir/.checksums"
+    if curl -sfL "$ZENLEAP_CHECKSUMS_URL" -o "$checksums_file" 2>/dev/null; then
+        local failed=false
+        local rc=0
+        verify_checksum "$dest_dir/JS/zenleap.uc.js" "JS/zenleap.uc.js" "$checksums_file" || rc=$?
+        if [ "$rc" -eq 1 ]; then failed=true; fi
+        rc=0
+        verify_checksum "$dest_dir/chrome.css" "chrome.css" "$checksums_file" || rc=$?
+        if [ "$rc" -eq 1 ]; then failed=true; fi
+        rm -f "$checksums_file"
+
+        if [ "$failed" = true ]; then
+            echo -e "${RED}Error: Downloaded files failed integrity check — aborting${NC}"
+            return 1
+        fi
+        echo -e "${GREEN}✓${NC} Integrity verified"
+    else
+        echo -e "${YELLOW}⚠${NC} Checksums file not available — skipping integrity check"
+    fi
+
     echo -e "${GREEN}✓${NC} Downloaded latest ZenLeap"
     return 0
 }
 
-# Show banner (only in terminal mode)
+# Show banner
 show_banner() {
-    if [ "$GUI_MODE" = false ]; then
-        echo -e "${BLUE}"
-        echo "╔═══════════════════════════════════════════════════════════╗"
-        echo "║                   ZenLeap Installer                       ║"
-        echo "║         Vim-style Relative Tab Navigation                 ║"
-        echo "╚═══════════════════════════════════════════════════════════╝"
-        echo -e "${NC}"
-    fi
+    echo -e "${BLUE}"
+    echo "╔═══════════════════════════════════════════════════════════╗"
+    echo "║                   ZenLeap Installer                       ║"
+    echo "║         Vim-style Relative Tab Navigation                 ║"
+    echo "╚═══════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
 }
 
 # Detect OS
@@ -712,9 +701,6 @@ while [ $# -gt 0 ]; do
         --check)
             ACTION="check"
             ;;
-        --gui)
-            GUI_MODE=true
-            ;;
         --profile)
             shift
             if [ -z "$1" ] || [[ "$1" == --* ]]; then
@@ -739,7 +725,6 @@ while [ $# -gt 0 ]; do
             echo ""
             echo "Options:"
             echo "  --remote                Download latest from GitHub instead of local files"
-            echo "  --gui                   Use GUI dialogs (macOS only)"
             echo "  --profile <index>       Select profile by index (1-based), skip prompt"
             echo "  --yes, -y               Auto-confirm all prompts (non-interactive mode)"
             echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
@@ -758,7 +743,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# Show banner (unless in check mode or GUI mode)
+# Show banner (unless in check mode)
 if [ "$ACTION" != "check" ]; then
     show_banner
 fi
