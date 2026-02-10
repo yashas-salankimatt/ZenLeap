@@ -3209,10 +3209,11 @@
         }
       } catch (e) {
         log(`Error loading sessions: ${e}`);
+      } finally {
+        sessionLoadPromise = null;
       }
       sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
       sessionCache = { sessions, loadedAt: Date.now() };
-      sessionLoadPromise = null;
       return sessions;
     })();
 
@@ -7797,6 +7798,7 @@
         log(`Toggled folder "${item.label}" collapsed=${item.collapsed}`);
         // After toggling, the visible items list changes. Re-index after DOM settles.
         setTimeout(() => {
+          _visibleItemsCache = null; // Invalidate after folder collapse/expand
           const newItems = getVisibleItems();
           const newIdx = newItems.indexOf(item);
           if (newIdx >= 0) {
