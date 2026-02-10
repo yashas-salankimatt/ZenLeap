@@ -7548,6 +7548,10 @@
     const currentTab = gBrowser.selectedTab;
     const currentIndex = items.indexOf(currentTab);
 
+    // Evict the active tab's preview from cache — the user was just interacting
+    // with it (scrolling, typing, etc.) so any cached snapshot is likely stale.
+    previewCache.delete(currentTab);
+
     if (currentIndex === -1) {
       // Current tab not in visible items (e.g. new tab page, empty workspace tab).
       // Fall back to the first unpinned tab so browse mode can still start.
