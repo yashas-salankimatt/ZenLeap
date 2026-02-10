@@ -280,6 +280,8 @@
   const JJ_THRESHOLD_MS = 150;   // Max gap between two j presses to trigger escape
   let jjPending = false;          // true while waiting for a possible second j
   let jjPendingTimeout = null;    // timeout handle for flushing a single j
+  let jjSavedValue = null;        // input value snapshot before first j
+  let jjSavedCursor = 0;          // cursor position snapshot before first j
   let searchModal = null;
   let searchInput = null;
   let searchInputDisplay = null;  // Visual display for normal mode with block cursor
@@ -1377,14 +1379,27 @@
         e.stopPropagation();
         if (jjPending) {
           // Second j within threshold → escape to normal mode + navigate down
+          const savedVal = jjSavedValue;
+          const savedCur = jjSavedCursor;
           cancelPendingJJ();
-          searchCursorPos = searchInput.selectionStart || 0;
+          // Restore input to pre-jj state (undo any leaked j)
+          searchInput.value = savedVal !== null ? savedVal : '';
+          if (commandMode) {
+            commandQuery = searchInput.value;
+            renderCommandResults();
+          } else {
+            searchQuery = searchInput.value;
+            renderSearchResults();
+          }
+          searchCursorPos = savedCur;
           searchVimMode = 'normal';
           updateSearchVimIndicator();
           moveSearchSelection('down');
           moveSearchSelection('down');
         } else {
-          // First j → hold it, wait for possible second j
+          // First j → save state, hold it, wait for possible second j
+          jjSavedValue = searchInput.value;
+          jjSavedCursor = searchInput.selectionStart || 0;
           jjPending = true;
           jjPendingTimeout = setTimeout(flushPendingJ, JJ_THRESHOLD_MS);
         }
@@ -6081,17 +6096,19 @@
       jjPendingTimeout = null;
     }
     jjPending = false;
+    jjSavedValue = null;
   }
 
   function flushPendingJ() {
     if (!jjPending) return;
+    const savedVal = jjSavedValue;
+    const savedCur = jjSavedCursor;
     cancelPendingJJ();
     if (!searchInput) return;
-    const start = searchInput.selectionStart;
-    const end = searchInput.selectionEnd;
-    const value = searchInput.value;
-    searchInput.value = value.slice(0, start) + 'j' + value.slice(end);
-    searchInput.selectionStart = searchInput.selectionEnd = start + 1;
+    // Restore to saved state then insert j (handles leaked j from preventDefault failing)
+    searchInput.value = (savedVal !== null ? savedVal : '').slice(0, savedCur) + 'j' +
+                        (savedVal !== null ? savedVal : '').slice(savedCur);
+    searchInput.selectionStart = searchInput.selectionEnd = savedCur + 1;
     searchInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
