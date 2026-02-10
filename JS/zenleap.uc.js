@@ -1779,6 +1779,9 @@
         command: () => { duplicateMatchedTabs(browseCommandTabs); } },
       { key: 'browse:unload', label: `Unload ${tabLabel} (Save Memory)`, icon: '💤', tags: [...browseTags, 'unload', 'discard', 'memory', 'suspend'],
         command: () => { unloadMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:split-view', label: `Split ${tabLabel} into Split View`, icon: '◫', tags: [...browseTags, 'split', 'view', 'side', 'pane'],
+        condition: () => { try { return !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4; } catch(e) { return false; } },
+        command: () => { splitBrowseTabs(browseCommandTabs); } },
     ];
   }
 
@@ -3096,6 +3099,26 @@
         log(`Split view with tab: ${tab.label}`);
       }
     } catch (e) { log(`Split failed: ${e}`); }
+    exitSearchMode();
+  }
+
+  function splitBrowseTabs(tabs) {
+    try {
+      if (window.gZenViewSplitter && tabs.length >= 2) {
+        const validTabs = tabs.filter(t =>
+          t && !t.closing && t.parentNode &&
+          !t.hidden && !t.hasAttribute('zen-empty-tab') &&
+          !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-glance-tab') &&
+          !t.splitView
+        ).slice(0, 4);
+        if (validTabs.length >= 2) {
+          window.gZenViewSplitter.splitTabs(validTabs);
+          log(`Split view with ${validTabs.length} browse-selected tabs`);
+        } else {
+          log('Not enough valid tabs for split view after filtering');
+        }
+      }
+    } catch (e) { log(`Browse split failed: ${e}`); }
     exitSearchMode();
   }
 
