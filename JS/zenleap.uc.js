@@ -1683,7 +1683,7 @@
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
         S['display.browsePreview'] = !S['display.browsePreview'];
         saveSettings();
-        if (!S['display.browsePreview']) hidePreviewPanel();
+        if (!S['display.browsePreview']) hidePreviewPanel(true);
         log(`Browse preview ${S['display.browsePreview'] ? 'enabled' : 'disabled'}`);
       }},
       { key: 'toggle-debug', label: 'Toggle Debug Logging', icon: '🐛', tags: ['debug', 'log', 'zenleap'], command: () => {
@@ -1877,7 +1877,7 @@
 
     // Clean up dedup-preview state when leaving it
     if (currentType === 'dedup-preview') {
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       dedupTabsToClose = [];
       if (searchInput) searchInput.readOnly = false;
     }
@@ -2480,7 +2480,7 @@
           log(`Deduplicated: closed ${count} duplicate tab(s)`);
           dedupTabsToClose = [];
         }
-        hidePreviewPanel();
+        hidePreviewPanel(true);
         exitSearchMode();
         break;
 
@@ -4296,7 +4296,7 @@
 
     if (searchResults.length === 0) {
       searchResultsList.innerHTML = '<div class="zenleap-search-empty">No matching tabs found</div>';
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       return;
     }
 
@@ -4384,7 +4384,7 @@
       const emptyMsg = commandSubFlow ? 'No results found' : 'No matching commands';
       searchResultsList.innerHTML = `<div class="zenleap-search-empty">${emptyMsg}</div>`;
       updateSearchHintBar();
-      hidePreviewPanel();
+      hidePreviewPanel(true);
       return;
     }
 
@@ -5615,14 +5615,22 @@
 
   // Enter command bar from browse mode with context
   function enterBrowseCommandMode() {
-    const tabs = getVisibleTabs();
+    const items = getVisibleItems();
 
     // Collect tabs: selected tabs (sorted by position), or just highlighted tab
+    // Use getVisibleItems() to resolve highlighted item (which may be a folder),
+    // since highlightedTabIndex indexes into the items list (tabs + folders)
     let collectedTabs;
     if (selectedTabs.size > 0) {
       collectedTabs = sortTabsBySidebarPosition([...selectedTabs].filter(t => t && !t.closing && t.parentNode));
-    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < tabs.length) {
-      collectedTabs = [tabs[highlightedTabIndex]];
+    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
+      const highlightedItem = items[highlightedTabIndex];
+      // Only operate on tabs, not folders
+      if (isFolder(highlightedItem)) {
+        log('Cannot enter browse command mode on a folder');
+        return;
+      }
+      collectedTabs = [highlightedItem];
     } else {
       collectedTabs = [];
     }
@@ -5645,7 +5653,7 @@
     // Hide browse UI without fully tearing down leap mode
     clearHighlight();
     hideLeapOverlay();
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Reset mode flags so enterSearchMode doesn't try to exit leap mode again
     leapMode = false;
@@ -5680,7 +5688,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     if (searchInput) searchInput.readOnly = false;
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -5787,7 +5795,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     if (searchInput) searchInput.readOnly = false;
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Restore search icon and placeholder
     const icon = document.getElementById('zenleap-search-icon');
@@ -6065,7 +6073,7 @@
           event.stopPropagation();
           const selected = commandResults[searchSelectedIndex];
           if (selected?.tab) {
-            hidePreviewPanel();
+            hidePreviewPanel(true);
             exitSearchMode();
             gBrowser.selectedTab = selected.tab;
             log(`Dedup preview: switched to tab "${selected.tab.label}" for inspection`);
@@ -7057,22 +7065,31 @@
       }
     } catch (e) {}
     // Method 3: frame script injection (Fission-compatible, queries content process directly)
+    // Uses a single static message channel to avoid accumulating frame scripts
     try {
       return new Promise((resolve) => {
         const mm = browser.messageManager;
         if (!mm) { resolve({ x: 0, y: 0 }); return; }
-        const msgId = 'ZenLeap:ScrollPos:' + Date.now() + Math.random();
         const timer = setTimeout(() => {
-          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve({ x: 0, y: 0 });
         }, 300);
         function handler(msg) {
           clearTimeout(timer);
-          try { mm.removeMessageListener(msgId, handler); } catch (e) {}
+          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
           resolve(msg.data || { x: 0, y: 0 });
         }
-        mm.addMessageListener(msgId, handler);
-        mm.loadFrameScript(`data:,sendAsyncMessage('${msgId}', {x: content.scrollX || 0, y: content.scrollY || 0})`, false);
+        mm.addMessageListener('ZenLeap:ScrollPos:Response', handler);
+        // Install the static frame script once per browser (allowDelayedLoad=false prevents re-injection)
+        if (!browser._zenleapScrollScriptLoaded) {
+          mm.loadFrameScript(`data:,
+            addMessageListener('ZenLeap:ScrollPos:Request', function() {
+              sendAsyncMessage('ZenLeap:ScrollPos:Response', {x: content.scrollX || 0, y: content.scrollY || 0});
+            });
+          `, false);
+          browser._zenleapScrollScriptLoaded = true;
+        }
+        mm.sendAsyncMessage('ZenLeap:ScrollPos:Request');
       });
     } catch (e) {}
     return Promise.resolve({ x: 0, y: 0 });
@@ -7202,14 +7219,16 @@
     previewPanel.style.top = `${topPos}px`;
   }
 
-  function hidePreviewPanel() {
+  function hidePreviewPanel(clearCache = false) {
     if (previewPanel) {
       previewPanel.style.display = 'none';
     }
     clearTimeout(previewDebounceTimer);
     previewCaptureId++;
     previewCurrentTab = null;
-    previewCache.clear();
+    if (clearCache) {
+      previewCache.clear();
+    }
   }
 
   function cleanPreviewCache() {
@@ -8016,7 +8035,7 @@
   // Exit leap mode
   function exitLeapMode(centerScroll = false) {
     clearHighlight();
-    hidePreviewPanel();
+    hidePreviewPanel(true);
 
     // Hide sidebar if we expanded it on entry
     if (sidebarWasExpanded) {
