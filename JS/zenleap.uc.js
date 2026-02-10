@@ -86,6 +86,7 @@
     'timing.workspaceSwitchDelay': { default: 100, type: 'number', label: 'Workspace Switch Delay', description: 'UI update delay after switch (ms)', category: 'Timing', group: 'Delays', min: 50, max: 1000, step: 10 },
     'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
     'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
+    'timing.quickNavSidebarPeek':  { default: 1000, type: 'number', label: 'Quick Nav Sidebar Peek', description: 'Show sidebar after Alt+J/K in compact mode (ms, 0 to disable)', category: 'Timing', group: 'Delays', min: 0, max: 5000, step: 100 },
 
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
@@ -254,6 +255,8 @@
 
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
+  let quickNavPeekTimer = null;    // Timer for hiding sidebar after Alt+J/K peek
+  let quickNavPeeking = false;     // True while sidebar is peeked for quick nav
 
   // Input interception: prevent keyboard events from leaking to web page content
   let contentFocusStolen = false;
@@ -7582,6 +7585,34 @@
     return false;
   }
 
+  // Temporarily show the sidebar after Alt+J/K in compact mode.
+  // Each call resets the hide timer so rapid presses extend the peek.
+  function peekSidebarForQuickNav() {
+    const duration = S['timing.quickNavSidebarPeek'];
+    if (!duration || !isCompactModeEnabled()) return;
+
+    // If leap/browse mode is active, the sidebar is already managed
+    if (leapMode) return;
+
+    clearTimeout(quickNavPeekTimer);
+
+    if (!quickNavPeeking) {
+      if (showFloatingSidebar()) {
+        quickNavPeeking = true;
+      } else {
+        return; // sidebar already visible or couldn't show
+      }
+    }
+
+    quickNavPeekTimer = setTimeout(() => {
+      if (quickNavPeeking && !leapMode) {
+        hideFloatingSidebar();
+        quickNavPeeking = false;
+      }
+      quickNavPeekTimer = null;
+    }, duration);
+  }
+
   // Update overlay state
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
@@ -7696,6 +7727,11 @@
     originalTabIndex = -1;
     browseDirection = null;
     sidebarWasExpanded = false;
+
+    // Cancel any active quick-nav sidebar peek (leap mode manages sidebar itself)
+    clearTimeout(quickNavPeekTimer);
+    quickNavPeekTimer = null;
+    quickNavPeeking = false;
 
     // Steal focus from content to prevent input leaking to web pages
     stealFocusFromContent();
@@ -8714,6 +8750,7 @@
           splitFocusInDirection('down');
         } else {
           quickSwitchTab('down', !!pos);
+          peekSidebarForQuickNav();
         }
         return;
       }
@@ -8725,6 +8762,7 @@
           splitFocusInDirection('up');
         } else {
           quickSwitchTab('up', !!pos);
+          peekSidebarForQuickNav();
         }
         return;
       }
