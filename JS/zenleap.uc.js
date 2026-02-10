@@ -4275,6 +4275,7 @@
 
     if (searchResults.length === 0) {
       searchResultsList.innerHTML = '<div class="zenleap-search-empty">No matching tabs found</div>';
+      hidePreviewPanel();
       return;
     }
 
@@ -4346,6 +4347,21 @@
     if (selectedEl) {
       selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
+
+    // Show preview panel for selected tab in search mode (debounced)
+    if (searchResults.length > 0) {
+      const selectedResult = searchResults[searchSelectedIndex];
+      if (selectedResult?.tab) {
+        clearTimeout(previewDebounceTimer);
+        previewCaptureId++;
+        previewDebounceTimer = setTimeout(() => {
+          showPreviewForTab(selectedResult.tab, { force: true });
+          positionPreviewPanelForModal();
+        }, S['timing.previewDelay']);
+      } else {
+        hidePreviewPanel();
+      }
+    }
   }
 
   // Render command palette results
@@ -4364,6 +4380,7 @@
       const emptyMsg = commandSubFlow ? 'No results found' : 'No matching commands';
       searchResultsList.innerHTML = `<div class="zenleap-search-empty">${emptyMsg}</div>`;
       updateSearchHintBar();
+      hidePreviewPanel();
       return;
     }
 
@@ -4451,12 +4468,18 @@
     const selectedEl = searchResultsList.querySelector('.zenleap-command-result.selected');
     if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 
-    // Show preview panel for dedup-preview sub-flow
-    if (commandSubFlow?.type === 'dedup-preview' && commandResults.length > 0) {
+    // Show preview panel for any sub-flow result that has a tab (debounced)
+    if (commandSubFlow && commandResults.length > 0) {
       const selectedResult = commandResults[searchSelectedIndex];
       if (selectedResult?.tab) {
-        showPreviewForTab(selectedResult.tab, { force: true });
-        positionPreviewPanelForModal();
+        clearTimeout(previewDebounceTimer);
+        previewCaptureId++;
+        previewDebounceTimer = setTimeout(() => {
+          showPreviewForTab(selectedResult.tab, { force: true });
+          positionPreviewPanelForModal();
+        }, S['timing.previewDelay']);
+      } else {
+        hidePreviewPanel();
       }
     }
   }
@@ -7101,7 +7124,7 @@
     if (!container) return;
 
     const containerRect = container.getBoundingClientRect();
-    const selectedEl = searchResultsList?.querySelector('.zenleap-command-result.selected');
+    const selectedEl = searchResultsList?.querySelector('.zenleap-command-result.selected, .zenleap-search-result.selected');
 
     // Position to the right of the search container
     let leftPos = containerRect.right + 12;
