@@ -895,6 +895,27 @@
     searchResultsList = document.createElement('div');
     searchResultsList.id = 'zenleap-search-results';
 
+    // Event delegation for click handlers (avoids re-attaching per render)
+    searchResultsList.addEventListener('click', (e) => {
+      const resultEl = e.target.closest('.zenleap-search-result, .zenleap-command-result');
+      if (!resultEl) return;
+      const idx = parseInt(resultEl.dataset.index);
+      if (isNaN(idx)) return;
+      if (commandMode) {
+        searchSelectedIndex = idx;
+        handleCommandSelect();
+      } else {
+        selectSearchResult(idx);
+      }
+    });
+
+    // Event delegation for favicon errors
+    searchResultsList.addEventListener('error', (e) => {
+      if (e.target.matches('.zenleap-search-result-favicon')) {
+        e.target.src = 'chrome://branding/content/icon32.png';
+      }
+    }, true); // useCapture for error events (they don't bubble)
+
     searchHintBar = document.createElement('div');
     searchHintBar.id = 'zenleap-search-hint-bar';
 
@@ -4326,39 +4347,23 @@
     // Update hint bar
     updateSearchHintBar();
 
-    // Add click handlers and favicon error handlers
-    searchResultsList.querySelectorAll('.zenleap-search-result').forEach(el => {
-      el.addEventListener('click', () => {
-        const idx = parseInt(el.dataset.index);
-        selectSearchResult(idx);
-      });
-
-      // Handle favicon load errors
-      const img = el.querySelector('.zenleap-search-result-favicon');
-      if (img) {
-        img.addEventListener('error', () => {
-          img.src = 'chrome://branding/content/icon32.png';
-        });
-      }
-    });
-
     // Scroll selected into view
     const selectedEl = searchResultsList.querySelector('.zenleap-search-result.selected');
     if (selectedEl) {
-      selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      selectedEl.scrollIntoView({ block: 'nearest', behavior: 'auto' });
     }
 
     // Show preview panel for selected tab in search mode (debounced)
     if (searchResults.length > 0) {
       const selectedResult = searchResults[searchSelectedIndex];
       if (selectedResult?.tab) {
-        hidePreviewPanel();
+        hidePreviewPanelVisual();
         previewDebounceTimer = setTimeout(() => {
           showPreviewForTab(selectedResult.tab, { force: true });
           positionPreviewPanelForModal();
         }, S['timing.previewDelay']);
       } else {
-        hidePreviewPanel();
+        hidePreviewPanelVisual();
       }
     }
   }
@@ -4450,34 +4455,21 @@
     searchResultsList.innerHTML = html;
     updateSearchHintBar();
 
-    // Add click handlers and favicon error handlers
-    searchResultsList.querySelectorAll('.zenleap-command-result').forEach(el => {
-      el.addEventListener('click', () => {
-        const idx = parseInt(el.dataset.index);
-        searchSelectedIndex = idx;
-        handleCommandSelect();
-      });
-      const img = el.querySelector('.zenleap-search-result-favicon');
-      if (img) {
-        img.addEventListener('error', () => { img.src = 'chrome://branding/content/icon32.png'; });
-      }
-    });
-
     // Scroll selected into view
     const selectedEl = searchResultsList.querySelector('.zenleap-command-result.selected');
-    if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    if (selectedEl) selectedEl.scrollIntoView({ block: 'nearest', behavior: 'auto' });
 
     // Show preview panel for any sub-flow result that has a tab (debounced)
     if (commandSubFlow && commandResults.length > 0) {
       const selectedResult = commandResults[searchSelectedIndex];
       if (selectedResult?.tab) {
-        hidePreviewPanel();
+        hidePreviewPanelVisual();
         previewDebounceTimer = setTimeout(() => {
           showPreviewForTab(selectedResult.tab, { force: true });
           positionPreviewPanelForModal();
         }, S['timing.previewDelay']);
       } else {
-        hidePreviewPanel();
+        hidePreviewPanelVisual();
       }
     }
   }
@@ -5915,10 +5907,12 @@
     }
   }
 
-  // Move search selection
+  // Move search selection (lightweight — no DOM rebuild or re-search)
   function moveSearchSelection(direction) {
     const results = commandMode ? commandResults : searchResults;
     if (results.length === 0) return;
+
+    const oldIndex = searchSelectedIndex;
 
     if (direction === 'down') {
       searchSelectedIndex = (searchSelectedIndex + 1) % results.length;
@@ -5926,11 +5920,51 @@
       searchSelectedIndex = (searchSelectedIndex - 1 + results.length) % results.length;
     }
 
-    if (commandMode) {
-      renderCommandResults();
-    } else {
-      renderSearchResults();
+    updateSelectionHighlight(oldIndex, searchSelectedIndex);
+  }
+
+  // Lightweight highlight update — toggles .selected class without rebuilding DOM
+  function updateSelectionHighlight(oldIndex, newIndex) {
+    if (!searchResultsList) return;
+    const resultClass = commandMode ? 'zenleap-command-result' : 'zenleap-search-result';
+    const items = searchResultsList.querySelectorAll(`.${resultClass}`);
+
+    // Remove old highlight
+    if (oldIndex >= 0 && oldIndex < items.length) {
+      items[oldIndex].classList.remove('selected');
     }
+
+    // Add new highlight
+    if (newIndex >= 0 && newIndex < items.length) {
+      items[newIndex].classList.add('selected');
+      items[newIndex].scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    }
+
+    // Update preview debounce
+    const results = commandMode ? commandResults : searchResults;
+    if (results.length > 0) {
+      const selectedResult = results[newIndex];
+      const hasTab = commandMode ? (commandSubFlow && selectedResult?.tab) : selectedResult?.tab;
+      if (hasTab) {
+        hidePreviewPanelVisual();
+        previewDebounceTimer = setTimeout(() => {
+          showPreviewForTab(selectedResult.tab, { force: true });
+          positionPreviewPanelForModal();
+        }, S['timing.previewDelay']);
+      } else {
+        hidePreviewPanelVisual();
+      }
+    }
+  }
+
+  // Hide preview panel visually without clearing the thumbnail cache
+  function hidePreviewPanelVisual() {
+    if (previewPanel) {
+      previewPanel.style.display = 'none';
+    }
+    clearTimeout(previewDebounceTimer);
+    previewCaptureId++;
+    previewCurrentTab = null;
   }
 
   // Update search vim indicator and handle focus/display based on mode
@@ -6373,14 +6407,16 @@
     // G to go to last result, g to first
     if (key === 'G') {
       if (commandResults.length > 0) {
+        const oldIndex = searchSelectedIndex;
         searchSelectedIndex = commandResults.length - 1;
-        renderCommandResults();
+        updateSelectionHighlight(oldIndex, searchSelectedIndex);
       }
       return;
     }
     if (key === 'g') {
+      const oldIndex = searchSelectedIndex;
       searchSelectedIndex = 0;
-      renderCommandResults();
+      updateSelectionHighlight(oldIndex, searchSelectedIndex);
       return;
     }
 
