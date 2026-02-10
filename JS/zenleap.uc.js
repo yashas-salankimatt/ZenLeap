@@ -300,6 +300,7 @@
 
   // Session management state
   let sessionCache = null;         // { sessions: [], loadedAt: timestamp } — brief cache for picker
+  let sessionLoadPromise = null;   // In-flight load promise to prevent duplicate disk reads
 
   // Folder delete modal state (browse mode)
   let folderDeleteMode = false;
@@ -1743,12 +1744,30 @@
   }
 
   // Get all available commands (static + dynamic)
+  // Caches the condition-filtered command list briefly to avoid re-evaluating
+  // expensive conditions (DOM queries, workspace lookups) on every keystroke.
+  // Cache is invalidated after 500ms or when command mode is exited.
+  let _commandListCache = null;
+  let _commandListCacheTime = 0;
+  const COMMAND_CACHE_TTL = 500;
+
   function getAllCommands() {
+    const now = Date.now();
+    if (_commandListCache && (now - _commandListCacheTime) < COMMAND_CACHE_TTL) {
+      return _commandListCache;
+    }
     const statics = getStaticCommands();
     const dynamics = getDynamicCommands();
     const all = [...statics, ...dynamics];
     // Filter by condition
-    return all.filter(cmd => !cmd.condition || cmd.condition());
+    _commandListCache = all.filter(cmd => !cmd.condition || cmd.condition());
+    _commandListCacheTime = now;
+    return _commandListCache;
+  }
+
+  function invalidateCommandCache() {
+    _commandListCache = null;
+    _commandListCacheTime = 0;
   }
 
   // Filter commands by query using fuzzy match
@@ -2609,7 +2628,7 @@
           const sessionId = commandSubFlow.data?.sessionId;
           if (sessionId) {
             deleteSessionFile(sessionId).then(() => {
-              sessionCache = null;
+              sessionCache = null; sessionLoadPromise = null;
               exitSubFlow();
             }).catch(e => {
               log(`Delete session failed: ${e}`);
@@ -3167,35 +3186,43 @@
     if (sessionCache && (Date.now() - sessionCache.loadedAt < 5000)) {
       return sessionCache.sessions;
     }
-    const sessions = [];
-    try {
-      const dir = await getSessionsDir();
-      const children = await IOUtils.getChildren(dir);
-      for (const filePath of children) {
-        if (!filePath.endsWith('.json')) continue;
-        try {
-          const data = await IOUtils.readJSON(filePath);
-          if (data && data.version && data.id) {
-            data._filePath = filePath;
-            sessions.push(data);
+    // Reuse in-flight load to prevent duplicate concurrent disk reads
+    if (sessionLoadPromise) return sessionLoadPromise;
+
+    sessionLoadPromise = (async () => {
+      const sessions = [];
+      try {
+        const dir = await getSessionsDir();
+        const children = await IOUtils.getChildren(dir);
+        for (const filePath of children) {
+          if (!filePath.endsWith('.json')) continue;
+          try {
+            const data = await IOUtils.readJSON(filePath);
+            if (data && data.version && data.id) {
+              data._filePath = filePath;
+              sessions.push(data);
+            }
+          } catch (e) {
+            log(`Skipping corrupt session file: ${filePath}: ${e}`);
           }
-        } catch (e) {
-          log(`Skipping corrupt session file: ${filePath}: ${e}`);
         }
+      } catch (e) {
+        log(`Error loading sessions: ${e}`);
       }
-    } catch (e) {
-      log(`Error loading sessions: ${e}`);
-    }
-    sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-    sessionCache = { sessions, loadedAt: Date.now() };
-    return sessions;
+      sessions.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+      sessionCache = { sessions, loadedAt: Date.now() };
+      sessionLoadPromise = null;
+      return sessions;
+    })();
+
+    return sessionLoadPromise;
   }
 
   async function saveSessionToFile(sessionData) {
     const dir = await getSessionsDir();
     const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
     await IOUtils.writeJSON(filePath, sessionData);
-    sessionCache = null; // invalidate cache
+    sessionCache = null; sessionLoadPromise = null; // invalidate cache
     log(`Session saved: ${filePath}`);
   }
 
@@ -3209,6 +3236,7 @@
       log(`Delete session file failed: ${e}`);
     }
     sessionCache = null;
+    sessionLoadPromise = null;
   }
 
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
@@ -4107,6 +4135,7 @@
   }
 
   function adjustHighlightAfterDeletion() {
+    _visibleItemsCache = null; // Invalidate after DOM mutation (folder/tab deletion)
     const newItems = getVisibleItems();
     if (newItems.length === 0) {
       exitLeapMode(false);
@@ -4530,6 +4559,7 @@
     commandResults = [];
     commandEnteredFromSearch = false;
     searchSelectedIndex = 0;
+    invalidateCommandCache();
 
     // Restore to insert mode for normal search
     searchVimMode = 'insert';
@@ -6668,7 +6698,14 @@
   }
 
   // Get visible tabs AND folders in DOM order (for browse mode navigation)
+  // Uses a microtask-scoped cache so multiple calls within the same event handler
+  // (e.g. moveHighlight -> updateHighlight -> updateLeapOverlayState) reuse one result
+  // instead of rescanning and re-sorting the DOM each time.
+  let _visibleItemsCache = null;
+
   function getVisibleItems() {
+    if (_visibleItemsCache) return _visibleItemsCache;
+
     const tabs = getVisibleTabs().filter(tab => {
       // Exclude tabs inside collapsed folders — Zen hides the container,
       // not individual tabs, so tab.hidden stays false
@@ -6691,6 +6728,10 @@
       if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
       return 0;
     });
+
+    _visibleItemsCache = combined;
+    // Invalidate at end of current microtask so next event gets fresh data
+    Promise.resolve().then(() => { _visibleItemsCache = null; });
     return combined;
   }
 
@@ -6712,6 +6753,29 @@
     return getVisibleTabs();
   }
 
+  // Build a workspace ID -> name map once, then reuse for all tabs in a search render.
+  // Avoids O(results × workspaces) repeated getWorkspaces() calls.
+  let _wsNameMap = null;
+  let _wsNameMapTime = 0;
+  const WS_NAME_MAP_TTL = 500;
+
+  function getWorkspaceNameMap() {
+    const now = Date.now();
+    if (_wsNameMap && (now - _wsNameMapTime) < WS_NAME_MAP_TTL) return _wsNameMap;
+    _wsNameMap = new Map();
+    try {
+      if (!window.gZenWorkspaces) return _wsNameMap;
+      const workspaces = gZenWorkspaces.getWorkspaces();
+      if (workspaces) {
+        for (const ws of workspaces) {
+          _wsNameMap.set(ws.uuid, ws.name);
+        }
+      }
+    } catch (e) {}
+    _wsNameMapTime = now;
+    return _wsNameMap;
+  }
+
   // Get workspace name for a tab (returns null if same as active workspace)
   function getTabWorkspaceName(tab) {
     try {
@@ -6719,10 +6783,8 @@
       const tabWsId = tab.getAttribute('zen-workspace-id');
       const activeWsId = gZenWorkspaces.activeWorkspace;
       if (!tabWsId || tabWsId === activeWsId) return null;
-      const workspaces = gZenWorkspaces.getWorkspaces();
-      if (!workspaces) return null;
-      const ws = workspaces.find(w => w.uuid === tabWsId);
-      return ws ? ws.name : null;
+      const wsMap = getWorkspaceNameMap();
+      return wsMap.get(tabWsId) || null;
     } catch (e) {
       return null;
     }
@@ -7790,6 +7852,7 @@
       }
       selectedTabs.clear();
 
+      _visibleItemsCache = null; // Invalidate after DOM mutation
       const newItems = getVisibleItems();
       if (newItems.length === 0) {
         exitLeapMode(false);
@@ -7823,6 +7886,7 @@
     gBrowser.removeTab(item);
     log(`Closed tab at index ${highlightedTabIndex}`);
 
+    _visibleItemsCache = null; // Invalidate after DOM mutation
     const newItems = getVisibleItems();
 
     if (newItems.length === 0) {
