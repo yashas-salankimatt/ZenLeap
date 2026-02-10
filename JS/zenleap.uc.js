@@ -1396,7 +1396,6 @@
           searchVimMode = 'normal';
           updateSearchVimIndicator();
           moveSearchSelection('down');
-          moveSearchSelection('down');
         } else {
           // First j → save state, hold it, wait for possible second j
           jjSavedValue = searchInput.value;
