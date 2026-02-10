@@ -8076,31 +8076,65 @@
 
     // Position loose tabs
     if (yankLooseTabs.length > 0) {
-      if (position === 'after') {
-        let afterTarget = anchorItem; // works for both tab and folder anchors
-        for (const tab of yankLooseTabs) {
-          gBrowser.moveTabAfter(tab, afterTarget);
-          afterTarget = tab;
+      if (anchorIsFolder) {
+        // gBrowser.moveTabAfter/Before expect tab elements, not folders.
+        // Use the folder's tabs as a reference point, or DOM positioning for empty folders.
+        const folderTabs = anchorItem.tabs;
+        if (position === 'after') {
+          if (folderTabs && folderTabs.length > 0) {
+            let afterTarget = folderTabs[folderTabs.length - 1];
+            for (const tab of yankLooseTabs) {
+              gBrowser.moveTabAfter(tab, afterTarget);
+              afterTarget = tab;
+            }
+          } else {
+            // Empty folder — use DOM positioning for first tab, chain the rest
+            anchorItem.after(yankLooseTabs[0]);
+            for (let i = 1; i < yankLooseTabs.length; i++) {
+              gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
+            }
+          }
+        } else {
+          if (folderTabs && folderTabs.length > 0) {
+            gBrowser.moveTabBefore(yankLooseTabs[0], folderTabs[0]);
+          } else {
+            anchorItem.before(yankLooseTabs[0]);
+          }
+          for (let i = 1; i < yankLooseTabs.length; i++) {
+            gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
+          }
         }
       } else {
-        gBrowser.moveTabBefore(yankLooseTabs[0], anchorItem);
-        for (let i = 1; i < yankLooseTabs.length; i++) {
-          gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
+        if (position === 'after') {
+          let afterTarget = anchorItem;
+          for (const tab of yankLooseTabs) {
+            gBrowser.moveTabAfter(tab, afterTarget);
+            afterTarget = tab;
+          }
+        } else {
+          gBrowser.moveTabBefore(yankLooseTabs[0], anchorItem);
+          for (let i = 1; i < yankLooseTabs.length; i++) {
+            gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
+          }
         }
-      }
 
-      // Add loose tabs to anchor's folder if anchor is a tab inside a folder
-      if (anchorFolder) {
-        const tabsToAdd = yankLooseTabs.filter(t => t.group !== anchorFolder);
-        if (tabsToAdd.length > 0) {
-          for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
-          anchorFolder.addTabs(tabsToAdd);
-          log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
+        // Add loose tabs to anchor's folder if anchor is a tab inside a folder
+        if (anchorFolder) {
+          const tabsToAdd = yankLooseTabs.filter(t => t.group !== anchorFolder);
+          if (tabsToAdd.length > 0) {
+            for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
+            anchorFolder.addTabs(tabsToAdd);
+            log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
+          }
         }
       }
     }
 
     // --- Phase 2: Move folders ---
+    // Track insertion reference for 'after' positioning to preserve folder order.
+    // Without this, each .after(anchor) would insert right after the same anchor,
+    // reversing the order of multiple folders (e.g. [A,B,C] after X → X,C,B,A).
+    let folderAfterRef = anchorIsFolder ? anchorItem : (anchorFolder || anchorTab);
     for (const folder of yankFolders) {
       // 2a. Cross-workspace: update workspace IDs on folder and all its tabs
       const folderWsId = folder.getAttribute('zen-workspace-id');
@@ -8119,7 +8153,12 @@
       //   - Anchor is an unpinned loose tab: place into pinnedTabsContainer
       // Folders must always live in the pinnedTabsContainer (or inside another folder's container).
       if (anchorIsFolder) {
-        position === 'after' ? anchorItem.after(folder) : anchorItem.before(folder);
+        if (position === 'after') {
+          folderAfterRef.after(folder);
+          folderAfterRef = folder;
+        } else {
+          anchorItem.before(folder);
+        }
       } else if (anchorFolder) {
         // Anchor is a tab inside a folder — nest the yanked folder into anchorFolder
         // by positioning relative to the anchor tab (which lives in anchorFolder's container).
@@ -8147,15 +8186,30 @@
         }
 
         if (canNest) {
-          position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+          if (position === 'after') {
+            folderAfterRef.after(folder);
+            folderAfterRef = folder;
+          } else {
+            anchorTab.before(folder);
+          }
           log(`  Nested folder "${folder.label}" inside "${anchorFolder.label}"`);
         } else {
           // Fall back to sibling placement next to the parent folder
-          position === 'after' ? anchorFolder.after(folder) : anchorFolder.before(folder);
+          if (position === 'after') {
+            folderAfterRef.after(folder);
+            folderAfterRef = folder;
+          } else {
+            anchorFolder.before(folder);
+          }
         }
       } else if (anchorTab && anchorTab.pinned) {
         // Anchor is a pinned tab (no folder) — safe to position relative to it
-        position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+        if (position === 'after') {
+          folderAfterRef.after(folder);
+          folderAfterRef = folder;
+        } else {
+          anchorTab.before(folder);
+        }
       } else {
         // Anchor is an unpinned tab — folder must go into the pinnedTabsContainer
         const wsEl = window.gZenWorkspaces?.workspaceElement(anchorWorkspaceId);
@@ -8168,7 +8222,12 @@
             pinnedContainer.appendChild(folder);
           }
         } else {
-          position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+          if (position === 'after') {
+            folderAfterRef.after(folder);
+            folderAfterRef = folder;
+          } else {
+            anchorTab.before(folder);
+          }
         }
       }
     }
@@ -9126,6 +9185,7 @@
       /* Folder that is both highlighted and selected */
       zen-folder[data-zenleap-highlight="true"][data-zenleap-selected="true"] {
         outline: 2px solid var(--zl-highlight-selected) !important;
+        outline-offset: -2px;
         background-color: var(--zl-highlight-selected-20) !important;
         border-radius: 4px;
       }
