@@ -5,6 +5,55 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-02-09
+
+### Added
+- **Workspace Sessions** - Save, restore, and manage workspace tab sets
+  - Command palette: "Save Workspace Session", "Restore Workspace Session", "List Saved Sessions"
+  - Preserves full nested folder hierarchy (v2 schema with DOM tree walking)
+  - Saves custom tab labels (`zenStaticLabel`)
+  - Two restore modes: create new workspace(s) or replace current workspace
+  - List view with tree-based detail showing folder structure
+  - Delete sessions from list or detail view (`d` / `Ctrl+d`)
+  - Backward compatible with v1 flat session format
+- **Tab Sorting** - Sort and organize tabs from the command palette
+  - "Sort Tabs..." with picker: by domain, title (A-Z / Z-A), recency (newest/oldest first)
+  - "Group Tabs by Domain" auto-creates folders per domain (2+ tabs)
+  - Respects pinned tabs and folder positions
+- **Browse Mode Command Bar** - Press `Ctrl+Shift+/` in browse mode to open command palette with selected/highlighted tabs as context
+  - Dynamic commands: close, move to workspace, add to folder, create folder, move top/bottom, pin/unpin, mute/unmute, duplicate, unload
+  - Escape returns to browse mode with state preserved
+- **Browse Mode Folder Interaction** - Enter expands/collapses folders in browse mode
+  - Folder delete modal with options to delete folder + tabs or keep tabs
+  - Undo folder delete with `Cmd+Shift+T`
+- **Y Yanks Highlighted Tab** - `y`/`Y` in browse mode now yanks the highlighted tab without requiring explicit Space-selection first
+- **Input Interception** - Keyboard input no longer leaks to web page content during Leap Mode
+  - Prevents Space toggling video playback, j/k scrolling pages, etc.
+  - Focus automatically stolen on entering leap/browse mode, restored on exit
+- **Split View Keyboard Focus** - Navigate between split panes with keyboard
+  - `Alt+h/j/k/l` to focus pane in that direction
+  - Works globally when split view is active
+  - Handles asymmetric pane layouts
+- **Dedup Preview Sub-flow** - Tab deduplication now shows preview before closing
+  - Inspect duplicates before confirming closure
+  - Press `o`/`Ctrl+o` to jump to a tab for inspection
+  - Press Enter to confirm closing all duplicates
+- **Delete Folder / Delete Workspace** - New command palette commands with picker sub-flows
+- **Rename Folder / Rename Workspace** - New command palette commands with input sub-flows
+- **Hierarchical Command Trees** - Replaced per-entity commands with pick-action-then-pick-target flow
+  - Cleaner command palette without hundreds of entity-specific commands
+  - Consistent UX across workspace, folder, and tab operations
+- **Short Alias Tags** - Command palette commands now have short tags (e.g., `del`, `mv`, `ws`, `fld`) for faster fuzzy matching
+- **Vim Mode Toggle** - Setting to disable vim normal mode in search and command bars (Settings > Display > Vim Mode in Search/Command)
+- **Tab-as-Enter Toggle** - Setting to disable Tab acting as Enter in command palette (Settings > Display > Tab Acts as Enter)
+
+### Fixed
+- Browse mode failing to start on new tab pages and excluded pages (falls back to first available tab)
+- Split focus navigation in asymmetric pane layouts
+- WS/All toggle visibility when vim mode is disabled
+- Search ranking and rename data passing in sub-flows
+- Merge errors restoring missing function boundaries
+
 ## [2.7.0] - 2026-02-07
 
 ### Added
@@ -226,6 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 2.8.0 | 2026-02-09 | Workspace sessions, tab sorting, browse command bar, folder interaction, split focus, dedup preview |
 | 2.7.0 | 2026-02-07 | Tab deduplication, bulk unload, browse preview, 0/$ keys, bug fixes |
 | 2.6.0 | 2026-02-05 | Cross-workspace search, exact match quotes, appearance customization |
 | 2.5.0 | 2026-02-05 | Settings modal, h/l workspace switching, configurable keybindings |

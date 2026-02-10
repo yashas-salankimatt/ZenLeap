@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.6.0  // Keep in sync with VERSION constant below
+// @version        2.8.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.7.0';
+  const VERSION = '2.8.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -4706,6 +4706,8 @@
             <div class="zenleap-help-item"><kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Browse + switch workspace (arrows)</span></div>
             <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
             <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
+            <div class="zenleap-help-item"><kbd>0</kbd><span>Jump to first unpinned tab</span></div>
+            <div class="zenleap-help-item"><kbd>$</kbd><span>Jump to last tab</span></div>
             <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
             <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
             <div class="zenleap-help-item"><kbd>'</kbd><span>Jump to mark</span></div>
@@ -4720,14 +4722,15 @@
           <p class="zenleap-help-trigger">After pressing <kbd>j</kbd> or <kbd>k</kbd> in leap mode</p>
           <div class="zenleap-help-grid">
             <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Move highlight down/up</span></div>
-            <div class="zenleap-help-item"><kbd>Shift</kbd>+<kbd>J</kbd>/<kbd>K</kbd><span>Navigate + select</span></div>
+            <div class="zenleap-help-item"><kbd>Shift</kbd>+<kbd>J</kbd>/<kbd>K</kbd><span>Navigate + extend selection</span></div>
             <div class="zenleap-help-item"><kbd>Space</kbd><span>Toggle selection on tab</span></div>
-            <div class="zenleap-help-item"><kbd>y</kbd><span>Yank (copy) selected tabs</span></div>
+            <div class="zenleap-help-item"><kbd>y</kbd> / <kbd>Y</kbd><span>Yank highlighted or selected tabs</span></div>
             <div class="zenleap-help-item"><kbd>p</kbd> / <kbd>P</kbd><span>Paste after / before</span></div>
             <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd> / <kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Switch workspace</span></div>
             <div class="zenleap-help-item"><kbd>gg</kbd> / <kbd>G</kbd><span>Jump to first / last tab</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open highlighted tab</span></div>
+            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open tab / toggle folder</span></div>
             <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected/highlighted tab(s)</span></div>
+            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd><span>Command bar with selection</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd> <kbd>a-z</kbd><span>Jump N tabs from origin</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Cancel, return to original</span></div>
           </div>
@@ -4796,6 +4799,16 @@
             <div class="zenleap-help-item"><kbd>Enter</kbd><span>Execute command</span></div>
             <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump + execute</span></div>
             <div class="zenleap-help-item"><kbd>Esc</kbd><span>Back / close</span></div>
+          </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>&#128190; Workspace Sessions</h2>
+          <p class="zenleap-help-trigger">Via command palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd>)</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>> save session</kbd><span>Save current workspace tabs + folders</span></div>
+            <div class="zenleap-help-item"><kbd>> restore session</kbd><span>Restore a saved session</span></div>
+            <div class="zenleap-help-item"><kbd>> list sessions</kbd><span>Browse and manage saved sessions</span></div>
           </div>
         </div>
 

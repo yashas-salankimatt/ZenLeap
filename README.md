@@ -31,7 +31,6 @@ Like vim's relative line numbers, shows distance from current tab:
 | `$` | Jump to last tab |
 | `o` / `i` | Jump back / forward in history |
 | `?` | Open help modal |
-| `/` | Open tab search |
 | `Escape` | Exit leap mode |
 
 #### Browse Mode
@@ -43,13 +42,14 @@ Navigate and manipulate tabs visually:
 | `gg` | Jump to first unpinned tab (configurable) |
 | `G` | Jump to last tab |
 | `h` / `l` | Switch workspace (prev/next) |
-| `Enter` | Open highlighted tab |
+| `Enter` | Open highlighted tab / toggle folder |
 | `x` | Close highlighted/selected tabs |
 | `Space` | Toggle multi-select on highlighted tab |
 | `Shift+J` / `Shift+K` | Extend selection down/up |
-| `y` | Yank (copy) selected tabs |
+| `y` / `Y` | Yank highlighted or selected tabs |
 | `p` | Paste yanked tabs after highlighted tab |
 | `P` | Paste yanked tabs before highlighted tab |
+| `Ctrl+Shift+/` | Open command bar with selection |
 | `1-9, a-z` | Jump N tabs from origin |
 | `Escape` | Cancel, return to original tab |
 
@@ -106,19 +106,48 @@ Quickly find and switch to any tab with fuzzy search:
 - Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`, `j`, `k`
 - Editing: `x`, `s`, `S`, `D`, `C`
 - Insert switches: `i`, `a`, `I`, `A`
+- Can be disabled in Settings > Display > Vim Mode in Search/Command (Escape will close the bar directly)
 
 ### Command Palette
 A searchable command palette for quick access to any action:
 - `Ctrl+Shift+/` — Open command palette directly
 - `Ctrl+/` → type `>` — Switch to command mode from search
 
-Available commands include: close/duplicate/pin/mute/unload/deduplicate tabs, switch/move to workspace, add to folder, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more.
+Available commands include: close/duplicate/pin/mute/unload/deduplicate tabs, switch/move to workspace, create/delete/rename workspace, add to/create/delete/rename folder, sort tabs, save/restore/list workspace sessions, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more. Commands have short alias tags (e.g., `del`, `mv`, `ws`) for fast fuzzy matching.
 
-**Multi-step commands:** Some commands open sub-flows:
+**Multi-step commands:** Some commands open sub-flows (hierarchical pick-action-then-pick-target):
 - "Select matching tabs" → search tabs → pick action (close, unload, move to workspace, add to folder)
 - "Split with tab" → pick a tab to split with
 - "Move to workspace" → pick destination workspace
 - "Add to folder" → pick folder or create new
+- "Delete/Rename folder" → pick folder → confirm/input name
+- "Delete/Rename workspace" → pick workspace → confirm/input name
+- "Sort tabs" → pick sort method
+- "Deduplicate tabs" → preview duplicates → confirm
+
+**Browse mode integration:** Press `Ctrl+Shift+/` in browse mode to open the command bar with your selected/highlighted tabs as context. Dynamic commands (close, move, folder, pin, mute, etc.) operate on the browse selection.
+
+### Workspace Sessions
+Save and restore sets of tabs for context-switching:
+- Command palette: "Save Workspace Session" — snapshot all tabs + folder structure
+- Command palette: "Restore Workspace Session" — reload a saved session (create new workspace or replace current)
+- Command palette: "List Saved Sessions" — browse, inspect, or delete saved sessions
+- Full nested folder hierarchy preserved on save/restore
+- Delete sessions from list view with `d` or `Ctrl+d`
+
+### Tab Sorting
+Organize tabs from the command palette:
+- "Sort Tabs..." — picker with options: by domain, title (A-Z / Z-A), recency (newest/oldest first)
+- "Group Tabs by Domain" — auto-creates folders per domain (for domains with 2+ tabs)
+- Preserves pinned tab and folder positions
+
+### Split View Navigation
+Navigate between split panes without a mouse:
+- `Alt+h` — focus pane to the left
+- `Alt+j` — focus pane below
+- `Alt+k` — focus pane above
+- `Alt+l` — focus pane to the right
+- Works globally when Zen's split view is active
 
 ### Help & Settings
 - `Ctrl+Space` → `?` — Open help modal with all keybindings
@@ -293,6 +322,19 @@ Ctrl+' → a                      (quick jump without leap mode)
 Ctrl+/ → git → Enter              (search and open matching tab)
 ```
 
+**Yank highlighted tab (no selection needed):**
+```
+Ctrl+Space → j → j → y            (move down 2, yank that tab)
+l → p                              (switch workspace, paste)
+```
+
+**Browse mode with command bar:**
+```
+Ctrl+Space → j → Space → j → Space   (select 2 tabs)
+Ctrl+Shift+/                          (open command bar with selection)
+move to workspace                      (pick action)
+```
+
 **Use the command palette:**
 ```
 Ctrl+Shift+/                       (open command palette)
@@ -306,6 +348,27 @@ Ctrl+Shift+/ → select matching     (pick "Select Matching Tabs")
 github                              (search for tabs)
 Enter                               (confirm selection)
 close                               (choose "Close all matching")
+```
+
+**Save and restore a workspace session:**
+```
+Ctrl+Shift+/ → save session        (pick "Save Workspace Session")
+current workspace                   (choose scope)
+my research tabs → Enter            (add a comment)
+...later...
+Ctrl+Shift+/ → restore session     (pick a saved session)
+```
+
+**Sort tabs by domain:**
+```
+Ctrl+Shift+/ → sort tabs           (open sort picker)
+domain                              (sort by domain)
+```
+
+**Navigate split view panes:**
+```
+Alt+l                               (focus pane to the right)
+Alt+h                               (focus pane to the left)
 ```
 
 ## Customization
