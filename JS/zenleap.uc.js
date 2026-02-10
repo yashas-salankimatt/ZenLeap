@@ -8134,7 +8134,9 @@
     // Track insertion reference for 'after' positioning to preserve folder order.
     // Without this, each .after(anchor) would insert right after the same anchor,
     // reversing the order of multiple folders (e.g. [A,B,C] after X → X,C,B,A).
-    let folderAfterRef = anchorIsFolder ? anchorItem : (anchorFolder || anchorTab);
+    // Starts null — each branch uses its own reference for the first folder,
+    // then subsequent folders chain from the previously placed one.
+    let folderAfterRef = null;
     for (const folder of yankFolders) {
       // 2a. Cross-workspace: update workspace IDs on folder and all its tabs
       const folderWsId = folder.getAttribute('zen-workspace-id');
@@ -8154,7 +8156,7 @@
       // Folders must always live in the pinnedTabsContainer (or inside another folder's container).
       if (anchorIsFolder) {
         if (position === 'after') {
-          folderAfterRef.after(folder);
+          (folderAfterRef || anchorItem).after(folder);
           folderAfterRef = folder;
         } else {
           anchorItem.before(folder);
@@ -8187,7 +8189,7 @@
 
         if (canNest) {
           if (position === 'after') {
-            folderAfterRef.after(folder);
+            (folderAfterRef || anchorTab).after(folder);
             folderAfterRef = folder;
           } else {
             anchorTab.before(folder);
@@ -8196,7 +8198,7 @@
         } else {
           // Fall back to sibling placement next to the parent folder
           if (position === 'after') {
-            folderAfterRef.after(folder);
+            (folderAfterRef || anchorFolder).after(folder);
             folderAfterRef = folder;
           } else {
             anchorFolder.before(folder);
@@ -8205,7 +8207,7 @@
       } else if (anchorTab && anchorTab.pinned) {
         // Anchor is a pinned tab (no folder) — safe to position relative to it
         if (position === 'after') {
-          folderAfterRef.after(folder);
+          (folderAfterRef || anchorTab).after(folder);
           folderAfterRef = folder;
         } else {
           anchorTab.before(folder);
@@ -8223,7 +8225,7 @@
           }
         } else {
           if (position === 'after') {
-            folderAfterRef.after(folder);
+            (folderAfterRef || anchorTab).after(folder);
             folderAfterRef = folder;
           } else {
             anchorTab.before(folder);
