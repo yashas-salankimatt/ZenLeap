@@ -549,6 +549,13 @@ clear_cache() {
 do_install() {
     detect_os
     find_profiles
+
+    # Track if Zen was running before we close it
+    ZEN_WAS_RUNNING=false
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
+        ZEN_WAS_RUNNING=true
+    fi
+
     check_zen_running
 
     # Install fx-autoconfig once (uses first profile to check, installs to all)
@@ -589,13 +596,17 @@ do_install() {
     echo "  zz/zt/zb       Scroll center/top/bottom"
     echo "  Escape         Cancel"
     echo ""
-    echo -e "${YELLOW}Please restart Zen Browser to activate ZenLeap${NC}"
-
-    if [ "$AUTO_YES" = true ]; then
-        # Non-interactive: skip opening Zen
-        :
+    if [ "$ZEN_WAS_RUNNING" = true ]; then
+        echo -e "${BLUE}Restarting Zen Browser...${NC}"
+        if [ "$OS" = "macos" ]; then
+            open "$ZEN_APP"
+        else
+            zen &
+        fi
+        echo -e "${GREEN}✓${NC} Zen Browser restarted"
+    elif [ "$AUTO_YES" = true ]; then
+        echo -e "${YELLOW}Please start Zen Browser to activate ZenLeap${NC}"
     else
-        # Offer to open Zen
         echo -n "Open Zen Browser now? (y/n): "
         read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
@@ -604,6 +615,8 @@ do_install() {
             else
                 zen &
             fi
+        else
+            echo -e "${YELLOW}Please start Zen Browser to activate ZenLeap${NC}"
         fi
     fi
 }
