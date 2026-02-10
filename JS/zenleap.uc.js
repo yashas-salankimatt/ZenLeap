@@ -8565,7 +8565,27 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
       if (browseMode) {
-        cancelBrowseMode();
+        // Two-stage escape: first clears any pending state, second exits browse mode
+        const hasSelection = selectedItems.size > 0;
+        const hasYankBuffer = yankItems.length > 0;
+        const hasPendingNumber = browseNumberBuffer.length > 0;
+        const hasPendingG = browseGPending;
+
+        if (hasSelection || hasYankBuffer || hasPendingNumber || hasPendingG) {
+          selectedItems.clear();
+          yankItems = [];
+          browseNumberBuffer = '';
+          clearTimeout(browseNumberTimeout);
+          browseNumberTimeout = null;
+          browseGPending = false;
+          clearTimeout(browseGTimeout);
+          browseGTimeout = null;
+          updateHighlight();
+          updateLeapOverlayState();
+          log('Cleared selection/yank/pending state, staying in browse mode');
+        } else {
+          cancelBrowseMode();
+        }
       } else {
         exitLeapMode(false);
       }
