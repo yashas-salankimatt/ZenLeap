@@ -82,6 +82,7 @@
     'timing.leapTimeout':          { default: 3000, type: 'number', label: 'Leap Mode Timeout', description: 'Auto-cancel after (ms)', category: 'Timing', group: 'Timeouts', min: 500, max: 30000, step: 100 },
     'timing.gModeTimeout':         { default: 800, type: 'number', label: 'G-Mode Auto-Execute', description: 'Execute g{num} after (ms)', category: 'Timing', group: 'Timeouts', min: 200, max: 5000, step: 50 },
     'timing.browseGTimeout':       { default: 500, type: 'number', label: 'Browse gg Timeout', description: 'Wait for second g (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 3000, step: 50 },
+    'timing.browseNumberTimeout':  { default: 300, type: 'number', label: 'Browse Number Timeout', description: 'Wait for multi-digit number (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 2000, step: 50 },
     'timing.workspaceSwitchDelay': { default: 100, type: 'number', label: 'Workspace Switch Delay', description: 'UI update delay after switch (ms)', category: 'Timing', group: 'Delays', min: 50, max: 1000, step: 10 },
     'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
     'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
@@ -215,8 +216,7 @@
     get triggerModifier() { return 'ctrlKey'; },
   };
 
-  // Special characters for distances 36-45 (shift + number row)
-  const SPECIAL_CHARS = ['!', '@', '#', '$', '%', '^', '&', '*', '(', ')'];
+
 
   // Modifier keys to ignore when pressed alone
   const MODIFIER_KEYS = ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'];
@@ -240,8 +240,10 @@
   let browseDirection = null;  // 'up' or 'down' - initial direction
   let browseGPending = false;  // true after pressing 'g' in browse mode, waiting for second 'g'
   let browseGTimeout = null;   // timeout to cancel pending 'g' in browse mode
-  let selectedTabs = new Set();  // Set of tab references for multi-select
-  let yankBuffer = [];           // Array of tab references for yank/paste
+  let browseNumberBuffer = ''; // accumulates multi-digit numbers in browse mode
+  let browseNumberTimeout = null; // timeout to execute accumulated number jump
+  let selectedItems = new Set();  // Set of tab/folder references for multi-select
+  let yankItems = [];            // Array of tab/folder references for yank/paste
 
   // Tab preview state (browse mode)
   let previewPanel = null;
@@ -326,23 +328,10 @@
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
 
-  // Utility: Convert number to display character
+  // Utility: Convert relative distance to display string (always numeric)
   function numberToDisplay(num) {
     if (num === 0) return CONFIG.currentTabIndicator;
-    if (num >= 1 && num <= 9) return String(num);
-    if (num >= 10 && num <= 35) return String.fromCharCode(65 + num - 10); // A-Z
-    if (num >= 36 && num <= 45) return SPECIAL_CHARS[num - 36];
-    return CONFIG.overflowIndicator;
-  }
-
-  // Utility: Convert display character back to number
-  function displayToNumber(char) {
-    if (char >= '1' && char <= '9') return parseInt(char);
-    const upper = char.toUpperCase();
-    if (upper >= 'A' && upper <= 'Z') return upper.charCodeAt(0) - 65 + 10;
-    const specialIndex = SPECIAL_CHARS.indexOf(char);
-    if (specialIndex !== -1) return 36 + specialIndex;
-    return null;
+    return String(num);
   }
 
   // ============================================
@@ -2740,14 +2729,14 @@
       highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
 
       // Pre-select the matched tabs
-      selectedTabs.clear();
+      selectedItems.clear();
       for (const t of tabs) {
-        if (t && !t.closing && t.parentNode) selectedTabs.add(t);
+        if (t && !t.closing && t.parentNode) selectedItems.add(t);
       }
 
       updateHighlight();
       updateLeapOverlayState();
-      log(`Browse mode with ${selectedTabs.size} pre-selected tabs`);
+      log(`Browse mode with ${selectedItems.size} pre-selected tabs`);
     }, 100);
   }
 
@@ -5652,8 +5641,8 @@
     // Use getVisibleItems() to resolve highlighted item (which may be a folder),
     // since highlightedTabIndex indexes into the items list (tabs + folders)
     let collectedTabs;
-    if (selectedTabs.size > 0) {
-      collectedTabs = sortTabsBySidebarPosition([...selectedTabs].filter(t => t && !t.closing && t.parentNode));
+    if (selectedItems.size > 0) {
+      collectedTabs = sortTabsBySidebarPosition([...selectedItems].filter(t => t && !t.closing && t.parentNode && !isFolder(t)));
     } else if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
       const highlightedItem = items[highlightedTabIndex];
       // Only operate on tabs, not folders
@@ -5676,10 +5665,13 @@
     browseCommandMode = true;
     browseCommandTabs = collectedTabs;
 
-    // Clear any pending 'g' timeout so it doesn't fire during command bar
+    // Clear any pending browse timeouts so they don't fire during command bar
     browseGPending = false;
     clearTimeout(browseGTimeout);
     browseGTimeout = null;
+    browseNumberBuffer = '';
+    clearTimeout(browseNumberTimeout);
+    browseNumberTimeout = null;
 
     // Hide browse UI without fully tearing down leap mode
     clearHighlight();
@@ -7524,17 +7516,19 @@
         }
       }
 
-      if (selectedTabs.size > 0) statusParts.push(`${selectedTabs.size} sel`);
-      if (yankBuffer.length > 0) statusParts.push(`${yankBuffer.length} yanked`);
+      if (selectedItems.size > 0) statusParts.push(`${selectedItems.size} sel`);
+      if (yankItems.length > 0) statusParts.push(`${yankItems.length} yanked`);
       overlayDirectionLabel.textContent = statusParts.join(' | ');
 
       // Show contextual hints based on highlighted item type
       const onFolder = highlightedTabIndex >= 0 && highlightedTabIndex < items.length && isFolder(items[highlightedTabIndex]);
-      if (onFolder) {
-        overlayHintLabel.textContent = 'Enter=toggle fold  x=delete folder  j/k=move  Esc=cancel';
-      } else if (yankBuffer.length > 0) {
+      if (onFolder && yankItems.length > 0) {
+        overlayHintLabel.textContent = 'p=paste after  P=paste before  Enter=toggle fold  j/k=move  Esc=cancel';
+      } else if (onFolder) {
+        overlayHintLabel.textContent = 'Space=select  Enter=toggle fold  y=yank  x=delete  j/k=move  Esc=cancel';
+      } else if (yankItems.length > 0) {
         overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
-      } else if (selectedTabs.size > 0) {
+      } else if (selectedItems.size > 0) {
         overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
       } else {
         overlayHintLabel.textContent = 'j/k=move  Space=select  Ctrl+Shift+/=cmds  Enter=open  x=close  Esc=cancel';
@@ -7688,7 +7682,7 @@
     // Remove highlight from all items, update selection markers
     items.forEach(item => {
       item.removeAttribute('data-zenleap-highlight');
-      if (selectedTabs.has(item)) {
+      if (selectedItems.has(item)) {
         item.setAttribute('data-zenleap-selected', 'true');
       } else {
         item.removeAttribute('data-zenleap-selected');
@@ -7764,13 +7758,13 @@
     if (highlightedTabIndex !== prevIndex) {
       const prevItem = items[prevIndex];
       const newItem = items[highlightedTabIndex];
-      if (!isFolder(newItem) && selectedTabs.has(newItem)) {
-        // Contracting: deselect the tab we left
-        if (!isFolder(prevItem)) selectedTabs.delete(prevItem);
+      if (selectedItems.has(newItem)) {
+        // Contracting: deselect the item we left
+        selectedItems.delete(prevItem);
       } else {
         // Expanding: select both old and new position
-        if (!isFolder(prevItem)) selectedTabs.add(prevItem);
-        if (!isFolder(newItem)) selectedTabs.add(newItem);
+        selectedItems.add(prevItem);
+        selectedItems.add(newItem);
       }
     }
     updateHighlight();
@@ -7889,18 +7883,23 @@
     exitLeapMode(true); // true = center scroll on new tab
   }
 
-  // Close the highlighted tab/folder (or all selected tabs if any are selected)
+  // Close the highlighted tab/folder (or all selected items if any are selected)
   function closeHighlightedTab() {
     const items = getVisibleItems();
 
-    // If there are selected tabs, close all of them (skip folders in selection)
-    if (selectedTabs.size > 0) {
-      const tabsToClose = [...selectedTabs].filter(t => t && !t.closing && t.parentNode && !isFolder(t));
-      log(`Closing ${tabsToClose.length} selected tabs`);
+    // If there are selected items, close all of them (tabs and folders)
+    if (selectedItems.size > 0) {
+      const itemsToClose = [...selectedItems].filter(t => t && t.parentNode);
+      const tabsToClose = itemsToClose.filter(t => !isFolder(t) && !t.closing);
+      const foldersToClose = itemsToClose.filter(isFolder);
+      log(`Closing ${tabsToClose.length} selected tabs + ${foldersToClose.length} folders`);
       for (const tab of tabsToClose) {
         gBrowser.removeTab(tab);
       }
-      selectedTabs.clear();
+      for (const folder of foldersToClose) {
+        try { folder.delete(); } catch(e) { log(`Folder delete failed: ${e}`); }
+      }
+      selectedItems.clear();
 
       _visibleItemsCache = null; // Invalidate after DOM mutation
       const newItems = getVisibleItems();
@@ -7952,64 +7951,71 @@
     updateLeapOverlayState();
   }
 
-  // Toggle selection on the highlighted tab (folders cannot be selected)
-  function toggleTabSelection() {
+  // Toggle selection on the highlighted item (tab or folder)
+  function toggleItemSelection() {
     const items = getVisibleItems();
     if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
 
     const item = items[highlightedTabIndex];
-    if (isFolder(item)) {
-      log('Cannot select a folder');
-      return;
-    }
-    if (selectedTabs.has(item)) {
-      selectedTabs.delete(item);
-      log(`Deselected tab at index ${highlightedTabIndex}`);
+    if (selectedItems.has(item)) {
+      selectedItems.delete(item);
+      log(`Deselected item at index ${highlightedTabIndex}`);
     } else {
-      selectedTabs.add(item);
-      log(`Selected tab at index ${highlightedTabIndex} (${selectedTabs.size} total)`);
+      selectedItems.add(item);
+      log(`Selected item at index ${highlightedTabIndex} (${selectedItems.size} total)`);
     }
 
     updateHighlight();
     updateLeapOverlayState();
   }
 
-  // Yank selected tabs into buffer
-  function yankSelectedTabs() {
-    // If no tabs explicitly selected, yank the highlighted tab as a single selection
-    if (selectedTabs.size === 0) {
+  // Yank selected items (tabs and/or folders) into buffer
+  function yankSelectedItems() {
+    // If nothing explicitly selected, yank the highlighted item (tab or folder)
+    if (selectedItems.size === 0) {
       const items = getVisibleItems();
       if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-        const highlightedItem = items[highlightedTabIndex];
-        if (!isFolder(highlightedItem)) {
-          selectedTabs.add(highlightedItem);
+        selectedItems.add(items[highlightedTabIndex]);
+      }
+    }
+
+    if (selectedItems.size === 0) {
+      log('No items selected to yank');
+      return;
+    }
+
+    // Deduplicate: remove individual tabs whose parent folder is also selected
+    // (they will move with their folder automatically)
+    const selectedFolders = new Set([...selectedItems].filter(isFolder));
+    for (const item of [...selectedItems]) {
+      if (!isFolder(item)) {
+        const parentFolder = item.group?.isZenFolder ? item.group : null;
+        if (parentFolder && selectedFolders.has(parentFolder)) {
+          selectedItems.delete(item);
         }
       }
     }
 
-    if (selectedTabs.size === 0) {
-      log('No tabs selected to yank');
-      return;
-    }
-
-    // Store references in order of their current position (only tabs, not folders)
+    // Store references in DOM order (tabs and folders)
     const items = getVisibleItems();
-    yankBuffer = items.filter(t => selectedTabs.has(t) && !isFolder(t));
-    const count = yankBuffer.length;
+    yankItems = items.filter(t => selectedItems.has(t));
+    const count = yankItems.length;
 
     // Clear selection visuals
-    selectedTabs.clear();
+    selectedItems.clear();
 
     updateHighlight();
     updateLeapOverlayState();
-    log(`Yanked ${count} tabs`);
+    log(`Yanked ${count} items`);
   }
 
-  // Paste yanked tabs after or before the highlighted tab
+  // Paste yanked items (tabs and/or folders) after or before the highlighted item
   // Handles cross-pinned/unpinned, cross-folder, and cross-workspace moves
-  function pasteTabs(position) {
-    if (yankBuffer.length === 0) {
-      log('No tabs in yank buffer');
+  // Folders are placed as siblings (not nested). Loose tabs follow anchor context:
+  // if anchor is a tab in a folder, loose tabs join that folder; if anchor is a folder, they stay loose.
+  function pasteItems(position) {
+    if (yankItems.length === 0) {
+      log('No items in yank buffer');
       return;
     }
 
@@ -8017,86 +8023,163 @@
     if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
 
     const anchorItem = items[highlightedTabIndex];
-    // Cannot paste onto a folder
-    if (isFolder(anchorItem)) {
-      log('Cannot paste onto a folder');
-      return;
-    }
-    const anchorTab = anchorItem;
 
-    // Filter out any yanked tabs that have been closed since yanking
-    yankBuffer = yankBuffer.filter(t => t && !t.closing && t.parentNode);
-    if (yankBuffer.length === 0) {
-      log('All yanked tabs have been closed');
+    // Filter out closed/removed items
+    yankItems = yankItems.filter(item => {
+      if (isFolder(item)) return item.parentNode;
+      return item && !item.closing && item.parentNode;
+    });
+    if (yankItems.length === 0) {
+      log('All yanked items have been closed');
       return;
     }
 
-    log(`Paste: position=${position}, anchor="${anchorTab.label}", yankCount=${yankBuffer.length}`);
+    // Determine anchor context
+    const anchorIsFolder = isFolder(anchorItem);
+    const anchorTab = anchorIsFolder ? null : anchorItem;
+    const anchorFolder = anchorIsFolder ? null : (anchorItem.group?.isZenFolder ? anchorItem.group : null);
+    const anchorPinned = anchorIsFolder ? false : anchorItem.pinned;
+    const anchorWorkspaceId = anchorItem.getAttribute('zen-workspace-id') || window.gZenWorkspaces?.activeWorkspace;
 
-    // Determine anchor context for cross-boundary moves
-    const anchorPinned = anchorTab.pinned;
-    const anchorFolder = anchorTab.group?.isZenFolder ? anchorTab.group : null;
-    const anchorWorkspaceId = anchorTab.getAttribute('zen-workspace-id') || window.gZenWorkspaces?.activeWorkspace;
+    // Separate yanked items into folders and loose tabs
+    const yankFolders = yankItems.filter(isFolder);
+    const yankLooseTabs = yankItems.filter(item => !isFolder(item));
 
-    // Prepare each yanked tab: match workspace, pinned state, folder membership
-    for (const tab of yankBuffer) {
-      // 1. Cross-workspace: move tab to anchor's workspace if different
+    log(`Paste: position=${position}, anchor="${anchorItem.label}", folders=${yankFolders.length}, tabs=${yankLooseTabs.length}`);
+
+    // --- Phase 1: Move loose tabs ---
+    for (const tab of yankLooseTabs) {
+      // 1a. Cross-workspace
       if (window.gZenWorkspaces) {
         const tabWsId = tab.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
         if (tabWsId !== anchorWorkspaceId) {
           window.gZenWorkspaces.moveTabToWorkspace(tab, anchorWorkspaceId);
-          log(`  Moved "${tab.label}" to workspace ${anchorWorkspaceId}`);
+          log(`  Moved tab "${tab.label}" to workspace ${anchorWorkspaceId}`);
         }
       }
 
-      // 2. Cross-folder: remove from old folder if needed
+      // 1b. Remove from old folder if needed
       const tabFolder = tab.group?.isZenFolder ? tab.group : null;
       if (tabFolder && tabFolder !== anchorFolder) {
         try { gBrowser.ungroupTab(tab); } catch(e) { log(`  Ungroup failed: ${e}`); }
       }
 
-      // 3. Cross-pinned: match pinned state to anchor's area
-      //    Don't unpin if we'll be adding to a folder (folders require pinned tabs)
-      if (anchorPinned && !tab.pinned) {
-        gBrowser.pinTab(tab);
-        log(`  Pinned "${tab.label}" to match anchor`);
-      } else if (!anchorPinned && !anchorFolder && tab.pinned) {
-        gBrowser.unpinTab(tab);
-        log(`  Unpinned "${tab.label}" to match anchor`);
+      // 1c. Match pinned state (only when anchor is a tab)
+      if (!anchorIsFolder) {
+        if (anchorPinned && !tab.pinned) {
+          gBrowser.pinTab(tab);
+        } else if (!anchorPinned && !anchorFolder && tab.pinned) {
+          gBrowser.unpinTab(tab);
+        }
       }
     }
 
-    // Now position the tabs using moveTabBefore/moveTabAfter
-    if (position === 'after') {
-      let afterTarget = anchorTab;
-      for (const tab of yankBuffer) {
-        gBrowser.moveTabAfter(tab, afterTarget);
-        afterTarget = tab;
+    // Position loose tabs
+    if (yankLooseTabs.length > 0) {
+      if (position === 'after') {
+        let afterTarget = anchorItem; // works for both tab and folder anchors
+        for (const tab of yankLooseTabs) {
+          gBrowser.moveTabAfter(tab, afterTarget);
+          afterTarget = tab;
+        }
+      } else {
+        gBrowser.moveTabBefore(yankLooseTabs[0], anchorItem);
+        for (let i = 1; i < yankLooseTabs.length; i++) {
+          gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
+        }
       }
-    } else {
-      // Use chaining: first before anchor, rest after previous
-      gBrowser.moveTabBefore(yankBuffer[0], anchorTab);
-      for (let i = 1; i < yankBuffer.length; i++) {
-        gBrowser.moveTabAfter(yankBuffer[i], yankBuffer[i - 1]);
+
+      // Add loose tabs to anchor's folder if anchor is a tab inside a folder
+      if (anchorFolder) {
+        const tabsToAdd = yankLooseTabs.filter(t => t.group !== anchorFolder);
+        if (tabsToAdd.length > 0) {
+          for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
+          anchorFolder.addTabs(tabsToAdd);
+          log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
+        }
       }
     }
 
-    // 4. Add to anchor's folder if it has one
-    if (anchorFolder) {
-      const tabsToAdd = yankBuffer.filter(t => t.group !== anchorFolder);
-      if (tabsToAdd.length > 0) {
-        for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
-        anchorFolder.addTabs(tabsToAdd);
-        log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
+    // --- Phase 2: Move folders ---
+    for (const folder of yankFolders) {
+      // 2a. Cross-workspace: update workspace IDs on folder and all its tabs
+      const folderWsId = folder.getAttribute('zen-workspace-id');
+      if (folderWsId && folderWsId !== anchorWorkspaceId && window.gZenFolders) {
+        try {
+          // hasDndSwitch: true means only update IDs, don't auto-reposition or switch workspace
+          gZenFolders.changeFolderToSpace(folder, anchorWorkspaceId, { hasDndSwitch: true });
+          log(`  Moved folder "${folder.label}" to workspace ${anchorWorkspaceId}`);
+        } catch(e) { log(`  changeFolderToSpace failed: ${e}`); }
+      }
+
+      // 2b. Position folder based on anchor type:
+      //   - Anchor is a folder: place as sibling before/after it
+      //   - Anchor is a tab inside a folder: nest into that folder (before/after the tab)
+      //   - Anchor is a pinned loose tab: place as sibling
+      //   - Anchor is an unpinned loose tab: place into pinnedTabsContainer
+      // Folders must always live in the pinnedTabsContainer (or inside another folder's container).
+      if (anchorIsFolder) {
+        position === 'after' ? anchorItem.after(folder) : anchorItem.before(folder);
+      } else if (anchorFolder) {
+        // Anchor is a tab inside a folder — nest the yanked folder into anchorFolder
+        // by positioning relative to the anchor tab (which lives in anchorFolder's container).
+        // Check constraints first.
+        let canNest = true;
+
+        // Guard: circular nesting — don't nest a folder inside itself or its own descendants
+        let ancestor = anchorFolder;
+        while (ancestor) {
+          if (ancestor === folder) { canNest = false; break; }
+          ancestor = ancestor.group?.isZenFolder ? ancestor.group : null;
+        }
+        if (!canNest) {
+          log(`  Cannot nest folder "${folder.label}" inside its own descendant — placing as sibling`);
+        }
+
+        // Guard: max nesting depth — use Zen's canDropElement if available
+        if (canNest && window.gZenFolders?.canDropElement) {
+          try {
+            if (!gZenFolders.canDropElement(folder, anchorTab)) {
+              canNest = false;
+              log(`  Cannot nest folder "${folder.label}" — max nesting depth reached — placing as sibling`);
+            }
+          } catch(e) { /* proceed with nesting if check fails */ }
+        }
+
+        if (canNest) {
+          position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+          log(`  Nested folder "${folder.label}" inside "${anchorFolder.label}"`);
+        } else {
+          // Fall back to sibling placement next to the parent folder
+          position === 'after' ? anchorFolder.after(folder) : anchorFolder.before(folder);
+        }
+      } else if (anchorTab && anchorTab.pinned) {
+        // Anchor is a pinned tab (no folder) — safe to position relative to it
+        position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+      } else {
+        // Anchor is an unpinned tab — folder must go into the pinnedTabsContainer
+        const wsEl = window.gZenWorkspaces?.workspaceElement(anchorWorkspaceId);
+        const pinnedContainer = wsEl?.pinnedTabsContainer;
+        if (pinnedContainer) {
+          const separator = pinnedContainer.querySelector('.pinned-tabs-container-separator');
+          if (separator) {
+            separator.before(folder);
+          } else {
+            pinnedContainer.appendChild(folder);
+          }
+        } else {
+          position === 'after' ? anchorTab.after(folder) : anchorTab.before(folder);
+        }
       }
     }
 
-    log(`Pasted ${yankBuffer.length} tabs ${position} anchor "${anchorTab.label}"`);
+    log(`Pasted ${yankLooseTabs.length} tabs + ${yankFolders.length} folders ${position} anchor`);
 
     // Clear yank buffer
-    yankBuffer = [];
+    yankItems = [];
 
-    // Refresh visible tabs and update display
+    // Refresh visible items and update display
+    _visibleItemsCache = null;
     updateRelativeNumbers();
     updateHighlight();
     updateLeapOverlayState();
@@ -8106,8 +8189,8 @@
   function saveBrowseState() {
     return {
       highlightedTabIndex, originalTabIndex, originalTab,
-      browseDirection, selectedTabs: new Set(selectedTabs),
-      yankBuffer: [...yankBuffer], sidebarWasExpanded
+      browseDirection, selectedItems: new Set(selectedItems),
+      yankItems: [...yankItems], sidebarWasExpanded
     };
   }
 
@@ -8119,8 +8202,8 @@
     originalTabIndex = state.originalTabIndex;
     originalTab = state.originalTab;
     browseDirection = state.browseDirection;
-    selectedTabs = new Set(state.selectedTabs);
-    yankBuffer = [...state.yankBuffer];
+    selectedItems = new Set(state.selectedItems);
+    yankItems = [...state.yankItems];
     sidebarWasExpanded = state.sidebarWasExpanded;
   }
 
@@ -8176,8 +8259,11 @@
     browseGPending = false;
     clearTimeout(browseGTimeout);
     browseGTimeout = null;
-    selectedTabs.clear();
-    yankBuffer = [];
+    browseNumberBuffer = '';
+    clearTimeout(browseNumberTimeout);
+    browseNumberTimeout = null;
+    selectedItems.clear();
+    yankItems = [];
 
     // Reset folder delete modal state
     folderDeleteMode = false;
@@ -8492,6 +8578,14 @@
       event.stopPropagation();
       event.stopImmediatePropagation();
 
+      // If a number buffer is accumulating and a non-digit key is pressed,
+      // cancel the pending number jump (the user changed their mind)
+      if (browseNumberBuffer && !(key >= '0' && key <= '9')) {
+        clearTimeout(browseNumberTimeout);
+        browseNumberTimeout = null;
+        browseNumberBuffer = '';
+      }
+
       if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
         event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
         return;
@@ -8509,19 +8603,19 @@
         return;
       }
       if (key === S['keys.browse.select']) {
-        toggleTabSelection();
+        toggleItemSelection();
         return;
       }
       if (key === S['keys.browse.yank']) {
-        yankSelectedTabs();
+        yankSelectedItems();
         return;
       }
       if (originalKey === S['keys.browse.pasteBefore']) {
-        pasteTabs('before');
+        pasteItems('before');
         return;
       }
       if (key === S['keys.browse.pasteAfter']) {
-        pasteTabs('after');
+        pasteItems('after');
         return;
       }
       if (key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'] ||
@@ -8565,12 +8659,7 @@
         browseGTimeout = setTimeout(() => {
           browseGPending = false;
           browseGTimeout = null;
-          // Timeout expired without second g - perform the normal jump for 'g' (distance 16)
-          const gDistance = displayToNumber('g');
-          if (gDistance !== null && gDistance >= 1) {
-            log(`Browse: g timed out, jumping distance ${gDistance}`);
-            jumpAndOpenTab(gDistance);
-          }
+          log(`Browse: g timed out with no second g`);
         }, S['timing.browseGTimeout']);
         return;
       }
@@ -8582,10 +8671,19 @@
         browseGTimeout = null;
       }
 
-      // Number/letter to jump N tabs from ORIGINAL tab and open it
-      const distance = displayToNumber(originalKey);
-      if (distance !== null && distance >= 1) {
-        jumpAndOpenTab(distance);
+      // Digit keys: accumulate multi-digit number with timeout
+      if (key >= '1' && key <= '9' || (key === '0' && browseNumberBuffer.length > 0)) {
+        browseNumberBuffer += key;
+        clearTimeout(browseNumberTimeout);
+        browseNumberTimeout = setTimeout(() => {
+          browseNumberTimeout = null;
+          const distance = parseInt(browseNumberBuffer);
+          browseNumberBuffer = '';
+          if (distance >= 1) {
+            log(`Browse: jumping distance ${distance}`);
+            jumpAndOpenTab(distance);
+          }
+        }, S['timing.browseNumberTimeout']);
         return;
       }
 
@@ -9005,6 +9103,13 @@
         border-radius: 4px;
       }
 
+      /* Folder that is both highlighted and selected */
+      zen-folder[data-zenleap-highlight="true"][data-zenleap-selected="true"] {
+        outline: 2px solid var(--zl-highlight-selected) !important;
+        background-color: var(--zl-highlight-selected-20) !important;
+        border-radius: 4px;
+      }
+
       /* Folder delete modal */
       #zenleap-folder-delete-modal {
         display: none;
@@ -9102,9 +9207,10 @@
           background-color: var(--zl-badge-bg) !important;
           color: var(--zl-badge-color) !important;
           text-align: center !important;
-          width: 20px !important;
+          min-width: 20px !important;
           height: 20px !important;
           line-height: 20px !important;
+          padding: 0 3px !important;
           border-radius: 4px !important;
           margin-left: 3px !important;
           margin-right: 3px !important;
