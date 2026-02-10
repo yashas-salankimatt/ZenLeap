@@ -7557,6 +7557,27 @@
     log(`Moved highlight ${direction} to ${highlightedTabIndex}`);
   }
 
+  // Shift+move: expand or contract selection based on direction
+  function shiftMoveHighlight(direction) {
+    const items = getVisibleItems();
+    const prevIndex = highlightedTabIndex;
+    moveHighlight(direction);
+    if (highlightedTabIndex !== prevIndex) {
+      const prevItem = items[prevIndex];
+      const newItem = items[highlightedTabIndex];
+      if (!isFolder(newItem) && selectedTabs.has(newItem)) {
+        // Contracting: deselect the tab we left
+        if (!isFolder(prevItem)) selectedTabs.delete(prevItem);
+      } else {
+        // Expanding: select both old and new position
+        if (!isFolder(prevItem)) selectedTabs.add(prevItem);
+        if (!isFolder(newItem)) selectedTabs.add(newItem);
+      }
+    }
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
   // Switch workspace in browse mode (h = prev, l = next)
   async function browseWorkspaceSwitch(direction) {
     try {
@@ -8299,29 +8320,11 @@
       event.stopImmediatePropagation();
 
       if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
-        if (event.shiftKey) {
-          const items = getVisibleItems();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
-          moveHighlight('down');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
-          updateHighlight();
-          updateLeapOverlayState();
-        } else {
-          moveHighlight('down');
-        }
+        event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
         return;
       }
       if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt']) {
-        if (event.shiftKey) {
-          const items = getVisibleItems();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
-          moveHighlight('up');
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length && !isFolder(items[highlightedTabIndex])) selectedTabs.add(items[highlightedTabIndex]);
-          updateHighlight();
-          updateLeapOverlayState();
-        } else {
-          moveHighlight('up');
-        }
+        event.shiftKey ? shiftMoveHighlight('up') : moveHighlight('up');
         return;
       }
       if (key === S['keys.browse.confirm']) {
