@@ -89,7 +89,6 @@
 
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
-    'display.overflowIndicator':   { default: '+', type: 'text', label: 'Overflow Indicator', description: 'Badge for positions > 45', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
@@ -210,7 +209,6 @@
   const CONFIG = {
     get debug() { return S['advanced.debug']; },
     get currentTabIndicator() { return S['display.currentTabIndicator']; },
-    get overflowIndicator() { return S['display.overflowIndicator']; },
     get leapModeTimeout() { return S['timing.leapTimeout']; },
     get triggerKey() { return S['keys.global.leapMode'].key; },
     get triggerModifier() { return 'ctrlKey'; },
@@ -8011,7 +8009,7 @@
 
   // Paste yanked items (tabs and/or folders) after or before the highlighted item
   // Handles cross-pinned/unpinned, cross-folder, and cross-workspace moves
-  // Folders are placed as siblings (not nested). Loose tabs follow anchor context:
+  // Folders nest into the anchor's folder when anchor is a tab inside a folder (with depth/circular guards);
   // if anchor is a tab in a folder, loose tabs join that folder; if anchor is a folder, they stay loose.
   function pasteItems(position) {
     if (yankItems.length === 0) {
