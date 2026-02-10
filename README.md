@@ -207,14 +207,14 @@ The Manager app will:
 
 ```bash
 # Download and run the installer
-curl -sL https://raw.githubusercontent.com/anthropics/claude-code/main/ZenLeap/install.sh | bash
+curl -sfL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash
 ```
 
 Or clone the repo and run locally:
 
 ```bash
 git clone https://github.com/yashas-salankimatt/ZenLeap.git
-cd claude-code/ZenLeap
+cd ZenLeap
 ./install.sh
 ```
 

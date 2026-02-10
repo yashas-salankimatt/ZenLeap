@@ -96,7 +96,7 @@ get_version() {
 
 # Get remote version
 get_remote_version() {
-    curl -sL "$ZENLEAP_SCRIPT_URL" 2>/dev/null | grep -o '@version[[:space:]]*[0-9.]*' | head -1 | sed 's/@version[[:space:]]*//'
+    curl -sfL "$ZENLEAP_SCRIPT_URL" 2>/dev/null | grep -o '@version[[:space:]]*[0-9.]*' | head -1 | sed 's/@version[[:space:]]*//'
 }
 
 # Compare versions (returns 0 if v1 >= v2)
@@ -115,7 +115,7 @@ install_fxautoconfig() {
     local profile_path="$1"
 
     # Download
-    curl -sL "$FXAUTOCONFIG_URL" -o "$TEMP_DIR/fxautoconfig.zip" || return 1
+    curl -sfL "$FXAUTOCONFIG_URL" -o "$TEMP_DIR/fxautoconfig.zip" || return 1
     unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR" || return 1
 
     local extracted_dir=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "fx-autoconfig*" | head -1)
@@ -144,10 +144,10 @@ install_zenleap() {
     mkdir -p "$js_dir"
 
     # Download zenleap.uc.js
-    curl -sL "$ZENLEAP_SCRIPT_URL" -o "$js_dir/zenleap.uc.js" || return 1
+    curl -sfL "$ZENLEAP_SCRIPT_URL" -o "$js_dir/zenleap.uc.js" || return 1
 
     # Download and add CSS
-    curl -sL "$ZENLEAP_CSS_URL" -o "$TEMP_DIR/chrome.css" || return 1
+    curl -sfL "$ZENLEAP_CSS_URL" -o "$TEMP_DIR/chrome.css" || return 1
 
     # Update userChrome.css
     if [ -f "$chrome_dir/userChrome.css" ]; then

@@ -2396,7 +2396,7 @@
       allTabs = getVisibleTabs();
     }
 
-    // Filter to valid, non-essential, non-pinned tabs (same logic as deduplicateTabs)
+    // Filter to valid, non-essential, non-pinned tabs
     const validTabs = allTabs.filter(t =>
       t && !t.closing && t.parentNode &&
       !t.pinned &&
@@ -4265,56 +4265,6 @@
     } catch (e) {
       log(`Split focus failed: ${e}`);
     }
-  }
-
-  // Deduplicate tabs: find tabs with same URL, keep most recent, close the rest
-  function deduplicateTabs() {
-    // Get ALL tabs across all workspaces
-    let allTabs;
-    try {
-      if (window.gZenWorkspaces?.allStoredTabs) {
-        allTabs = Array.from(gZenWorkspaces.allStoredTabs);
-      } else {
-        allTabs = Array.from(gBrowser.tabs);
-      }
-    } catch (e) {
-      allTabs = Array.from(gBrowser.tabs);
-    }
-
-    // Filter to valid, non-essential, non-pinned tabs
-    const validTabs = allTabs.filter(t =>
-      t && !t.closing && t.parentNode &&
-      !t.pinned &&
-      !t.hasAttribute('zen-essential') &&
-      !t.hasAttribute('zen-glance-tab') &&
-      !t.hasAttribute('zen-empty-tab')
-    );
-
-    // Group by URL
-    const urlGroups = new Map();
-    for (const tab of validTabs) {
-      const url = tab.linkedBrowser?.currentURI?.spec;
-      if (!url || url === 'about:blank' || url === 'about:newtab') continue;
-      if (!urlGroups.has(url)) urlGroups.set(url, []);
-      urlGroups.get(url).push(tab);
-    }
-
-    // For each group with >1 tab, keep the most recently accessed, close the rest
-    let closedCount = 0;
-    for (const [url, tabs] of urlGroups) {
-      if (tabs.length < 2) continue;
-      tabs.sort((a, b) => (b._lastAccessed || 0) - (a._lastAccessed || 0));
-      for (let i = 1; i < tabs.length; i++) {
-        try {
-          gBrowser.removeTab(tabs[i]);
-          closedCount++;
-        } catch (e) {
-          log(`Failed to close duplicate tab: ${e}`);
-        }
-      }
-    }
-
-    log(`Deduplicated: closed ${closedCount} duplicate tab(s)`);
   }
 
   // Render search results
@@ -8162,36 +8112,6 @@
     gBrowser.selectedTab = tabs[targetIndex];
     log(`Jumped to absolute tab ${tabNumber} (index ${targetIndex})`);
     exitLeapMode(true);
-  }
-
-  // Navigate to tab by relative distance (direct jump, no browse mode)
-  function navigateToTab(direction, distance) {
-    const tabs = getVisibleTabs();
-    const currentTab = gBrowser.selectedTab;
-    const currentIndex = tabs.indexOf(currentTab);
-
-    let targetIndex;
-    if (currentIndex === -1) {
-      // Current tab not in visible list (e.g. new tab page).
-      // Treat index 0 as the starting point for navigation.
-      if (tabs.length === 0) return false;
-      targetIndex = direction === 'up' ? 0 : Math.min(distance - 1, tabs.length - 1);
-    } else if (direction === 'up') {
-      targetIndex = currentIndex - distance;
-    } else {
-      targetIndex = currentIndex + distance;
-    }
-
-    targetIndex = Math.max(0, Math.min(tabs.length - 1, targetIndex));
-
-    if (targetIndex !== currentIndex) {
-      gBrowser.selectedTab = tabs[targetIndex];
-      log(`Navigated ${direction} ${distance} tabs to index ${targetIndex}`);
-      return true;
-    }
-
-    log(`Already at boundary, cannot navigate ${direction}`);
-    return false;
   }
 
   // Find scrollable tab container

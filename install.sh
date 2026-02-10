@@ -158,7 +158,7 @@ get_version() {
 # Get remote version from GitHub
 get_remote_version() {
     local temp_file=$(mktemp)
-    if curl -sL "$ZENLEAP_SCRIPT_URL" -o "$temp_file" 2>/dev/null; then
+    if curl -sfL "$ZENLEAP_SCRIPT_URL" -o "$temp_file" 2>/dev/null; then
         local version=$(get_version "$temp_file")
         rm -f "$temp_file"
         echo "$version"
@@ -182,12 +182,12 @@ download_zenleap() {
 
     mkdir -p "$dest_dir/JS"
 
-    if ! curl -sL "$ZENLEAP_SCRIPT_URL" -o "$dest_dir/JS/zenleap.uc.js"; then
+    if ! curl -sfL "$ZENLEAP_SCRIPT_URL" -o "$dest_dir/JS/zenleap.uc.js"; then
         echo -e "${RED}Error: Failed to download zenleap.uc.js${NC}"
         return 1
     fi
 
-    if ! curl -sL "$ZENLEAP_CSS_URL" -o "$dest_dir/chrome.css"; then
+    if ! curl -sfL "$ZENLEAP_CSS_URL" -o "$dest_dir/chrome.css"; then
         echo -e "${RED}Error: Failed to download chrome.css${NC}"
         return 1
     fi
@@ -363,7 +363,7 @@ install_fxautoconfig() {
 
     echo "  Downloading..."
     if command -v curl &> /dev/null; then
-        curl -sL "$FXAUTOCONFIG_REPO" -o "$TEMP_DIR/fxautoconfig.zip"
+        curl -sfL "$FXAUTOCONFIG_REPO" -o "$TEMP_DIR/fxautoconfig.zip"
     elif command -v wget &> /dev/null; then
         wget -q "$FXAUTOCONFIG_REPO" -O "$TEMP_DIR/fxautoconfig.zip"
     else
