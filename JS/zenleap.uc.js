@@ -101,15 +101,7 @@
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
 
     // --- Appearance ---
-    'appearance.theme': { default: 'meridian', type: 'select', label: 'Theme', description: 'Color theme for all ZenLeap UI components', category: 'Appearance', group: 'Theme', options: [
-      { value: 'meridian', label: 'Meridian' },
-      { value: 'meridian-transparent', label: 'Meridian Transparent' },
-      { value: 'dracula', label: 'Dracula' },
-      { value: 'gruvbox', label: 'Gruvbox Dark' },
-      { value: 'nord', label: 'Nord' },
-      { value: 'catppuccin', label: 'Catppuccin Mocha' },
-      { value: 'tokyo-night', label: 'Tokyo Night' },
-    ]},
+    'appearance.theme': { default: 'meridian', type: 'select', label: 'Theme', description: 'Color theme for all ZenLeap UI components', category: 'Appearance', group: 'Theme', dynamicOptions: 'theme' },
 
     // --- Advanced ---
     'advanced.debug':              { default: false, type: 'toggle', label: 'Debug Logging', description: 'Log actions to browser console', category: 'Advanced', group: 'Debugging' },
@@ -132,7 +124,7 @@
   // THEME ENGINE
   // ============================================
 
-  const THEMES = {
+  const BUILTIN_THEMES = {
     // ── Meridian: Warm amber accent, deep navy surfaces ──
     'meridian': {
       name: 'Meridian',
@@ -333,6 +325,123 @@
     },
   };
 
+  // Mutable themes map: built-ins + user overrides (populated by loadUserThemes)
+  let themes = { ...BUILTIN_THEMES };
+
+  // Helper: build theme options array from current themes map
+  function getThemeOptions() {
+    return Object.entries(themes).map(([value, t]) => ({ value, label: t.name || value }));
+  }
+
+  // Load user-defined themes from {profile}/chrome/zenleap-themes.json
+  // Supports "extends" to inherit from a built-in or other user theme.
+  async function loadUserThemes() {
+    // Reset to built-ins before merging (handles deletions on reload)
+    themes = { ...BUILTIN_THEMES };
+    const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    try {
+      const content = await IOUtils.readUTF8(themesPath);
+      const userThemes = JSON.parse(content);
+      for (const [key, def] of Object.entries(userThemes)) {
+        if (typeof def !== 'object' || !def || key.startsWith('_')) continue;
+        const base = def.extends && BUILTIN_THEMES[def.extends]
+          ? BUILTIN_THEMES[def.extends]
+          : def.extends && themes[def.extends]
+            ? themes[def.extends]
+            : {};
+        const { extends: _, ...rest } = def;
+        themes[key] = { ...base, ...rest };
+        if (!themes[key].name) themes[key].name = key;
+      }
+      log(`Loaded ${Object.keys(userThemes).filter(k => !k.startsWith('_')).length} user theme(s) from zenleap-themes.json`);
+    } catch (e) {
+      // Silently ignore missing file — it's optional
+      if (e.name !== 'NotFoundError' && (!e.result || e.result !== 0x80520012)) {
+        console.warn('[ZenLeap] Error loading user themes:', e);
+      }
+    }
+  }
+
+  // Create template zenleap-themes.json if it doesn't exist
+  async function ensureThemesFile() {
+    const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    try {
+      await IOUtils.read(themesPath, { maxBytes: 1 });
+    } catch (e) {
+      // File doesn't exist — create template
+      const template = JSON.stringify({
+        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme. Run :reload-themes after editing.",
+        "example-custom": {
+          name: "Example Custom",
+          extends: "meridian",
+          accent: "#ff6b6b",
+          accentBright: "#ff8e8e",
+          highlight: "#ff6b6b"
+        }
+      }, null, 2);
+      try {
+        await IOUtils.writeUTF8(themesPath, template);
+        log('Created template zenleap-themes.json');
+      } catch (writeErr) {
+        console.warn('[ZenLeap] Could not create themes template:', writeErr);
+      }
+    }
+  }
+
+  // Theme editor: schema for all editable theme properties
+  const THEME_EDITOR_SCHEMA = {
+    // Accent (common)
+    accent:          { label: 'Accent',            group: 'Accent',          type: 'color', common: true },
+    accentBright:    { label: 'Accent Bright',     group: 'Accent',          type: 'color', common: true },
+    accentDim:       { label: 'Accent Dim',        group: 'Accent',          type: 'rgba',  common: false },
+    accentMid:       { label: 'Accent Mid',        group: 'Accent',          type: 'rgba',  common: false },
+    accentGlow:      { label: 'Accent Glow',       group: 'Accent',          type: 'rgba',  common: false },
+    accentBorder:    { label: 'Accent Border',     group: 'Accent',          type: 'rgba',  common: false },
+    // Backgrounds
+    bgBase:          { label: 'Base',              group: 'Backgrounds',     type: 'color', common: true },
+    bgSurface:       { label: 'Surface',           group: 'Backgrounds',     type: 'color', common: true },
+    bgRaised:        { label: 'Raised',            group: 'Backgrounds',     type: 'color', common: true },
+    bgVoid:          { label: 'Void',              group: 'Backgrounds',     type: 'color', common: false },
+    bgDeep:          { label: 'Deep',              group: 'Backgrounds',     type: 'color', common: false },
+    bgElevated:      { label: 'Elevated',          group: 'Backgrounds',     type: 'color', common: false },
+    bgHover:         { label: 'Hover',             group: 'Backgrounds',     type: 'color', common: false },
+    // Text
+    textPrimary:     { label: 'Primary',           group: 'Text',            type: 'color', common: true },
+    textSecondary:   { label: 'Secondary',         group: 'Text',            type: 'color', common: true },
+    textTertiary:    { label: 'Tertiary',          group: 'Text',            type: 'color', common: false },
+    textMuted:       { label: 'Muted',             group: 'Text',            type: 'color', common: false },
+    // Browse Mode
+    highlight:       { label: 'Highlight',         group: 'Browse Mode',     type: 'color', common: true },
+    selected:        { label: 'Selected',          group: 'Browse Mode',     type: 'color', common: true },
+    mark:            { label: 'Mark',              group: 'Browse Mode',     type: 'color', common: false },
+    currentBadgeBg:  { label: 'Current Badge BG',  group: 'Browse Mode',     type: 'color', common: false },
+    currentBadgeColor:{ label: 'Current Badge Text',group: 'Browse Mode',    type: 'color', common: false },
+    badgeBg:         { label: 'Badge BG',          group: 'Browse Mode',     type: 'color', common: false },
+    badgeColor:      { label: 'Badge Text',        group: 'Browse Mode',     type: 'color', common: false },
+    upBg:            { label: 'Up Direction BG',   group: 'Browse Mode',     type: 'color', common: false },
+    downBg:          { label: 'Down Direction BG', group: 'Browse Mode',     type: 'color', common: false },
+    // Semantic Colors
+    blue:            { label: 'Blue',              group: 'Semantic Colors', type: 'color', common: false },
+    purple:          { label: 'Purple',            group: 'Semantic Colors', type: 'color', common: false },
+    green:           { label: 'Green',             group: 'Semantic Colors', type: 'color', common: false },
+    red:             { label: 'Red',               group: 'Semantic Colors', type: 'color', common: false },
+    cyan:            { label: 'Cyan',              group: 'Semantic Colors', type: 'color', common: false },
+    gold:            { label: 'Gold',              group: 'Semantic Colors', type: 'color', common: false },
+    // Borders
+    borderSubtle:    { label: 'Border Subtle',     group: 'Borders',         type: 'rgba',  common: false },
+    borderDefault:   { label: 'Border Default',    group: 'Borders',         type: 'rgba',  common: false },
+    borderStrong:    { label: 'Border Strong',     group: 'Borders',         type: 'rgba',  common: false },
+    // gTile Regions
+    regionBlue:      { label: 'Region Blue',       group: 'gTile Regions',   type: 'color', common: false },
+    regionPurple:    { label: 'Region Purple',     group: 'gTile Regions',   type: 'color', common: false },
+    regionGreen:     { label: 'Region Green',      group: 'gTile Regions',   type: 'color', common: false },
+    regionGold:      { label: 'Region Gold',       group: 'gTile Regions',   type: 'color', common: false },
+    // Effects
+    noiseOpacity:    { label: 'Noise Opacity',     group: 'Effects',         type: 'text',  common: false },
+    backdropBlur:    { label: 'Backdrop Blur',     group: 'Effects',         type: 'text',  common: false },
+    panelAlpha:      { label: 'Panel Alpha',       group: 'Effects',         type: 'text',  common: false },
+  };
+
   // Command palette group definitions (for section headers when input is empty)
   const COMMAND_GROUPS = [
     { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}', keys: ['new-tab','close-tab','close-other-tabs','close-tabs-right','close-tabs-left','duplicate-tab','pin-unpin-tab','add-to-essentials','remove-from-essentials','rename-tab','edit-tab-icon','reset-pinned-tab','replace-pinned-url','mute-unmute-tab','unload-tab','reload-tab','bookmark-tab','reopen-closed-tab','select-all-tabs','select-matching-tabs','deduplicate-tabs','move-tab-to-top','move-tab-to-bottom','sort-tabs','group-by-domain'] },
@@ -341,7 +450,7 @@
     { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
     { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace'] },
     { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
-    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update'] },
+    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','reload-themes','open-themes-file'] },
     { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
   ];
 
@@ -567,6 +676,14 @@
   let settingsSearchQuery = '';
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
+
+  // Theme editor state
+  let themeEditorActive = false;
+  let themeEditorKey = null;
+  let themeEditorDraft = {};
+  let themeEditorName = '';
+  let themeEditorBase = 'meridian';
+  let themeEditorExpandedGroups = new Set();
 
   // gTile mode state
   let gtileMode = false;
@@ -1970,6 +2087,16 @@
       { key: 'check-update', label: 'Check for Updates', icon: '⬆', tags: ['update', 'check', 'version', 'upgrade', 'install', 'download', 'zenleap'], command: () => {
         exitSearchMode();
         setTimeout(() => enterUpdateMode(), 100);
+      }},
+      { key: 'reload-themes', label: 'Reload Themes', icon: '🎨', tags: ['theme', 'reload', 'refresh', 'custom', 'user'], command: () => {
+        loadUserThemes().then(() => { applyTheme(); log('Themes reloaded'); });
+      }},
+      { key: 'open-themes-file', label: 'Open Themes File', icon: '📝', tags: ['theme', 'edit', 'custom', 'file', 'json'], command: async () => {
+        await ensureThemesFile();
+        const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+        const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+        file.initWithPath(themesPath);
+        file.launch();
       }},
 
       // --- Session Management ---
@@ -5993,7 +6120,7 @@
     const targetInfoEl = gtileOverlay.querySelector('.zenleap-gtile-target-info');
     if (targetInfoEl && gtileSubMode === 'resize' && gtileFocusedTab) {
       const targetRect = gtileTabRects.find(r => r.tab === gtileFocusedTab);
-      const t = THEMES[S['appearance.theme']] || THEMES.meridian;
+      const t = themes[S['appearance.theme']] || themes.meridian;
       const colorMap = { blue: t.regionBlue, purple: t.regionPurple, green: t.regionGreen, yellow: t.regionGold };
       const hue = targetRect ? colorMap[targetRect.color] || t.accent : t.accent;
       targetInfoEl.querySelector('.gtile-target-dot').style.setProperty('--target-hue', hue);
@@ -8048,6 +8175,10 @@
       btn.dataset.tab = cat;
       if (cat === settingsActiveTab) btn.classList.add('active');
       btn.addEventListener('click', () => {
+        if (themeEditorActive && cat !== 'Appearance') {
+          themeEditorActive = false;
+          applyTheme();
+        }
         settingsActiveTab = cat;
         tabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
@@ -8252,6 +8383,149 @@
       .zenleap-settings-empty {
         padding: 40px 20px; text-align: center; color: var(--zl-text-muted); font-size: 14px;
       }
+
+      /* ═══ Theme Editor ═══ */
+      .zenleap-theme-editor-section {
+        margin-top: 24px; border-top: 1px solid var(--zl-border-subtle); padding-top: 16px;
+      }
+      .zenleap-theme-editor-header {
+        display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;
+      }
+      .zenleap-theme-editor-header h3 {
+        margin: 0; font-size: 11px; font-weight: 600; color: var(--zl-accent);
+        text-transform: uppercase; letter-spacing: 0.8px;
+      }
+      .zenleap-theme-editor-create-btn {
+        background: var(--zl-accent-dim); border: 1px solid var(--zl-accent-border);
+        color: var(--zl-accent); padding: 5px 14px; border-radius: var(--zl-r-sm);
+        cursor: pointer; font-size: 12px; font-weight: 500; font-family: var(--zl-font-ui);
+        transition: all 0.15s;
+      }
+      .zenleap-theme-editor-create-btn:hover {
+        background: var(--zl-accent-mid); border-color: var(--zl-accent);
+      }
+      .zenleap-theme-editor-empty {
+        padding: 20px; text-align: center; color: var(--zl-text-muted); font-size: 12px;
+        font-style: italic;
+      }
+      /* Theme Cards */
+      .zenleap-theme-cards { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+      .zenleap-theme-card {
+        display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-subtle);
+        border-radius: var(--zl-r-md); transition: all 0.15s;
+      }
+      .zenleap-theme-card:hover { border-color: var(--zl-border-strong); background: var(--zl-bg-elevated); }
+      .zenleap-theme-card.active-theme { border-color: var(--zl-accent-border); }
+      .zenleap-theme-swatches { display: flex; gap: 3px; flex-shrink: 0; }
+      .zenleap-theme-swatch {
+        width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-theme-card-info { flex: 1; min-width: 0; }
+      .zenleap-theme-card-name { font-size: 13px; font-weight: 500; color: var(--zl-text-primary); }
+      .zenleap-theme-card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .zenleap-theme-card-btn {
+        background: none; border: 1px solid var(--zl-border-strong); color: var(--zl-text-secondary);
+        padding: 3px 10px; border-radius: var(--zl-r-sm); cursor: pointer; font-size: 11px;
+        font-family: var(--zl-font-ui); transition: all 0.15s;
+      }
+      .zenleap-theme-card-btn:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+      .zenleap-theme-card-btn.delete:hover {
+        color: var(--zl-error); border-color: rgba(224,108,117,0.3); background: rgba(224,108,117,0.1);
+      }
+      /* Editor Panel */
+      .zenleap-theme-editor-panel {
+        background: var(--zl-bg-deep); border: 1px solid var(--zl-border-default);
+        border-radius: var(--zl-r-md); padding: 16px; margin-top: 12px;
+      }
+      .zenleap-theme-editor-panel-header {
+        display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+        font-size: 14px; font-weight: 600; color: var(--zl-accent);
+      }
+      .zenleap-theme-editor-row {
+        display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+      }
+      .zenleap-theme-editor-label {
+        font-size: 12px; font-weight: 500; color: var(--zl-text-secondary); width: 100px; flex-shrink: 0;
+      }
+      .zenleap-theme-editor-input {
+        flex: 1; background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong);
+        color: var(--zl-text-primary); padding: 6px 10px; border-radius: var(--zl-r-sm);
+        font-size: 13px; font-family: var(--zl-font-ui); outline: none; transition: border-color 0.15s;
+      }
+      .zenleap-theme-editor-input:focus { border-color: var(--zl-accent); }
+      /* Preview Strip */
+      .zenleap-theme-preview-strip {
+        display: flex; align-items: center; gap: 10px; margin: 12px 0 16px;
+        padding: 10px 12px; background: var(--zl-bg-void); border-radius: var(--zl-r-sm);
+        border: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-theme-preview-label {
+        font-size: 10px; font-weight: 600; color: var(--zl-text-muted);
+        text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0;
+      }
+      .zenleap-theme-preview-swatches { display: flex; gap: 4px; flex: 1; }
+      .zenleap-theme-preview-swatch {
+        flex: 1; height: 24px; border-radius: 4px; border: 1px solid var(--zl-border-subtle);
+        transition: background 0.15s;
+      }
+      /* Property Groups */
+      .zenleap-theme-editor-group { margin-bottom: 16px; }
+      .zenleap-theme-editor-group-header {
+        font-size: 10px; font-weight: 600; color: var(--zl-text-muted);
+        text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;
+        padding-bottom: 4px; border-bottom: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-theme-prop-row {
+        display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+        border-radius: var(--zl-r-sm); transition: background 0.1s;
+      }
+      .zenleap-theme-prop-row:hover { background: rgba(255,255,255,0.02); }
+      .zenleap-theme-prop-row.overridden { background: var(--zl-accent-dim); }
+      .zenleap-theme-prop-label {
+        font-size: 12px; font-weight: 500; color: var(--zl-text-primary); width: 120px; flex-shrink: 0;
+      }
+      .zenleap-theme-prop-inherited {
+        display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--zl-text-muted);
+        width: 100px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis;
+      }
+      .zenleap-theme-prop-dot {
+        display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+        border: 1px solid var(--zl-border-subtle); flex-shrink: 0;
+      }
+      .zenleap-theme-prop-control {
+        display: flex; align-items: center; gap: 6px; flex: 1; justify-content: flex-end;
+      }
+      .zenleap-theme-prop-clear {
+        background: none; border: none; color: var(--zl-text-muted); font-size: 14px;
+        cursor: pointer; padding: 2px 4px; border-radius: var(--zl-r-sm);
+        transition: all 0.15s; flex-shrink: 0;
+      }
+      .zenleap-theme-prop-clear:hover { color: var(--zl-error); background: rgba(224,108,117,0.1); }
+      .zenleap-theme-editor-expand-btn {
+        background: none; border: none; color: var(--zl-text-muted); font-size: 11px;
+        cursor: pointer; padding: 4px 8px; margin-top: 4px; border-radius: var(--zl-r-sm);
+        font-family: var(--zl-font-ui); transition: all 0.15s;
+      }
+      .zenleap-theme-editor-expand-btn:hover { color: var(--zl-text-secondary); background: var(--zl-bg-hover); }
+      /* Action Buttons */
+      .zenleap-theme-editor-actions {
+        display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
+        padding-top: 12px; border-top: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-theme-editor-save-btn {
+        background: var(--zl-accent); border: 1px solid var(--zl-accent); color: var(--zl-bg-base);
+        padding: 6px 20px; border-radius: var(--zl-r-sm); cursor: pointer;
+        font-size: 12px; font-weight: 600; font-family: var(--zl-font-ui); transition: all 0.15s;
+      }
+      .zenleap-theme-editor-save-btn:hover { filter: brightness(1.1); }
+      .zenleap-theme-editor-cancel-btn {
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong);
+        color: var(--zl-text-secondary); padding: 6px 16px; border-radius: var(--zl-r-sm);
+        cursor: pointer; font-size: 12px; font-weight: 500; font-family: var(--zl-font-ui);
+        transition: all 0.15s;
+      }
+      .zenleap-theme-editor-cancel-btn:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
     `;
     document.head.appendChild(style);
     document.documentElement.appendChild(modal);
@@ -8266,6 +8540,7 @@
   function renderSettingsContent() {
     const body = document.getElementById('zenleap-settings-body');
     if (!body) return;
+    const scrollTop = body.scrollTop;
     body.innerHTML = '';
 
     const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
@@ -8303,6 +8578,13 @@
       }
       body.appendChild(groupDiv);
     }
+
+    // Theme editor section (Appearance tab, no search)
+    if (settingsActiveTab === 'Appearance' && !settingsSearchQuery) {
+      body.appendChild(renderThemeEditorSection());
+    }
+
+    body.scrollTop = scrollTop;
   }
 
   function createSettingRow(id, schema) {
@@ -8385,7 +8667,8 @@
     } else if (schema.type === 'select') {
       const select = document.createElement('select');
       select.className = 'zenleap-select';
-      for (const opt of (schema.options || [])) {
+      const opts = schema.dynamicOptions === 'theme' ? getThemeOptions() : (schema.options || []);
+      for (const opt of opts) {
         const option = document.createElement('option');
         option.value = opt.value;
         option.textContent = opt.label;
@@ -8524,9 +8807,480 @@
   function exitSettingsMode() {
     if (!settingsMode) return;
     stopKeyRecording();
+    if (themeEditorActive) {
+      themeEditorActive = false;
+      applyTheme();
+    }
     settingsMode = false;
     settingsModal.classList.remove('active');
     log('Exited settings mode');
+  }
+
+  // ── Theme Editor ──────────────────────────────────────────────
+
+  function getUserThemeKeys() {
+    return Object.keys(themes).filter(k => !BUILTIN_THEMES[k]);
+  }
+
+  function renderThemeEditorSection() {
+    const section = document.createElement('div');
+    section.className = 'zenleap-theme-editor-section';
+
+    const header = document.createElement('div');
+    header.className = 'zenleap-theme-editor-header';
+    const title = document.createElement('h3');
+    title.textContent = 'Custom Themes';
+    header.appendChild(title);
+
+    const createBtn = document.createElement('button');
+    createBtn.className = 'zenleap-theme-editor-create-btn';
+    createBtn.textContent = '+ New Theme';
+    createBtn.addEventListener('click', () => {
+      themeEditorActive = true;
+      themeEditorKey = null;
+      themeEditorDraft = {};
+      themeEditorName = '';
+      themeEditorBase = 'meridian';
+      themeEditorExpandedGroups.clear();
+      renderSettingsContent();
+    });
+    header.appendChild(createBtn);
+    section.appendChild(header);
+
+    const userKeys = getUserThemeKeys();
+    if (userKeys.length > 0) {
+      const list = document.createElement('div');
+      list.className = 'zenleap-theme-cards';
+      for (const key of userKeys) list.appendChild(createThemeCard(key));
+      section.appendChild(list);
+    } else if (!themeEditorActive) {
+      const empty = document.createElement('div');
+      empty.className = 'zenleap-theme-editor-empty';
+      empty.textContent = 'No custom themes yet. Create one to get started.';
+      section.appendChild(empty);
+    }
+
+    if (themeEditorActive) section.appendChild(renderThemeEditorPanel());
+    return section;
+  }
+
+  function createThemeCard(key) {
+    const theme = themes[key];
+    const card = document.createElement('div');
+    card.className = 'zenleap-theme-card';
+    if (S['appearance.theme'] === key) card.classList.add('active-theme');
+
+    const swatches = document.createElement('div');
+    swatches.className = 'zenleap-theme-swatches';
+    for (const color of [theme.accent, theme.bgBase, theme.bgSurface, theme.textPrimary, theme.highlight || theme.accent]) {
+      const s = document.createElement('span');
+      s.className = 'zenleap-theme-swatch';
+      s.style.background = color;
+      swatches.appendChild(s);
+    }
+
+    const info = document.createElement('div');
+    info.className = 'zenleap-theme-card-info';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'zenleap-theme-card-name';
+    nameSpan.textContent = theme.name || key;
+    info.appendChild(nameSpan);
+
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-theme-card-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'zenleap-theme-card-btn';
+    editBtn.textContent = 'Edit';
+    editBtn.addEventListener('click', () => openThemeForEditing(key));
+    actions.appendChild(editBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'zenleap-theme-card-btn delete';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => deleteUserTheme(key));
+    actions.appendChild(deleteBtn);
+
+    card.appendChild(swatches);
+    card.appendChild(info);
+    card.appendChild(actions);
+    return card;
+  }
+
+  async function openThemeForEditing(key) {
+    const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    try {
+      const content = await IOUtils.readUTF8(themesPath);
+      const rawThemes = JSON.parse(content);
+      const rawDef = rawThemes[key];
+      if (!rawDef) return;
+
+      themeEditorActive = true;
+      themeEditorKey = key;
+      themeEditorName = rawDef.name || key;
+      themeEditorBase = rawDef.extends || 'meridian';
+      themeEditorExpandedGroups.clear();
+
+      const { name: _n, extends: _e, ...overrides } = rawDef;
+      themeEditorDraft = { ...overrides };
+
+      applyThemeEditorPreview();
+      renderSettingsContent();
+    } catch (e) {
+      console.warn('[ZenLeap] Error loading theme for editing:', e);
+    }
+  }
+
+  function renderThemeEditorPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'zenleap-theme-editor-panel';
+
+    // Header
+    const panelHeader = document.createElement('div');
+    panelHeader.className = 'zenleap-theme-editor-panel-header';
+    const panelTitle = document.createElement('span');
+    panelTitle.textContent = themeEditorKey ? `Editing: ${themeEditorName}` : 'New Theme';
+    panelHeader.appendChild(panelTitle);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-settings-close-btn';
+    closeBtn.textContent = '\u2715';
+    closeBtn.addEventListener('click', () => {
+      themeEditorActive = false;
+      applyTheme();
+      renderSettingsContent();
+    });
+    panelHeader.appendChild(closeBtn);
+    panel.appendChild(panelHeader);
+
+    // Name input
+    const nameRow = document.createElement('div');
+    nameRow.className = 'zenleap-theme-editor-row';
+    const nameLabel = document.createElement('label');
+    nameLabel.textContent = 'Name';
+    nameLabel.className = 'zenleap-theme-editor-label';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = themeEditorName;
+    nameInput.placeholder = 'My Custom Theme';
+    nameInput.className = 'zenleap-theme-editor-input';
+    nameInput.addEventListener('input', () => { themeEditorName = nameInput.value; });
+    nameRow.appendChild(nameLabel);
+    nameRow.appendChild(nameInput);
+    panel.appendChild(nameRow);
+
+    // Base theme selector
+    const baseRow = document.createElement('div');
+    baseRow.className = 'zenleap-theme-editor-row';
+    const baseLabel = document.createElement('label');
+    baseLabel.textContent = 'Base Theme';
+    baseLabel.className = 'zenleap-theme-editor-label';
+    const baseSelect = document.createElement('select');
+    baseSelect.className = 'zenleap-select';
+    for (const [key, t] of Object.entries(BUILTIN_THEMES)) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = t.name;
+      if (key === themeEditorBase) opt.selected = true;
+      baseSelect.appendChild(opt);
+    }
+    baseSelect.addEventListener('change', () => {
+      themeEditorBase = baseSelect.value;
+      applyThemeEditorPreview();
+      renderSettingsContent();
+    });
+    baseRow.appendChild(baseLabel);
+    baseRow.appendChild(baseSelect);
+    panel.appendChild(baseRow);
+
+    // Preview strip
+    panel.appendChild(renderThemePreviewStrip());
+
+    // Property groups
+    const groupOrder = ['Accent', 'Backgrounds', 'Text', 'Browse Mode',
+                        'Semantic Colors', 'Borders', 'gTile Regions', 'Effects'];
+    const grouped = new Map();
+    for (const [prop, schema] of Object.entries(THEME_EDITOR_SCHEMA)) {
+      const g = schema.group;
+      if (!grouped.has(g)) grouped.set(g, []);
+      grouped.get(g).push([prop, schema]);
+    }
+
+    for (const groupName of groupOrder) {
+      const props = grouped.get(groupName);
+      if (!props) continue;
+
+      const commonProps = props.filter(([, s]) => s.common);
+      const advancedProps = props.filter(([, s]) => !s.common);
+      const isExpanded = themeEditorExpandedGroups.has(groupName);
+
+      const groupDiv = document.createElement('div');
+      groupDiv.className = 'zenleap-theme-editor-group';
+      const groupHeader = document.createElement('div');
+      groupHeader.className = 'zenleap-theme-editor-group-header';
+      groupHeader.textContent = groupName;
+      groupDiv.appendChild(groupHeader);
+
+      for (const [prop, schema] of commonProps) {
+        groupDiv.appendChild(createThemePropertyRow(prop, schema));
+      }
+
+      if (advancedProps.length > 0) {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = 'zenleap-theme-editor-expand-btn';
+        toggleBtn.textContent = isExpanded
+          ? `\u25B4 Hide ${advancedProps.length} more`
+          : `\u25BE Show ${advancedProps.length} more`;
+        toggleBtn.addEventListener('click', () => {
+          if (isExpanded) themeEditorExpandedGroups.delete(groupName);
+          else themeEditorExpandedGroups.add(groupName);
+          renderSettingsContent();
+        });
+        groupDiv.appendChild(toggleBtn);
+
+        if (isExpanded) {
+          for (const [prop, schema] of advancedProps) {
+            groupDiv.appendChild(createThemePropertyRow(prop, schema));
+          }
+        }
+      }
+      panel.appendChild(groupDiv);
+    }
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-theme-editor-actions';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'zenleap-theme-editor-save-btn';
+    saveBtn.textContent = themeEditorKey ? 'Save Changes' : 'Create Theme';
+    saveBtn.addEventListener('click', () => saveThemeFromEditor());
+    actions.appendChild(saveBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'zenleap-theme-editor-cancel-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => {
+      themeEditorActive = false;
+      applyTheme();
+      renderSettingsContent();
+    });
+    actions.appendChild(cancelBtn);
+    panel.appendChild(actions);
+
+    return panel;
+  }
+
+  function createThemePropertyRow(prop, schema) {
+    const base = BUILTIN_THEMES[themeEditorBase] || BUILTIN_THEMES.meridian;
+    const baseValue = base[prop] || '';
+    const hasOverride = prop in themeEditorDraft;
+    const currentValue = hasOverride ? themeEditorDraft[prop] : baseValue;
+
+    const row = document.createElement('div');
+    row.className = 'zenleap-theme-prop-row';
+    if (hasOverride) row.classList.add('overridden');
+
+    const label = document.createElement('span');
+    label.className = 'zenleap-theme-prop-label';
+    label.textContent = schema.label;
+
+    const inherited = document.createElement('span');
+    inherited.className = 'zenleap-theme-prop-inherited';
+    if (schema.type === 'color' && baseValue.startsWith('#')) {
+      const dot = document.createElement('span');
+      dot.className = 'zenleap-theme-prop-dot';
+      dot.style.background = baseValue;
+      inherited.appendChild(dot);
+    }
+    const inheritedText = document.createElement('span');
+    inheritedText.textContent = hasOverride ? `base: ${baseValue}` : '(inherited)';
+    inherited.appendChild(inheritedText);
+
+    const control = document.createElement('div');
+    control.className = 'zenleap-theme-prop-control';
+
+    if (schema.type === 'color') {
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.className = 'zenleap-color-picker';
+      colorInput.value = toHex6(currentValue);
+      const hexInput = document.createElement('input');
+      hexInput.type = 'text';
+      hexInput.className = 'zenleap-color-hex';
+      hexInput.value = hasOverride ? themeEditorDraft[prop] : '';
+      hexInput.placeholder = baseValue;
+      colorInput.addEventListener('input', () => {
+        themeEditorDraft[prop] = colorInput.value;
+        hexInput.value = colorInput.value;
+        row.classList.add('overridden');
+        clearBtn.style.visibility = 'visible';
+        applyThemeEditorPreview();
+      });
+      hexInput.addEventListener('change', () => {
+        const val = hexInput.value.trim();
+        if (/^#[0-9a-fA-F]{6}$/i.test(val)) {
+          themeEditorDraft[prop] = val;
+          colorInput.value = val;
+          row.classList.add('overridden');
+          clearBtn.style.visibility = 'visible';
+          applyThemeEditorPreview();
+        } else if (val === '') {
+          delete themeEditorDraft[prop];
+          colorInput.value = toHex6(baseValue);
+          row.classList.remove('overridden');
+          clearBtn.style.visibility = 'hidden';
+          applyThemeEditorPreview();
+        }
+      });
+      control.appendChild(colorInput);
+      control.appendChild(hexInput);
+    } else {
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'zenleap-color-hex';
+      if (schema.type === 'rgba') textInput.style.width = '160px';
+      textInput.value = hasOverride ? themeEditorDraft[prop] : '';
+      textInput.placeholder = baseValue;
+      textInput.addEventListener('change', () => {
+        const val = textInput.value.trim();
+        if (val === '') {
+          delete themeEditorDraft[prop];
+          row.classList.remove('overridden');
+          clearBtn.style.visibility = 'hidden';
+        } else {
+          themeEditorDraft[prop] = val;
+          row.classList.add('overridden');
+          clearBtn.style.visibility = 'visible';
+        }
+        applyThemeEditorPreview();
+      });
+      control.appendChild(textInput);
+    }
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'zenleap-theme-prop-clear';
+    clearBtn.textContent = '\u21BA';
+    clearBtn.title = 'Revert to base theme value';
+    clearBtn.style.visibility = hasOverride ? 'visible' : 'hidden';
+    clearBtn.addEventListener('click', () => {
+      delete themeEditorDraft[prop];
+      applyThemeEditorPreview();
+      renderSettingsContent();
+    });
+
+    row.appendChild(label);
+    row.appendChild(inherited);
+    row.appendChild(control);
+    row.appendChild(clearBtn);
+    return row;
+  }
+
+  function renderThemePreviewStrip() {
+    const base = BUILTIN_THEMES[themeEditorBase] || BUILTIN_THEMES.meridian;
+    const merged = { ...base, ...themeEditorDraft };
+
+    const strip = document.createElement('div');
+    strip.className = 'zenleap-theme-preview-strip';
+    const previewLabel = document.createElement('span');
+    previewLabel.className = 'zenleap-theme-preview-label';
+    previewLabel.textContent = 'Preview';
+    strip.appendChild(previewLabel);
+
+    const swatchRow = document.createElement('div');
+    swatchRow.className = 'zenleap-theme-preview-swatches';
+    for (const key of ['bgBase', 'bgSurface', 'bgRaised', 'accent', 'accentBright',
+                        'textPrimary', 'textSecondary', 'highlight', 'selected', 'mark']) {
+      const swatch = document.createElement('div');
+      swatch.className = 'zenleap-theme-preview-swatch';
+      swatch.style.background = merged[key];
+      swatch.title = `${key}: ${merged[key]}`;
+      swatchRow.appendChild(swatch);
+    }
+    strip.appendChild(swatchRow);
+    return strip;
+  }
+
+  function applyThemeEditorPreview() {
+    if (!themeEditorActive) return;
+    const base = BUILTIN_THEMES[themeEditorBase] || BUILTIN_THEMES.meridian;
+    const merged = { ...base, name: themeEditorName, ...themeEditorDraft };
+    const previewKey = '__zenleap_preview__';
+    themes[previewKey] = merged;
+    const prevTheme = S['appearance.theme'];
+    S['appearance.theme'] = previewKey;
+    applyTheme();
+    S['appearance.theme'] = prevTheme;
+    delete themes[previewKey];
+  }
+
+  async function saveThemeFromEditor() {
+    if (!themeEditorName.trim()) return;
+
+    const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    let rawThemes = {};
+    try {
+      const content = await IOUtils.readUTF8(themesPath);
+      rawThemes = JSON.parse(content);
+    } catch (e) { /* start fresh */ }
+
+    const key = themeEditorKey || generateThemeKey(themeEditorName, rawThemes);
+
+    if (themeEditorKey && themeEditorKey !== key) {
+      delete rawThemes[themeEditorKey];
+    }
+
+    const def = { name: themeEditorName.trim(), extends: themeEditorBase };
+    for (const [prop, value] of Object.entries(themeEditorDraft)) {
+      def[prop] = value;
+    }
+    rawThemes[key] = def;
+
+    try {
+      await IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2));
+      log(`Saved theme "${themeEditorName}" to zenleap-themes.json`);
+    } catch (e) {
+      console.warn('[ZenLeap] Error saving theme:', e);
+      return;
+    }
+
+    await loadUserThemes();
+    S['appearance.theme'] = key;
+    saveSettings();
+    applyTheme();
+
+    themeEditorActive = false;
+    renderSettingsContent();
+
+    // Update the theme selector dropdown if it exists
+    const select = settingsModal?.querySelector('.zenleap-select');
+    if (select && select.closest('[data-id="appearance.theme"]')) {
+      renderSettingsContent();
+    }
+  }
+
+  async function deleteUserTheme(key) {
+    const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    try {
+      const content = await IOUtils.readUTF8(themesPath);
+      const rawThemes = JSON.parse(content);
+      delete rawThemes[key];
+      await IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2));
+      log(`Deleted theme "${key}"`);
+    } catch (e) {
+      console.warn('[ZenLeap] Error deleting theme:', e);
+      return;
+    }
+
+    if (S['appearance.theme'] === key) {
+      S['appearance.theme'] = 'meridian';
+      saveSettings();
+    }
+
+    await loadUserThemes();
+    applyTheme();
+
+    if (themeEditorActive && themeEditorKey === key) {
+      themeEditorActive = false;
+    }
+    renderSettingsContent();
   }
 
   // Enter command bar from browse mode with context
@@ -12121,10 +12875,35 @@
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
 
+  // Normalize any color string to strict #RRGGBB for <input type="color">
+  function toHex6(val) {
+    if (!val) return '#000000';
+    if (/^#[0-9a-fA-F]{6}$/i.test(val)) return val;
+    if (/^#[0-9a-fA-F]{3}$/i.test(val)) {
+      const [, r, g, b] = val.match(/^#(.)(.)(.)$/);
+      return `#${r}${r}${g}${g}${b}${b}`;
+    }
+    const m = val.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (m) return '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
+    return '#000000';
+  }
+
+  // Generate a kebab-case theme key from a display name
+  function generateThemeKey(name, existingThemes) {
+    let key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (!key) key = 'custom-theme';
+    let candidate = key;
+    let i = 2;
+    while (BUILTIN_THEMES[candidate] || (existingThemes[candidate] && existingThemes[candidate].name !== name.trim())) {
+      candidate = `${key}-${i++}`;
+    }
+    return candidate;
+  }
+
   // Apply theme: set all CSS custom properties on :root from the active theme
   function applyTheme() {
     const themeName = S['appearance.theme'] || 'meridian';
-    const t = THEMES[themeName] || THEMES.meridian;
+    const t = themes[themeName] || themes.meridian;
     const root = document.documentElement;
 
     // Background layers
@@ -13049,6 +13828,9 @@
     _zenleapInitDone = true;
 
     injectStyles();
+    // Load user themes async; re-apply theme once loaded (built-in applies immediately via injectStyles)
+    loadUserThemes().then(() => applyTheme());
+    ensureThemesFile();
     setupTabListeners();
     setupKeyboardListener();
     updateRelativeNumbers();

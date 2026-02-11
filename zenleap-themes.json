@@ -1,0 +1,10 @@
+{
+  "_comment": "ZenLeap User Themes — add custom themes here. Use 'extends' to inherit from a built-in theme and override specific properties. Run ':reload-themes' in the command bar after editing. See all available properties at: https://github.com/yashas-salankimatt/ZenLeap#themes",
+  "example-custom": {
+    "name": "Example Custom",
+    "extends": "meridian",
+    "accent": "#ff6b6b",
+    "accentBright": "#ff8e8e",
+    "highlight": "#ff6b6b"
+  }
+}
