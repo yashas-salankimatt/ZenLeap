@@ -260,6 +260,8 @@
 
   // Input interception: prevent keyboard events from leaking to web page content
   let contentFocusStolen = false;
+  let quickNavInterceptedUntil = 0;  // Suppress keyup events until this timestamp
+  let quickNavRestoreTimer = null;   // Timer to restore focus after Alt+HJKL
 
   // Jump list (like vim's Ctrl+O / Ctrl+I)
   // Jump list size uses settings: S['display.maxJumpListSize']
@@ -7739,6 +7741,19 @@
     contentFocusStolen = false;
   }
 
+  // Intercept input for Alt+HJKL quick navigation: steal focus from content
+  // to prevent keydown/keyup leaking to web pages, then restore after a delay.
+  function interceptQuickNav() {
+    stealFocusFromContent();
+    quickNavInterceptedUntil = Date.now() + 300;
+    clearTimeout(quickNavRestoreTimer);
+    quickNavRestoreTimer = setTimeout(() => {
+      if (!leapMode && !searchMode && !commandMode && !settingsMode && !helpMode) {
+        restoreFocusToContent();
+      }
+    }, 200);
+  }
+
   // Enter leap mode
   function enterLeapMode() {
     if (leapMode) return;
@@ -7755,6 +7770,10 @@
     clearTimeout(quickNavPeekTimer);
     quickNavPeekTimer = null;
     quickNavPeeking = false;
+
+    // Cancel any pending quick-nav focus restore (leap mode manages focus itself)
+    clearTimeout(quickNavRestoreTimer);
+    quickNavRestoreTimer = null;
 
     // Steal focus from content to prevent input leaking to web pages
     stealFocusFromContent();
@@ -8769,6 +8788,7 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+        interceptQuickNav();
         if (pos && pos.bottom > EDGE) {
           splitFocusInDirection('down');
         } else {
@@ -8781,6 +8801,7 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+        interceptQuickNav();
         if (pos && pos.top > EDGE) {
           splitFocusInDirection('up');
         } else {
@@ -8793,6 +8814,7 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+        interceptQuickNav();
         if (pos && pos.left > EDGE) {
           splitFocusInDirection('left');
         } else {
@@ -8804,6 +8826,7 @@
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+        interceptQuickNav();
         if (pos && pos.right > EDGE) {
           splitFocusInDirection('right');
         } else {
@@ -9253,10 +9276,13 @@
     log('Tab listeners set up');
   }
 
-  // Suppress keyup events while in active modes to prevent them from leaking to content
-  // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode)
+  // Suppress keyup events while in active modes or after quick-nav interception
+  // to prevent them from leaking to content
+  // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode,
+  //  or Alt/J/K keyup reaching content after Alt+HJKL navigation)
   function handleKeyUp(event) {
-    if (leapMode || searchMode || commandMode || settingsMode || helpMode) {
+    if (leapMode || searchMode || commandMode || settingsMode || helpMode
+        || Date.now() < quickNavInterceptedUntil) {
       event.preventDefault();
       event.stopPropagation();
     }
