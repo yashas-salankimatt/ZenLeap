@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.8.0  // Keep in sync with VERSION constant below
+// @version        3.0.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.8.0';
+  const VERSION = '3.0.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -119,6 +119,13 @@
     'advanced.cmdRecencyFloor':    { default: 0.8, type: 'number', label: 'Command Recency Floor', description: 'Minimum recency multiplier', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 2, step: 0.1 },
     'advanced.cmdRecencyRange':    { default: 2.2, type: 'number', label: 'Command Recency Range', description: 'Recency multiplier range', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 5, step: 0.1 },
     'advanced.cmdRecencyHalflife': { default: 30, type: 'number', label: 'Command Recency Halflife', description: 'Minutes until 50% decay', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
+
+    // --- Updates ---
+    'updates.autoCheck':       { default: true, type: 'toggle', label: 'Check for Updates Automatically', description: 'Periodically check GitHub for new ZenLeap versions', category: 'Advanced', group: 'Updates' },
+    'updates.checkFrequency':  { default: 'daily', type: 'select', label: 'Check Frequency', description: 'How often to check for updates', category: 'Advanced', group: 'Updates', options: [{ value: 'startup', label: 'On Startup' }, { value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }] },
+    'updates.lastCheckTime':   { default: 0, type: 'number', label: 'Last Check Time', description: 'Timestamp of last update check (internal)', category: 'Advanced', group: 'Updates', hidden: true },
+    'updates.dismissedVersion': { default: '', type: 'text', label: 'Dismissed Version', description: 'Version the user dismissed (internal)', category: 'Advanced', group: 'Updates', hidden: true },
+    'updates.lastInstalledVersion': { default: '', type: 'text', label: 'Last Installed Version', description: 'Tracks version changes to clear stale state (internal)', category: 'Advanced', group: 'Updates', hidden: true },
   };
 
   // Current settings (defaults + saved overrides)
@@ -144,6 +151,12 @@
       if (Services?.prefs?.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
         const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
         if (ind) S['display.currentTabIndicator'] = ind;
+      }
+      // Clear dismissed version when installed version changes (e.g. fresh install)
+      if (S['updates.lastInstalledVersion'] !== VERSION) {
+        S['updates.dismissedVersion'] = '';
+        S['updates.lastInstalledVersion'] = VERSION;
+        saveSettings();
       }
     } catch (e) { /* Services not available */ }
   }
@@ -1865,6 +1878,10 @@
       { key: 'open-settings', label: 'Open Settings', icon: '⚙', tags: ['settings', 'config', 'preferences', 'customize', 'keybindings', 'cfg', 'prefs'], command: () => {
         exitSearchMode();
         setTimeout(() => enterSettingsMode(), 100);
+      }},
+      { key: 'check-update', label: 'Check for Updates', icon: '⬆', tags: ['update', 'check', 'version', 'upgrade', 'install', 'download', 'zenleap'], command: () => {
+        exitSearchMode();
+        setTimeout(() => enterUpdateMode(), 100);
       }},
 
       // --- Session Management ---
@@ -4415,6 +4432,825 @@
       { key: 'delete-session:confirm', label: 'Delete this session permanently? Press Enter.', icon: '🗑', sublabel: sessionId || '', tags: [] },
       { key: 'delete-session:cancel', label: 'Press Esc to cancel', icon: '↩', tags: [] },
     ];
+  }
+
+  // ============================================
+  // UPDATE SYSTEM
+  // ============================================
+
+  const ZENLEAP_SCRIPT_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js';
+  const ZENLEAP_CSS_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css';
+  const ZENLEAP_CHANGELOG_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHANGELOG.md';
+
+  let updateModal = null;
+  let updateMode = false;
+  let updateModalState = null; // 'checking' | 'available' | 'progress' | 'success' | 'error' | 'uptodate'
+  let updateToast = null;
+  let updateToastVersion = null;
+  let updateStylesInjected = false;
+
+  // Parse version from script content (matches @version X.Y.Z)
+  function parseVersionFromContent(content) {
+    const match = content.match(/@version\s+([0-9.]+)/);
+    return match ? match[1] : null;
+  }
+
+  // Compare semantic versions: true if v1 >= v2
+  function versionGte(v1, v2) {
+    const a = v1.split('.').map(Number);
+    const b = v2.split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const x = a[i] || 0;
+      const y = b[i] || 0;
+      if (x > y) return true;
+      if (x < y) return false;
+    }
+    return true; // equal
+  }
+
+  // Parse changelog for a specific version from CHANGELOG.md content
+  function parseChangelog(content, targetVersion) {
+    const lines = content.split('\n');
+    const items = [];
+    let inSection = false;
+
+    for (const line of lines) {
+      // Match version headers like "## 2.9.0" or "## [2.9.0]" or "## v2.9.0"
+      const headerMatch = line.match(/^##\s+\[?v?([0-9.]+)\]?/);
+      if (headerMatch) {
+        if (inSection) break; // We've passed our section
+        if (headerMatch[1] === targetVersion) inSection = true;
+        continue;
+      }
+
+      if (inSection && line.trim().startsWith('-')) {
+        const text = line.trim().replace(/^-\s*/, '');
+        // Detect tag: **New:** or **Fix:** or **Improved:** etc.
+        const tagMatch = text.match(/^\*\*(\w+)[:\*]+\*?\*?\s*/);
+        let tag = '';
+        let desc = text;
+        if (tagMatch) {
+          tag = tagMatch[1].toLowerCase();
+          desc = text.slice(tagMatch[0].length);
+        }
+        items.push({ tag, desc });
+      }
+    }
+    return items;
+  }
+
+  // HTTP GET via XMLHttpRequest (fetch hangs in Firefox chrome context)
+  function httpGet(url, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.timeout = timeoutMs;
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.responseText);
+        } else {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.ontimeout = () => reject(new Error('Request timed out'));
+      xhr.send();
+    });
+  }
+
+  // Check for updates — returns { available, remoteVersion, changelog[] } or null on error
+  async function checkForZenLeapUpdate() {
+    try {
+      const content = await httpGet(ZENLEAP_SCRIPT_URL);
+      const remoteVersion = parseVersionFromContent(content);
+      if (!remoteVersion) throw new Error('Could not parse remote version');
+
+      const available = !versionGte(VERSION, remoteVersion);
+
+      // Fetch changelog (best-effort)
+      let changelog = [];
+      if (available) {
+        try {
+          const clContent = await httpGet(ZENLEAP_CHANGELOG_URL);
+          changelog = parseChangelog(clContent, remoteVersion);
+        } catch (e) { /* changelog fetch failed, non-critical */ }
+      }
+
+      return { available, remoteVersion, changelog };
+    } catch (e) {
+      log(`Update check failed: ${e}`);
+      return null;
+    }
+  }
+
+  // Download and install the update
+  // Callback: onProgress('downloading' | 'installing-js' | 'installing-css' | 'done' | 'error', detail?)
+  async function downloadAndInstallUpdate(onProgress) {
+    try {
+      // --- Download JS ---
+      onProgress('downloading', 'Fetching zenleap.uc.js from GitHub');
+      const jsContent = await httpGet(ZENLEAP_SCRIPT_URL);
+
+      const newVersion = parseVersionFromContent(jsContent);
+      if (!newVersion) throw new Error('Downloaded JS has no version');
+
+      // --- Download CSS ---
+      onProgress('downloading', 'Fetching chrome.css from GitHub');
+      const cssContent = await httpGet(ZENLEAP_CSS_URL);
+
+      // --- Install JS ---
+      onProgress('installing-js', 'Writing zenleap.uc.js to profile');
+      const jsDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'JS');
+      await IOUtils.makeDirectory(jsDir, { createAncestors: true, ignoreExisting: true });
+      const jsPath = PathUtils.join(jsDir, 'zenleap.uc.js');
+      await IOUtils.write(jsPath, new TextEncoder().encode(jsContent));
+      log(`Updated zenleap.uc.js to v${newVersion}`);
+
+      // --- Install CSS ---
+      onProgress('installing-css', 'Updating styles in userChrome.css');
+      const chromeDir = PathUtils.join(PathUtils.profileDir, 'chrome');
+      const userChromePath = PathUtils.join(chromeDir, 'userChrome.css');
+
+      let existingCSS = '';
+      try {
+        const existingBytes = await IOUtils.read(userChromePath);
+        existingCSS = new TextDecoder().decode(existingBytes);
+      } catch (e) {
+        // File doesn't exist yet — that's fine
+      }
+
+      // Remove old ZenLeap styles (between markers)
+      const markerStart = '/* === ZenLeap Styles === */';
+      const markerEnd = '/* === End ZenLeap Styles === */';
+      const startIdx = existingCSS.indexOf(markerStart);
+      const endIdx = existingCSS.indexOf(markerEnd);
+      if (startIdx !== -1 && (endIdx === -1 || endIdx >= startIdx)) {
+        // Remove from just before the marker (including leading newlines) to end of end-marker
+        let removeStart = startIdx;
+        while (removeStart > 0 && existingCSS[removeStart - 1] === '\n') removeStart--;
+        const removeEnd = endIdx !== -1 ? endIdx + markerEnd.length : existingCSS.length;
+        existingCSS = existingCSS.slice(0, removeStart) + existingCSS.slice(removeEnd);
+      }
+
+      // Append new styles
+      const newCSS = existingCSS.trimEnd() + '\n\n' + markerStart + '\n' + cssContent + '\n' + markerEnd + '\n';
+      await IOUtils.write(userChromePath, new TextEncoder().encode(newCSS));
+      log('Updated styles in userChrome.css');
+
+      onProgress('done', newVersion);
+      return { success: true, version: newVersion };
+    } catch (e) {
+      log(`Update install failed: ${e}`);
+      onProgress('error', e.message);
+      return { success: false, error: e.message };
+    }
+  }
+
+  // Should we auto-check based on settings?
+  function shouldAutoCheckForUpdates() {
+    if (!S['updates.autoCheck']) return false;
+    const freq = S['updates.checkFrequency'];
+    const lastCheck = S['updates.lastCheckTime'] || 0;
+    const now = Date.now();
+
+    if (freq === 'startup') return true;
+    if (freq === 'daily') return (now - lastCheck) > 24 * 60 * 60 * 1000;
+    if (freq === 'weekly') return (now - lastCheck) > 7 * 24 * 60 * 60 * 1000;
+    return false;
+  }
+
+  // ============================================
+  // UPDATE MODAL UI
+  // ============================================
+
+  function createUpdateModal() {
+    if (updateModal) return;
+
+    const modal = document.createElement('div');
+    modal.id = 'zenleap-update-modal';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-update-backdrop';
+    backdrop.addEventListener('click', () => exitUpdateMode());
+
+    const container = document.createElement('div');
+    container.id = 'zenleap-update-container';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'zenleap-update-header';
+    header.innerHTML = `<div><h2 id="zenleap-update-title">Checking for Updates</h2><span class="zenleap-update-subtitle" id="zenleap-update-subtitle">Contacting GitHub...</span></div>`;
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-update-close-btn';
+    closeBtn.title = 'Close';
+    closeBtn.textContent = '\u2715';
+    closeBtn.addEventListener('click', () => exitUpdateMode());
+    header.appendChild(closeBtn);
+
+    // Body (states rendered dynamically)
+    const body = document.createElement('div');
+    body.id = 'zenleap-update-body';
+
+    container.appendChild(header);
+    container.appendChild(body);
+    modal.appendChild(backdrop);
+    modal.appendChild(container);
+
+    ensureUpdateStyles();
+    document.documentElement.appendChild(modal);
+
+    updateModal = modal;
+  }
+
+  function ensureUpdateStyles() {
+    if (updateStylesInjected) return;
+    updateStylesInjected = true;
+
+    const style = document.createElement('style');
+    style.id = 'zenleap-update-styles';
+    style.textContent = `
+      #zenleap-update-modal {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100002; display: none; justify-content: center; align-items: center; padding: 20px;
+      }
+      #zenleap-update-modal.active { display: flex; }
+      #zenleap-update-backdrop {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(8px);
+      }
+      #zenleap-update-container {
+        position: relative; width: 95%; max-width: 480px;
+        background: rgba(25, 25, 30, 0.98); border-radius: 16px;
+        box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.1);
+        overflow: hidden; display: flex; flex-direction: column;
+        animation: zenleap-update-appear 0.25s ease-out;
+      }
+      @keyframes zenleap-update-appear {
+        from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+        to   { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      .zenleap-update-header {
+        padding: 20px 24px 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        display: flex; justify-content: space-between; align-items: flex-start;
+      }
+      .zenleap-update-header h2 {
+        margin: 0; font-size: 18px; font-weight: 700; color: #61afef;
+      }
+      .zenleap-update-subtitle {
+        display: block; margin-top: 4px; font-size: 12px; color: #888;
+      }
+      .zenleap-update-close-btn {
+        background: none; border: none; color: #666; font-size: 18px; cursor: pointer;
+        padding: 4px 8px; border-radius: 4px; transition: all 0.15s; line-height: 1;
+      }
+      .zenleap-update-close-btn:hover { color: #e0e0e0; background: rgba(255,255,255,0.1); }
+
+      /* Version pills */
+      .zenleap-update-versions {
+        display: flex; align-items: center; gap: 16px;
+        padding: 20px 24px; border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .zenleap-version-pill {
+        flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+        padding: 14px 12px; border-radius: 10px;
+        background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      }
+      .zenleap-version-pill-label {
+        font-size: 10px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.8px; color: #555;
+      }
+      .zenleap-version-pill-number {
+        font-size: 22px; font-weight: 700; font-family: monospace; color: #888;
+      }
+      .zenleap-version-pill.new .zenleap-version-pill-number { color: #98c379; }
+      .zenleap-version-pill.new {
+        border-color: rgba(152,195,121,0.2); background: rgba(152,195,121,0.1);
+      }
+      .zenleap-version-arrow { font-size: 20px; color: #555; flex-shrink: 0; }
+
+      /* Changelog */
+      .zenleap-update-changelog {
+        padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.06);
+        max-height: 180px; overflow-y: auto;
+      }
+      .zenleap-update-changelog::-webkit-scrollbar { width: 6px; }
+      .zenleap-update-changelog::-webkit-scrollbar-track { background: transparent; }
+      .zenleap-update-changelog::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+      .zenleap-update-changelog h3 {
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.8px; color: #61afef; margin: 0 0 10px;
+      }
+      .zenleap-update-changelog-item {
+        display: flex; align-items: flex-start; gap: 8px; padding: 4px 0;
+        font-size: 13px; color: #e0e0e0; line-height: 1.4;
+      }
+      .zenleap-changelog-tag {
+        font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px;
+        text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0; margin-top: 2px;
+      }
+      .zenleap-changelog-tag.new { background: rgba(152,195,121,0.2); color: #98c379; }
+      .zenleap-changelog-tag.fix { background: rgba(224,108,117,0.2); color: #e06c75; }
+      .zenleap-changelog-tag.improved { background: rgba(97,175,239,0.2); color: #61afef; }
+      .zenleap-changelog-tag.changed { background: rgba(229,192,123,0.2); color: #e5c07b; }
+
+      /* Actions */
+      .zenleap-update-actions {
+        padding: 16px 24px; display: flex; gap: 10px; justify-content: flex-end;
+      }
+      .zenleap-update-btn {
+        border: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px; font-weight: 500; padding: 8px 20px; border-radius: 8px;
+        cursor: pointer; transition: all 0.15s;
+      }
+      .zenleap-update-btn.secondary {
+        background: rgba(255,255,255,0.06); color: #888;
+        border: 1px solid rgba(255,255,255,0.1);
+      }
+      .zenleap-update-btn.secondary:hover { background: rgba(255,255,255,0.1); color: #e0e0e0; }
+      .zenleap-update-btn.primary {
+        background: rgba(97,175,239,0.2); color: #61afef;
+        border: 1px solid rgba(97,175,239,0.3);
+      }
+      .zenleap-update-btn.primary:hover { background: rgba(97,175,239,0.3); border-color: rgba(97,175,239,0.5); }
+      .zenleap-update-btn.restart {
+        background: rgba(152,195,121,0.2); color: #98c379;
+        border: 1px solid rgba(152,195,121,0.3);
+      }
+      .zenleap-update-btn.restart:hover { background: rgba(152,195,121,0.3); border-color: rgba(152,195,121,0.5); }
+      .zenleap-update-btn kbd {
+        display: inline-block; font-family: monospace; font-size: 10px; font-weight: 600;
+        background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 3px;
+        margin-left: 6px; opacity: 0.7;
+      }
+
+      /* Progress */
+      .zenleap-update-progress {
+        padding: 28px 24px; display: flex; flex-direction: column; align-items: center; gap: 16px;
+      }
+      .zenleap-update-progress-status { font-size: 14px; font-weight: 500; color: #e0e0e0; }
+      .zenleap-update-progress-bar-track {
+        width: 100%; height: 4px; background: rgba(255,255,255,0.08);
+        border-radius: 2px; overflow: hidden;
+      }
+      .zenleap-update-progress-bar-fill {
+        height: 100%; background: #61afef; border-radius: 2px;
+        transition: width 0.3s ease; box-shadow: 0 0 8px rgba(97,175,239,0.4);
+      }
+      .zenleap-update-progress-bar-fill.indeterminate {
+        width: 40% !important;
+        animation: zenleap-progress-slide 1.2s ease-in-out infinite;
+      }
+      @keyframes zenleap-progress-slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(350%); }
+      }
+      .zenleap-update-progress-detail { font-size: 11px; color: #555; }
+
+      /* Result states */
+      .zenleap-update-result {
+        padding: 28px 24px; display: flex; flex-direction: column;
+        align-items: center; gap: 12px; text-align: center;
+      }
+      .zenleap-update-result-icon {
+        width: 48px; height: 48px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center; font-size: 22px;
+        animation: zenleap-result-pop 0.3s ease-out;
+      }
+      @keyframes zenleap-result-pop {
+        0%   { transform: scale(0); opacity: 0; }
+        60%  { transform: scale(1.15); }
+        100% { transform: scale(1); opacity: 1; }
+      }
+      .zenleap-update-result-icon.success {
+        background: rgba(152,195,121,0.1); border: 2px solid rgba(152,195,121,0.3);
+      }
+      .zenleap-update-result-icon.error {
+        background: rgba(224,108,117,0.2); border: 2px solid rgba(224,108,117,0.3);
+      }
+      .zenleap-update-result-icon.uptodate {
+        background: rgba(97,175,239,0.1); border: 2px solid rgba(97,175,239,0.3);
+      }
+      .zenleap-update-result-title { font-size: 16px; font-weight: 600; }
+      .zenleap-update-result-title.success { color: #98c379; }
+      .zenleap-update-result-title.error { color: #e06c75; }
+      .zenleap-update-result-title.uptodate { color: #61afef; }
+      .zenleap-update-result-detail { font-size: 12px; color: #888; line-height: 1.5; }
+
+      /* Toast notification — centered bottom bar */
+      #zenleap-update-toast {
+        position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+        z-index: 100001;
+        background: rgba(25, 25, 30, 0.95);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px; padding: 10px 20px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        animation: zenleap-toast-in 0.3s ease-out;
+        display: flex; align-items: center; gap: 12px;
+        backdrop-filter: blur(12px);
+        white-space: nowrap;
+      }
+      @keyframes zenleap-toast-in {
+        from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+        to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      @keyframes zenleap-toast-out {
+        from { opacity: 1; transform: translateX(-50%) translateY(0); }
+        to   { opacity: 0; transform: translateX(-50%) translateY(12px); }
+      }
+      .zenleap-toast-text {
+        font-size: 13px; color: #ccc;
+      }
+      .zenleap-toast-text strong { color: #61afef; font-weight: 600; }
+      .zenleap-toast-keys {
+        display: flex; align-items: center; gap: 8px;
+        margin-left: 4px; font-size: 11px; color: #666;
+      }
+      .zenleap-toast-keys kbd {
+        display: inline-block; font-family: monospace; font-size: 10px; font-weight: 600;
+        background: rgba(255,255,255,0.08); color: #999;
+        padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.08);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function setUpdateHeader(title, subtitle) {
+    const titleEl = document.getElementById('zenleap-update-title');
+    const subtitleEl = document.getElementById('zenleap-update-subtitle');
+    if (titleEl) titleEl.textContent = title;
+    if (subtitleEl) subtitleEl.textContent = subtitle;
+  }
+
+  function setUpdateBody() {
+    const body = document.getElementById('zenleap-update-body');
+    if (body) body.innerHTML = '';
+    return body;
+  }
+
+  function renderUpdateAvailable(remoteVersion, changelog) {
+    updateModalState = 'available';
+    setUpdateHeader('Update Available', 'A new version of ZenLeap is ready');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    // Version comparison
+    const versions = document.createElement('div');
+    versions.className = 'zenleap-update-versions';
+    versions.innerHTML = `
+      <div class="zenleap-version-pill">
+        <span class="zenleap-version-pill-label">Installed</span>
+        <span class="zenleap-version-pill-number">${VERSION}</span>
+      </div>
+      <span class="zenleap-version-arrow">\u2192</span>
+      <div class="zenleap-version-pill new">
+        <span class="zenleap-version-pill-label">Available</span>
+        <span class="zenleap-version-pill-number">${remoteVersion}</span>
+      </div>
+    `;
+    body.appendChild(versions);
+
+    // Changelog
+    if (changelog && changelog.length > 0) {
+      const cl = document.createElement('div');
+      cl.className = 'zenleap-update-changelog';
+      const h3 = document.createElement('h3');
+      h3.textContent = "What's New";
+      cl.appendChild(h3);
+      for (const item of changelog) {
+        const row = document.createElement('div');
+        row.className = 'zenleap-update-changelog-item';
+        if (item.tag) {
+          const tagClass = { new: 'new', fix: 'fix', improved: 'improved', changed: 'changed' }[item.tag] || 'improved';
+          row.innerHTML = `<span class="zenleap-changelog-tag ${tagClass}">${item.tag}</span>`;
+        }
+        const desc = document.createElement('span');
+        desc.textContent = item.desc;
+        row.appendChild(desc);
+        cl.appendChild(row);
+      }
+      body.appendChild(cl);
+    }
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-update-actions';
+
+    const laterBtn = document.createElement('button');
+    laterBtn.className = 'zenleap-update-btn secondary';
+    laterBtn.textContent = 'Later';
+    const laterKbd = document.createElement('kbd');
+    laterKbd.textContent = 'Esc';
+    laterBtn.appendChild(laterKbd);
+    laterBtn.addEventListener('click', () => {
+      exitUpdateMode();
+    });
+
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'zenleap-update-btn primary';
+    updateBtn.textContent = 'Update Now';
+    const updateKbd = document.createElement('kbd');
+    updateKbd.textContent = '\u21B5';
+    updateBtn.appendChild(updateKbd);
+    updateBtn.addEventListener('click', () => {
+      performUpdate();
+    });
+
+    actions.appendChild(laterBtn);
+    actions.appendChild(updateBtn);
+    body.appendChild(actions);
+  }
+
+  function renderUpdateProgress(status, detail) {
+    updateModalState = 'progress';
+    setUpdateHeader('Updating ZenLeap', status === 'downloading' ? 'Downloading from GitHub' : 'Installing to profile');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    const progress = document.createElement('div');
+    progress.className = 'zenleap-update-progress';
+
+    const statusText = document.createElement('span');
+    statusText.className = 'zenleap-update-progress-status';
+    statusText.textContent = status === 'downloading' ? 'Downloading update...' : 'Installing update...';
+
+    const track = document.createElement('div');
+    track.className = 'zenleap-update-progress-bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'zenleap-update-progress-bar-fill';
+    if (status === 'downloading') {
+      fill.classList.add('indeterminate');
+    } else {
+      fill.style.width = '75%';
+    }
+    track.appendChild(fill);
+
+    const detailText = document.createElement('span');
+    detailText.className = 'zenleap-update-progress-detail';
+    detailText.textContent = detail || '';
+
+    progress.appendChild(statusText);
+    progress.appendChild(track);
+    progress.appendChild(detailText);
+    body.appendChild(progress);
+  }
+
+  function renderUpdateSuccess(newVersion) {
+    updateModalState = 'success';
+    setUpdateHeader('Update Complete', 'ZenLeap has been updated successfully');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    const result = document.createElement('div');
+    result.className = 'zenleap-update-result';
+    result.innerHTML = `
+      <div class="zenleap-update-result-icon success">\u2713</div>
+      <div class="zenleap-update-result-title success">Updated to v${newVersion}</div>
+      <div class="zenleap-update-result-detail">ZenLeap has been updated. Restart Zen Browser<br>to activate the new version.</div>
+    `;
+    body.appendChild(result);
+
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-update-actions';
+    actions.style.justifyContent = 'center';
+
+    const restartBtn = document.createElement('button');
+    restartBtn.className = 'zenleap-update-btn restart';
+    restartBtn.textContent = 'Restart Browser';
+    const restartKbd = document.createElement('kbd');
+    restartKbd.textContent = '\u21B5';
+    restartBtn.appendChild(restartKbd);
+    restartBtn.addEventListener('click', () => {
+      try {
+        Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart);
+      } catch (e) {
+        log(`Restart failed: ${e}`);
+      }
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-update-btn secondary';
+    closeBtn.textContent = 'Later';
+    const closeKbd = document.createElement('kbd');
+    closeKbd.textContent = 'Esc';
+    closeBtn.appendChild(closeKbd);
+    closeBtn.addEventListener('click', () => exitUpdateMode());
+
+    actions.appendChild(closeBtn);
+    actions.appendChild(restartBtn);
+    body.appendChild(actions);
+  }
+
+  function renderUpdateError(errorMsg) {
+    updateModalState = 'error';
+    setUpdateHeader('Update Failed', 'Something went wrong during the update');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    const result = document.createElement('div');
+    result.className = 'zenleap-update-result';
+    const icon = document.createElement('div');
+    icon.className = 'zenleap-update-result-icon error';
+    icon.textContent = '!';
+    const title = document.createElement('div');
+    title.className = 'zenleap-update-result-title error';
+    title.textContent = 'Update Failed';
+    const detail = document.createElement('div');
+    detail.className = 'zenleap-update-result-detail';
+    detail.textContent = errorMsg || 'Could not download the update. Check your internet connection and try again.';
+    result.appendChild(icon);
+    result.appendChild(title);
+    result.appendChild(detail);
+    body.appendChild(result);
+
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-update-actions';
+    actions.style.justifyContent = 'center';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-update-btn secondary';
+    closeBtn.textContent = 'Close';
+    const errCloseKbd = document.createElement('kbd');
+    errCloseKbd.textContent = 'Esc';
+    closeBtn.appendChild(errCloseKbd);
+    closeBtn.addEventListener('click', () => exitUpdateMode());
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'zenleap-update-btn primary';
+    retryBtn.textContent = 'Retry';
+    const retryKbd = document.createElement('kbd');
+    retryKbd.textContent = '\u21B5';
+    retryBtn.appendChild(retryKbd);
+    retryBtn.addEventListener('click', () => performUpdate());
+
+    actions.appendChild(closeBtn);
+    actions.appendChild(retryBtn);
+    body.appendChild(actions);
+  }
+
+  function renderUpdateUpToDate() {
+    updateModalState = 'uptodate';
+    setUpdateHeader('Check for Updates', 'Version check complete');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    const result = document.createElement('div');
+    result.className = 'zenleap-update-result';
+    result.innerHTML = `
+      <div class="zenleap-update-result-icon uptodate">\u2713</div>
+      <div class="zenleap-update-result-title uptodate">You're up to date</div>
+      <div class="zenleap-update-result-detail">ZenLeap v${VERSION} is the latest version</div>
+    `;
+    body.appendChild(result);
+
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-update-actions';
+    actions.style.justifyContent = 'center';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-update-btn secondary';
+    closeBtn.textContent = 'Close';
+    const utdKbd = document.createElement('kbd');
+    utdKbd.textContent = 'Esc';
+    closeBtn.appendChild(utdKbd);
+    closeBtn.addEventListener('click', () => exitUpdateMode());
+
+    actions.appendChild(closeBtn);
+    body.appendChild(actions);
+  }
+
+  function renderUpdateChecking() {
+    updateModalState = 'checking';
+    setUpdateHeader('Checking for Updates', 'Contacting GitHub...');
+    const body = setUpdateBody();
+    if (!body) return;
+
+    const progress = document.createElement('div');
+    progress.className = 'zenleap-update-progress';
+
+    const statusText = document.createElement('span');
+    statusText.className = 'zenleap-update-progress-status';
+    statusText.textContent = 'Checking for updates...';
+
+    const track = document.createElement('div');
+    track.className = 'zenleap-update-progress-bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'zenleap-update-progress-bar-fill indeterminate';
+    track.appendChild(fill);
+
+    progress.appendChild(statusText);
+    progress.appendChild(track);
+    body.appendChild(progress);
+  }
+
+  // Perform the actual update (download + install)
+  async function performUpdate() {
+    renderUpdateProgress('downloading', 'Fetching files from GitHub');
+    const result = await downloadAndInstallUpdate((status, detail) => {
+      if (!updateMode) return;
+      if (status === 'downloading' || status.startsWith('installing')) {
+        renderUpdateProgress(status, detail);
+      }
+    });
+    if (!updateMode) return; // user dismissed during install
+    if (result.success) {
+      renderUpdateSuccess(result.version);
+    } else {
+      renderUpdateError(result.error);
+    }
+  }
+
+  // Enter update mode — check for updates and show modal
+  async function enterUpdateMode() {
+    if (updateMode) return;
+    if (leapMode) exitLeapMode(false);
+    if (searchMode) exitSearchMode();
+    if (helpMode) exitHelpMode();
+    if (settingsMode) exitSettingsMode();
+
+    createUpdateModal();
+    updateMode = true;
+    updateModal.classList.add('active');
+
+    renderUpdateChecking();
+
+    const result = await checkForZenLeapUpdate();
+    if (!updateMode) return; // user dismissed while checking
+    if (!result) {
+      renderUpdateError('Could not reach GitHub. Check your internet connection.');
+    } else if (result.available) {
+      renderUpdateAvailable(result.remoteVersion, result.changelog);
+    } else {
+      renderUpdateUpToDate();
+    }
+  }
+
+  function exitUpdateMode() {
+    if (!updateMode) return;
+    updateMode = false;
+    updateModalState = null;
+    if (updateModal) updateModal.classList.remove('active');
+  }
+
+  // Show update toast notification — persistent centered bar
+  function showUpdateToast(remoteVersion) {
+    // Don't show if user explicitly dismissed the toast for this version
+    if (S['updates.dismissedVersion'] === remoteVersion) return;
+
+    ensureUpdateStyles();
+    dismissUpdateToast();
+
+    const toast = document.createElement('div');
+    toast.id = 'zenleap-update-toast';
+
+    const text = document.createElement('span');
+    text.className = 'zenleap-toast-text';
+    text.innerHTML = `ZenLeap <strong>v${remoteVersion}</strong> available`;
+
+    const keys = document.createElement('span');
+    keys.className = 'zenleap-toast-keys';
+    keys.innerHTML = `<kbd>\u21B5</kbd> update <kbd>Esc</kbd> dismiss`;
+
+    toast.appendChild(text);
+    toast.appendChild(keys);
+
+    document.documentElement.appendChild(toast);
+    updateToast = toast;
+    updateToastVersion = remoteVersion;
+  }
+
+  function dismissUpdateToast(suppress) {
+    if (updateToast) {
+      if (suppress && updateToastVersion) {
+        S['updates.dismissedVersion'] = updateToastVersion;
+        saveSettings();
+      }
+      updateToast.style.animation = 'zenleap-toast-out 0.2s ease-in forwards';
+      const ref = updateToast;
+      setTimeout(() => { try { ref.remove(); } catch(e) {} }, 200);
+      updateToast = null;
+      updateToastVersion = null;
+    }
+  }
+
+  // Auto-check for updates (called from init)
+  async function autoCheckForUpdates() {
+    if (!shouldAutoCheckForUpdates()) return;
+
+
+    // Record check time (only auto-checks count for cooldown, not manual checks)
+    S['updates.lastCheckTime'] = Date.now();
+    saveSettings();
+
+    const result = await checkForZenLeapUpdate();
+    if (result && result.available) {
+      // Clear dismissed version if a newer version supersedes it
+      const dismissed = S['updates.dismissedVersion'];
+      if (dismissed && dismissed !== result.remoteVersion && !versionGte(dismissed, result.remoteVersion)) {
+        S['updates.dismissedVersion'] = '';
+        saveSettings();
+      }
+      showUpdateToast(result.remoteVersion);
+    }
   }
 
   // ============================================
@@ -7034,6 +7870,17 @@
         transition: border-color 0.15s;
       }
       .zenleap-color-hex:focus { border-color: #61afef; }
+      .zenleap-select {
+        background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #e0e0e0; padding: 5px 28px 5px 10px; border-radius: 6px; font-size: 13px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        outline: none; transition: border-color 0.15s; cursor: pointer;
+        -moz-appearance: none; appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: right 8px center;
+      }
+      .zenleap-select:focus { border-color: #61afef; }
+      .zenleap-select option { background: #1e1e22; color: #e0e0e0; }
       .zenleap-settings-empty {
         padding: 40px 20px; text-align: center; color: #555; font-size: 14px;
       }
@@ -7054,6 +7901,7 @@
     body.innerHTML = '';
 
     const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
+      if (schema.hidden) return false;
       if (schema.category !== settingsActiveTab) return false;
       if (settingsSearchQuery) {
         const text = `${schema.label} ${schema.description || ''} ${schema.group} ${id}`.toLowerCase();
@@ -7166,6 +8014,22 @@
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
       });
       control.appendChild(toggle);
+    } else if (schema.type === 'select') {
+      const select = document.createElement('select');
+      select.className = 'zenleap-select';
+      for (const opt of (schema.options || [])) {
+        const option = document.createElement('option');
+        option.value = opt.value;
+        option.textContent = opt.label;
+        if (S[id] === opt.value) option.selected = true;
+        select.appendChild(option);
+      }
+      select.addEventListener('change', () => {
+        S[id] = select.value;
+        saveSettings();
+        row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
+      });
+      control.appendChild(select);
     } else if (schema.type === 'color') {
       const colorWrap = document.createElement('div');
       colorWrap.className = 'zenleap-color-control';
@@ -10184,6 +11048,39 @@
       return;
     }
 
+    // Handle update mode - Escape to close, Enter for primary action
+    if (updateMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        exitUpdateMode();
+      } else if (event.key === 'Enter') {
+        if (updateModalState === 'available') performUpdate();
+        else if (updateModalState === 'success') {
+          try { Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart); } catch(e) { log(`Restart failed: ${e}`); }
+        }
+        else if (updateModalState === 'error') performUpdate(); // retry
+        else if (updateModalState === 'uptodate') exitUpdateMode();
+      }
+      return;
+    }
+
+    // Handle update toast - Enter to open update flow, Escape to dismiss
+    if (updateToast && !searchMode && !leapMode && !helpMode && !folderDeleteMode) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissUpdateToast(false);
+        enterUpdateMode();
+        return;
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissUpdateToast(true);
+        return;
+      }
+    }
+
     // Handle help mode - Escape or help key to close
     if (helpMode) {
       if (event.key === 'Escape' || event.key === S['keys.leap.help']) {
@@ -11715,6 +12612,9 @@
     log('  \'{char} = goto mark | Ctrl+\'{char} = quick goto');
     log('  o = jump back | i = jump forward');
     log('Press Ctrl+/ for tab search (vim-style fuzzy finder)');
+
+    // Auto-check for updates (delayed to not block startup)
+    setTimeout(() => autoCheckForUpdates(), 5000);
   }
 
   // Start initialization
