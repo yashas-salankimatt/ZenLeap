@@ -418,10 +418,16 @@ install_zenleap() {
     # Append CSS to userChrome.css if it exists and not already added
     if [ -f "$source_dir/chrome.css" ]; then
         if [ -f "$CHROME_DIR/userChrome.css" ]; then
-            # Remove old ZenLeap styles first
-            if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
-                perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$CHROME_DIR/userChrome.css"
-            fi
+            # Clean rebuild: extract non-ZenLeap content (e.g. @import directives),
+            # discard everything else (both marker blocks and legacy pre-marker CSS),
+            # then append the new marker block.
+            # 1. Save any @import lines (zen-themes, etc.) — these are the only
+            #    non-ZenLeap content we expect in userChrome.css
+            local _imports_tmp="$CHROME_DIR/userChrome.css.imports"
+            grep -i '^\s*@import' "$CHROME_DIR/userChrome.css" > "$_imports_tmp" 2>/dev/null || true
+            # 2. Rebuild from imports + marker block
+            cat "$_imports_tmp" > "$CHROME_DIR/userChrome.css"
+            rm -f "$_imports_tmp"
             echo "" >> "$CHROME_DIR/userChrome.css"
             echo "/* === ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
             cat "$source_dir/chrome.css" >> "$CHROME_DIR/userChrome.css"
