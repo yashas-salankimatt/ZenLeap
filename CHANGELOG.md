@@ -5,6 +5,49 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-02-10
+
+### Added
+- **Meridian Design System** — Complete visual overhaul with a cohesive design language
+  - 7 built-in themes: Meridian, Meridian Transparent, Dracula, Gruvbox Dark, Nord, Catppuccin Mocha, Tokyo Night
+  - 50+ CSS custom properties (`--zl-*`) for backgrounds, accents, text, borders, effects, and browse mode colors
+  - All UI components (search, settings, command bar, gTile, help modal) now use theme variables
+- **User Theme System** — Create custom themes via JSON or visual editor
+  - Themes stored in `zenleap-themes.json` per profile (persists across updates)
+  - `extends` inheritance: extend any built-in theme and override specific properties
+  - `:reload-themes` and `:open-themes-file` commands in the command palette
+- **Visual Theme Editor** — Create, edit, preview, and delete custom themes in Settings > Appearance
+  - Grouped color pickers with common/advanced split per group
+  - Live preview: browser UI updates as you change colors
+  - Inherited value indicators show the base theme's value for each property
+  - Clear-override button reverts individual properties to the base theme
+  - Inline delete confirmation with 3-second timeout
+  - Empty name validation with visual feedback
+- **Legacy CSS Cleanup Script** — `clean-legacy-css.sh` for removing old ZenLeap CSS from userChrome.css
+  - Interactive or `--yes` for batch mode
+  - `--profile <index>` to target specific profiles
+  - `--dry-run` to preview changes without modifying files
+  - Uses perl marker-block removal, preserves all non-ZenLeap CSS
+
+### Changed
+- Theme selector in Settings is now dynamic (shows built-in + user themes)
+- Installer CSS handling reverted to surgical perl marker-block removal (preserves non-ZenLeap userChrome.css content)
+- Installer now downloads and copies `zenleap-themes.json` template to profiles
+- Search/command/gTile hint bars shortened for single-line display (reduced gap, terse labels)
+- Tab search `Tab` hint now shows the mode you'd switch to ("all ws" / "this ws") instead of static text
+
+### Fixed
+- **Badge contrast on unloaded tabs** — Up/down direction badges now use dark text on bright backgrounds (matches current tab badge pattern), remains readable even at Firefox's reduced opacity for `tab[pending]`
+- **hexToRgba crash on non-hex user theme colors** — All color inputs normalized via `toHex6()` before alpha derivation
+- **Extends chain ordering** — User themes resolved topologically so JSON key order doesn't matter; circular extends detected and warned
+- **Hardcoded RGBA colors** — Replaced 15+ hardcoded color values with `color-mix()` or `var(--zl-backdrop)` for full theme support (gTile region borders, ws-toggle, update buttons, reset/delete buttons, backdrop overlays)
+- **Fragile panelAlpha comparison** — Uses `parseFloat()` threshold instead of string equality
+- **Input interception on about:newtab** — Browse mode and Alt+HJKL keys no longer leak to content (blurs active elements in content, moves focus to chrome, adds `stopImmediatePropagation` to keyup handler)
+- **open-themes-file command** — Added error handling for `file.launch()` on Linux
+- **Double settings re-render** — Removed redundant `renderSettingsContent()` in theme save
+- **Hint bar wrapping** — Search and gTile hints shortened to fit single line; `flex-wrap: wrap` kept as safety fallback
+- Help modal updated with Quick Navigation and Themes sections
+
 ## [3.0.0] - 2026-02-10
 
 ### Added
@@ -345,6 +388,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.1.0 | 2026-02-10 | Meridian design system, 7 built-in themes, user theme JSON + visual editor, badge contrast fix, input interception hardening |
 | 3.0.0 | 2026-02-10 | gTile split overlay, command bar parity, Alt+HJKL navigation, folder yank/paste, multi-digit numbers, jj escape |
 | 2.8.0 | 2026-02-09 | Workspace sessions, tab sorting, browse command bar, folder interaction, split focus, dedup preview |
 | 2.7.0 | 2026-02-07 | Tab deduplication, bulk unload, browse preview, 0/$ keys, bug fixes |

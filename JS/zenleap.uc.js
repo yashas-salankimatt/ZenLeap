@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.0.0  // Keep in sync with VERSION constant below
+// @version        3.1.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.0.0';
+  const VERSION = '3.1.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -1497,12 +1497,11 @@
       }
 
       #zenleap-search-hint-bar {
-        display: flex; gap: 12px; justify-content: center; flex-wrap: nowrap;
+        display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
         padding: 8px 16px;
         border-top: 1px solid var(--zl-border-subtle);
         font-size: 11px; color: var(--zl-text-muted);
         font-family: var(--zl-font-ui);
-        white-space: nowrap; overflow: hidden;
       }
       #zenleap-search-hint-bar span {
         display: inline-flex; align-items: center; gap: 5px;
@@ -6200,22 +6199,22 @@
       if (gtileSubMode === 'move') {
         if (gtileMouseHints) {
           hints.innerHTML = (gtileDrag && gtileDrag.isDragging)
-            ? '<span><kbd>Drag</kbd> swap position</span><span><kbd>Release</kbd> drop</span><span><kbd>Esc</kbd> cancel</span>'
-            : '<span><kbd>Click</kbd> select</span><span><kbd>Drag</kbd> grab &amp; swap</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+            ? '<span><kbd>Drag</kbd> swap</span><span><kbd>Release</kbd> drop</span><span><kbd>Esc</kbd> cancel</span>'
+            : '<span><kbd>Click</kbd> select</span><span><kbd>Drag</kbd> swap</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
         } else {
           hints.innerHTML = gtileHeld
             ? '<span><kbd>hjkl</kbd> swap</span><span><kbd>Enter</kbd> drop</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Esc</kbd> close</span>'
-            : '<span><kbd>hjkl</kbd> navigate</span><span><kbd>\u21E7hjkl</kbd> swap</span><span><kbd>Enter</kbd> grab</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+            : '<span><kbd>hjkl</kbd> nav</span><span><kbd>⇧hjkl</kbd> swap</span><span><kbd>Enter</kbd> grab</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
         }
       } else {
         if (gtileMouseHints) {
           hints.innerHTML = (gtileSelecting || gtileMouseSelecting)
             ? '<span><kbd>Drag</kbd> extend</span><span><kbd>Release</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
-            : '<span><kbd>Click+Drag</kbd> select area</span><span><kbd>Click region</kbd> change target</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+            : '<span><kbd>Drag</kbd> select</span><span><kbd>Click</kbd> target</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
         } else {
           hints.innerHTML = gtileSelecting
             ? '<span><kbd>hjkl</kbd> extend</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
-            : '<span><kbd>\u21E7hjkl</kbd> target</span><span><kbd>hjkl</kbd> cursor</span><span><kbd>Enter</kbd> anchor</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+            : '<span><kbd>⇧hjkl</kbd> target</span><span><kbd>hjkl</kbd> cursor</span><span><kbd>Enter</kbd> anchor</span><span><kbd>r/R</kbd> rotate/reset</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
         }
       }
     }
@@ -7748,22 +7747,22 @@
 
     if (commandMode) {
       if (commandSubFlow?.type === 'dedup-preview') {
-        const scopeLabel = S['display.searchAllWorkspaces'] ? 'this workspace' : 'all workspaces';
+        const scopeLabel = S['display.searchAllWorkspaces'] ? 'this ws' : 'all ws';
         if (vimEnabled && searchVimMode === 'normal') {
           searchHintBar.innerHTML = `
-            <span><kbd>j/k</kbd> navigate</span>
+            <span><kbd>j/k</kbd> nav</span>
             <span><kbd>1-9</kbd> jump</span>
             <span><kbd>o</kbd> go to tab</span>
             <span><kbd>Tab</kbd> ${scopeLabel}</span>
-            <span><kbd>Enter</kbd> confirm delete</span>
+            <span><kbd>Enter</kbd> delete</span>
             <span><kbd>Esc</kbd> cancel</span>
           `;
         } else {
           searchHintBar.innerHTML = `
-            <span><kbd>↑↓</kbd> navigate</span>
+            <span><kbd>↑↓</kbd> nav</span>
             <span><kbd>Ctrl+o</kbd> go to tab</span>
             <span><kbd>Tab</kbd> ${scopeLabel}</span>
-            <span><kbd>Enter</kbd> confirm delete</span>
+            <span><kbd>Enter</kbd> delete</span>
             <span><kbd>Esc</kbd> cancel</span>
           `;
         }
@@ -7807,39 +7806,40 @@
       }
       if (vimEnabled && searchVimMode === 'normal') {
         searchHintBar.innerHTML = `
-          <span><kbd>j/k</kbd> navigate</span>
+          <span><kbd>j/k</kbd> nav</span>
           <span><kbd>1-9</kbd> jump</span>
-          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
+          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'run'}</span>
           <span><kbd>i</kbd> insert</span>
           <span><kbd>Esc</kbd> ${commandSubFlow ? 'back' : 'exit'}</span>
         `;
       } else {
         searchHintBar.innerHTML = `
-          <span><kbd>↑↓</kbd> navigate</span>
-          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'execute'}</span>
-          <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : (commandSubFlow ? 'back' : 'exit')}</span>
+          <span><kbd>↑↓</kbd> nav</span>
+          <span><kbd>Enter</kbd> ${commandSubFlow ? 'select' : 'run'}</span>
+          <span><kbd>Esc</kbd> ${vimEnabled ? 'normal' : (commandSubFlow ? 'back' : 'exit')}</span>
         `;
       }
       return;
     }
 
+    const wsLabel = S['display.searchAllWorkspaces'] ? 'this ws' : 'all ws';
     if (vimEnabled && searchVimMode === 'normal') {
       searchHintBar.innerHTML = `
-        <span><kbd>j/k</kbd> navigate</span>
-        <span><kbd>Enter</kbd> open</span>
-        <span><kbd>x</kbd> close tab</span>
-        <span><kbd>Tab</kbd> all workspaces</span>
+        <span><kbd>j/k</kbd> nav</span>
         <span><kbd>1-9</kbd> jump</span>
-        <span><kbd>Esc</kbd> close</span>
+        <span><kbd>Enter</kbd> open</span>
+        <span><kbd>x</kbd> close</span>
+        <span><kbd>Tab</kbd> ${wsLabel}</span>
+        <span><kbd>Esc</kbd> exit</span>
       `;
     } else {
       searchHintBar.innerHTML = `
-        <span><kbd>↑↓</kbd> navigate</span>
+        <span><kbd>↑↓</kbd> nav</span>
         <span><kbd>Enter</kbd> open</span>
-        <span><kbd>Tab</kbd> all workspaces</span>
-        <span><kbd>Ctrl+x</kbd> close tab</span>
-        <span><kbd>></kbd> commands</span>
-        <span><kbd>Esc</kbd> ${vimEnabled ? 'normal mode' : 'close'}</span>
+        <span><kbd>Tab</kbd> ${wsLabel}</span>
+        <span><kbd>Ctrl+x</kbd> close</span>
+        <span><kbd>></kbd> cmds</span>
+        <span><kbd>Esc</kbd> ${vimEnabled ? 'normal' : 'exit'}</span>
       `;
     }
   }
@@ -7988,20 +7988,31 @@
         </div>
 
         <div class="zenleap-help-section">
-          <h2>&#9638; Split View</h2>
-          <p class="zenleap-help-trigger">When split view is active (works globally)</p>
+          <h2>&#9881; Quick Navigation</h2>
+          <p class="zenleap-help-trigger">Works globally without entering leap mode</p>
           <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>h</kbd><span>Focus pane to the left</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>j</kbd><span>Focus pane below</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>k</kbd><span>Focus pane above</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>l</kbd><span>Focus pane to the right</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>j</kbd><span>Next tab (or split pane below)</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>k</kbd><span>Previous tab (or split pane above)</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>h</kbd><span>Previous workspace (or pane left)</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>l</kbd><span>Next workspace (or pane right)</span></div>
             <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>Space</kbd><span>gTile resize overlay</span></div>
           </div>
+        </div>
+
+        <div class="zenleap-help-section">
+          <h2>&#127912; Themes</h2>
+          <p class="zenleap-help-trigger">Settings &gt; Appearance or command palette</p>
+          <div class="zenleap-help-grid">
+            <div class="zenleap-help-item"><kbd>&gt; settings</kbd><span>Appearance tab: theme selector + editor</span></div>
+            <div class="zenleap-help-item"><kbd>&gt; reload-themes</kbd><span>Reload themes from JSON file</span></div>
+            <div class="zenleap-help-item"><kbd>&gt; open-themes-file</kbd><span>Open zenleap-themes.json in editor</span></div>
+          </div>
+          <p style="margin: 8px 0 0; font-size: 11px; color: var(--zl-text-muted);">7 built-in themes. Create custom themes in Settings &gt; Appearance &gt; Custom Themes.</p>
         </div>
       </div>
 
       <div class="zenleap-help-footer">
-        <span>Press <kbd>Esc</kbd> or <kbd>?</kbd> to close</span>
+        <span><kbd>j</kbd>/<kbd>k</kbd> scroll &#183; <kbd>g</kbd>/<kbd>G</kbd> top/bottom &#183; <kbd>Esc</kbd> close</span>
       </div>
     `;
 
@@ -11265,11 +11276,15 @@
   }
 
   // Steal focus from content area to prevent keyboard events from reaching web pages
-  // (e.g., Space toggling YouTube playback, j/k editing Google Sheets)
+  // (e.g., Space toggling YouTube playback, j/k editing Google Sheets,
+  //  about:newtab search input capturing browse mode keys)
   function stealFocusFromContent() {
     if (contentFocusStolen) return;
     try {
-      gBrowser.selectedBrowser.blur();
+      const browser = gBrowser.selectedBrowser;
+      browser.blur();
+      // Also blur any focused element inside content (especially about:newtab search)
+      try { browser.browsingContext?.window?.document?.activeElement?.blur(); } catch (_) {}
       contentFocusStolen = true;
       log('Stole focus from content');
     } catch (e) {
@@ -12243,18 +12258,22 @@
       }
     }
 
-    // Handle help mode - Escape or help key to close
+    // Handle help mode - j/k scroll, Escape or help key to close
     if (helpMode) {
+      event.preventDefault();
+      event.stopPropagation();
       if (event.key === 'Escape' || event.key === S['keys.leap.help']) {
-        event.preventDefault();
-        event.stopPropagation();
         exitHelpMode();
         return;
       }
-      // Any other key also closes help mode
-      event.preventDefault();
-      event.stopPropagation();
-      exitHelpMode();
+      // j/k/arrows scroll the help content
+      const scrollEl = helpModal?.querySelector('.zenleap-help-content');
+      if (scrollEl) {
+        if (event.key === 'j' || event.key === 'ArrowDown') { scrollEl.scrollBy({ top: 80, behavior: 'smooth' }); return; }
+        if (event.key === 'k' || event.key === 'ArrowUp') { scrollEl.scrollBy({ top: -80, behavior: 'smooth' }); return; }
+        if (event.key === 'g') { scrollEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+        if (event.key === 'G') { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' }); return; }
+      }
       return;
     }
 
@@ -12877,12 +12896,14 @@
   // Suppress keyup events while in active modes or after quick-nav interception
   // to prevent them from leaking to content
   // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode,
-  //  or Alt/J/K keyup reaching content after Alt+HJKL navigation)
+  //  or Alt/J/K keyup reaching content after Alt+HJKL navigation,
+  //  or browse mode j/k reaching about:newtab search input)
   function handleKeyUp(event) {
     if (leapMode || searchMode || commandMode || settingsMode || helpMode || gtileMode
-        || Date.now() < quickNavInterceptedUntil) {
+        || folderDeleteMode || Date.now() < quickNavInterceptedUntil) {
       event.preventDefault();
       event.stopPropagation();
+      event.stopImmediatePropagation();
     }
   }
 
@@ -13252,10 +13273,12 @@
 
         tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           background-color: var(--zl-up-bg) !important;
+          color: var(--zl-current-color) !important;
         }
 
         tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           background-color: var(--zl-down-bg) !important;
+          color: var(--zl-current-color) !important;
         }
 
         /* Hide badge on hover to make room for close button */
@@ -13325,13 +13348,13 @@
       /* ═══ Leap mode active: direction colors ═══ */
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after,
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="up"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-        color: var(--zl-badge-color) !important;
+        color: var(--zl-current-color) !important;
         background-color: var(--zl-up-bg) !important;
       }
 
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after,
       :root[data-zenleap-active="true"] tab[data-zenleap-direction="down"]:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
-        color: var(--zl-badge-color) !important;
+        color: var(--zl-current-color) !important;
         background-color: var(--zl-down-bg) !important;
       }
 
@@ -13694,10 +13717,10 @@
 
       #zenleap-gtile-hints {
         display: flex;
-        gap: 14px;
+        gap: 10px;
         justify-content: center;
         flex-wrap: wrap;
-        padding: 10px 20px;
+        padding: 8px 16px;
         border-top: 1px solid var(--zl-border-subtle);
         font-size: 11px;
         color: var(--zl-text-muted);
