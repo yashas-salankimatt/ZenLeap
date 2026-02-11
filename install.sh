@@ -64,6 +64,7 @@ FXAUTOCONFIG_REPO="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/head
 ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
+ZENLEAP_THEMES_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/zenleap-themes.json"
 ZENLEAP_CHECKSUMS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHECKSUMS.sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -160,6 +161,9 @@ download_zenleap() {
         echo -e "${RED}Error: Failed to download chrome.css${NC}"
         return 1
     fi
+
+    # Download themes template (best-effort — not critical)
+    curl -sfL "$ZENLEAP_THEMES_URL" -o "$dest_dir/zenleap-themes.json" 2>/dev/null || true
 
     # Verify integrity against repo checksums (best-effort: warn but don't
     # block install if the checksums file is missing or doesn't have entries).
@@ -433,6 +437,12 @@ install_zenleap() {
             echo "/* === End ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
             echo -e "${GREEN}✓${NC} Created userChrome.css with styles"
         fi
+    fi
+
+    # Copy themes template if not already present (don't overwrite user customizations)
+    if [ ! -f "$CHROME_DIR/zenleap-themes.json" ] && [ -f "$source_dir/zenleap-themes.json" ]; then
+        cp "$source_dir/zenleap-themes.json" "$CHROME_DIR/zenleap-themes.json"
+        echo -e "${GREEN}✓${NC} Created zenleap-themes.json template"
     fi
 
     # Cleanup temp directory if using remote

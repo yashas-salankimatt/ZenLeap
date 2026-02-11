@@ -281,6 +281,14 @@ cd ZenLeap
 ./install.sh uninstall
 ```
 
+### Clean Legacy CSS
+If you have old pre-3.1 ZenLeap CSS in your `userChrome.css` that conflicts with the runtime theme engine:
+```bash
+./clean-legacy-css.sh              # Interactive, all profiles
+./clean-legacy-css.sh --yes        # Non-interactive, all profiles
+./clean-legacy-css.sh --dry-run    # Preview what would change
+```
+
 ### Manual Uninstall
 1. Delete `<profile>/chrome/JS/zenleap.uc.js`
 2. Remove ZenLeap styles from `userChrome.css` (between `/* === ZenLeap Styles === */` markers)
@@ -424,13 +432,31 @@ p                                              (paste folder here)
 ### Settings Modal
 Open the settings modal from the help screen (gear icon) or command palette (`> settings`). All keybindings, timing values, and display options can be customized.
 
+### Themes
+
+ZenLeap ships with 7 built-in themes: **Meridian** (default), **Meridian Transparent**, **Dracula**, **Gruvbox Dark**, **Nord**, **Catppuccin Mocha**, and **Tokyo Night**. Switch themes in Settings > Appearance.
+
+#### Custom Themes
+Create your own themes by extending a built-in theme:
+1. **Visual Editor**: Settings > Appearance > Custom Themes > "Create Theme" — grouped color pickers with live preview
+2. **JSON File**: Edit `zenleap-themes.json` in your profile's chrome directory (open via `:open-themes-file` command)
+
+```json
+{
+  "my-theme": {
+    "name": "My Theme",
+    "extends": "meridian",
+    "accent": "#ff6b6b",
+    "bgBase": "#1a1a2e"
+  }
+}
+```
+
+Run `:reload-themes` after editing the JSON file. Themes support `extends` inheritance — only override properties you want to change.
+
 ### Appearance Customization
 
-All colors are customizable through the Settings modal (Appearance tab). Changes apply instantly with live preview. You can customize:
-- Accent color, tab badge backgrounds and text, direction colors
-- Mark indicator color, browse highlight border, multi-select border
-
-All styles are injected at runtime via CSS custom properties (`--zl-*`). The `chrome.css` file is intentionally empty — the runtime stylesheet handles everything.
+All 50+ colors are customizable through the Settings modal (Appearance tab) or via the visual theme editor. Changes apply instantly with live preview. All styles are injected at runtime via CSS custom properties (`--zl-*`).
 
 ## Debugging
 
