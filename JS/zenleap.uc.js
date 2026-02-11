@@ -358,6 +358,10 @@
   let gtileAnchor = null;            // { col, row } - resize selection start
   let gtileTabRects = [];            // Tab regions: { tab, left, top, right, bottom, color }
   let gtileRegionElements = new Map(); // tab -> DOM element (for animated transitions)
+  let gtileMouseHints = false;       // Show mouse hints when hovering grid
+  let gtileDrag = null;              // Move mode mouse drag state
+  let gtileMouseSelecting = false;   // Resize mode mouse drag-select active
+  let gtileGhostEl = null;           // Ghost element for drag placeholder
 
   const GTILE_COLS = 6;
   const GTILE_ROWS = 4;
@@ -5715,8 +5719,14 @@
     const sel = document.createElement('div');
     sel.className = 'zenleap-gtile-sel';
 
+    // Ghost element (drag placeholder)
+    gtileGhostEl = document.createElement('div');
+    gtileGhostEl.className = 'zenleap-gtile-ghost';
+    gtileGhostEl.style.display = 'none';
+
     grid.appendChild(cellLayer);
     grid.appendChild(sel);
+    grid.appendChild(gtileGhostEl);
 
     // Hints bar
     const hints = document.createElement('div');
@@ -5730,6 +5740,10 @@
     gtileOverlay.appendChild(panel);
 
     document.documentElement.appendChild(gtileOverlay);
+
+    // --- Mouse event wiring ---
+    setupGtileMouseEvents(grid, cellLayer, modeSwitch);
+
     log('gTile overlay created');
   }
 
@@ -5765,6 +5779,10 @@
     gtileActiveRegionIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
     if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
 
+    gtileMouseHints = false;
+    gtileDrag = null;
+    gtileMouseSelecting = false;
+
     gtileOverlay.classList.add('active', 'mode-move');
     gtileOverlay.classList.remove('mode-resize');
     updateGtileOverlay();
@@ -5786,6 +5804,9 @@
     gtileSelecting = false;
     gtileAnchor = null;
     gtileHeld = false;
+    gtileDrag = null;
+    gtileMouseSelecting = false;
+    if (gtileGhostEl) gtileGhostEl.style.display = 'none';
 
     // Remove region elements
     for (const el of gtileRegionElements.values()) {
@@ -5861,14 +5882,21 @@
       }
 
       // Update position (CSS transitions handle animation)
-      const gap = 2;
-      region.style.inset = `calc(${rect.top}% + ${gap}px) calc(${rect.right}% + ${gap}px) calc(${rect.bottom}% + ${gap}px) calc(${rect.left}% + ${gap}px)`;
+      // Skip position update for region being mouse-dragged (it follows the mouse directly)
+      const isDragging = gtileDrag && gtileDrag.isDragging && gtileDrag.idx === i;
+      if (!isDragging) {
+        const gap = 2;
+        region.style.inset = `calc(${rect.top}% + ${gap}px) calc(${rect.right}% + ${gap}px) calc(${rect.bottom}% + ${gap}px) calc(${rect.left}% + ${gap}px)`;
+      }
       region.dataset.color = rect.color;
 
-      // Update active/held/resize-target state
-      region.classList.toggle('gtile-active', gtileSubMode === 'move' && i === gtileActiveRegionIdx);
-      region.classList.toggle('gtile-held', gtileSubMode === 'move' && i === gtileActiveRegionIdx && gtileHeld);
+      // Update active/held/resize-target/drag state
+      const isActive = gtileSubMode === 'move' && i === gtileActiveRegionIdx && !isDragging;
+      region.classList.toggle('gtile-active', isActive);
+      region.classList.toggle('gtile-held', gtileSubMode === 'move' && i === gtileActiveRegionIdx && gtileHeld && !isDragging);
       region.classList.toggle('gtile-resize-target', gtileSubMode === 'resize' && rect.tab === gtileFocusedTab);
+      region.classList.toggle('gtile-dragging', isDragging);
+      region.classList.toggle('gtile-swap-target', gtileDrag && gtileDrag.isDragging && gtileDrag.swapIdx === i);
 
       // Update text
       region.querySelector('.gtile-region-title').textContent = rect.tab.label?.substring(0, 30) || 'Tab';
@@ -5934,26 +5962,52 @@
       if (sel) sel.classList.remove('visible');
     }
 
-    // --- Update hints ---
+    // --- Update hints (adaptive: keyboard by default, mouse when hovering grid) ---
     if (hints) {
       if (gtileSubMode === 'move') {
-        hints.innerHTML = gtileHeld
-          ? '<span><kbd>hjkl</kbd> swap</span><span><kbd>Enter</kbd> drop</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Esc</kbd> close</span>'
-          : '<span><kbd>hjkl</kbd> navigate</span><span><kbd>\u21E7hjkl</kbd> swap</span><span><kbd>Enter</kbd> grab</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+        if (gtileMouseHints) {
+          hints.innerHTML = (gtileDrag && gtileDrag.isDragging)
+            ? '<span><kbd>Drag</kbd> swap position</span><span><kbd>Release</kbd> drop</span><span><kbd>Esc</kbd> cancel</span>'
+            : '<span><kbd>Click</kbd> select</span><span><kbd>Drag</kbd> grab &amp; swap</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+        } else {
+          hints.innerHTML = gtileHeld
+            ? '<span><kbd>hjkl</kbd> swap</span><span><kbd>Enter</kbd> drop</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Esc</kbd> close</span>'
+            : '<span><kbd>hjkl</kbd> navigate</span><span><kbd>\u21E7hjkl</kbd> swap</span><span><kbd>Enter</kbd> grab</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+        }
       } else {
-        hints.innerHTML = gtileSelecting
-          ? '<span><kbd>hjkl</kbd> extend</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
-          : '<span><kbd>\u21E7hjkl</kbd> target</span><span><kbd>hjkl</kbd> cursor</span><span><kbd>Enter</kbd> anchor</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+        if (gtileMouseHints) {
+          hints.innerHTML = (gtileSelecting || gtileMouseSelecting)
+            ? '<span><kbd>Drag</kbd> extend</span><span><kbd>Release</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
+            : '<span><kbd>Click+Drag</kbd> select area</span><span><kbd>Click region</kbd> change target</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+        } else {
+          hints.innerHTML = gtileSelecting
+            ? '<span><kbd>hjkl</kbd> extend</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
+            : '<span><kbd>\u21E7hjkl</kbd> target</span><span><kbd>hjkl</kbd> cursor</span><span><kbd>Enter</kbd> anchor</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+        }
       }
     }
   }
 
   function handleGtileKeyDown(event) {
+    // Switch hints back to keyboard on any keypress
+    if (gtileMouseHints) {
+      gtileMouseHints = false;
+    }
+
     const key = event.key.toLowerCase();
     const code = event.code;
 
+    // Escape during mouse drag — cancel drag
+    if (key === 'escape' && gtileDrag) {
+      cancelGtileDrag();
+      updateGtileOverlay();
+      return true;
+    }
+
     // Tab — toggle sub-mode
     if (key === 'tab') {
+      if (gtileDrag) cancelGtileDrag();
+      gtileMouseSelecting = false;
       if (gtileSubMode === 'move') {
         gtileSubMode = 'resize';
         gtileOverlay.classList.remove('mode-move');
@@ -5984,8 +6038,9 @@
 
     // Escape
     if (key === 'escape') {
-      if (gtileSubMode === 'resize' && gtileSelecting) {
+      if (gtileSubMode === 'resize' && (gtileSelecting || gtileMouseSelecting)) {
         gtileSelecting = false;
+        gtileMouseSelecting = false;
         gtileAnchor = null;
         updateGtileOverlay();
       } else if (gtileSubMode === 'move' && gtileHeld) {
@@ -6237,6 +6292,368 @@
     gtileSelecting = false;
     gtileAnchor = null;
     updateGtileOverlay();
+  }
+
+  // --- Mouse support for gTile overlay ---
+
+  function cancelGtileDrag() {
+    if (!gtileDrag) return;
+    const el = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+    if (el) {
+      el.classList.remove('gtile-dragging');
+      el.style.transition = '';
+    }
+    if (gtileGhostEl) gtileGhostEl.style.display = 'none';
+    // Revert swap partner position
+    if (gtileDrag.swapIdx >= 0) {
+      const origRect = gtileDrag.origRects[gtileDrag.swapIdx];
+      const r = gtileTabRects[gtileDrag.swapIdx];
+      r.left = origRect.left; r.top = origRect.top;
+      r.right = origRect.right; r.bottom = origRect.bottom;
+    }
+    gtileDrag = null;
+    updateGtileOverlay();
+  }
+
+  function performGtileSwapByIndex(aIdx, bIdx) {
+    // Actually swap the tabs in the split tree (same logic as performGtileSwap)
+    const splitter = window.gZenViewSplitter;
+    if (!splitter) return;
+    const aRect = gtileTabRects[aIdx];
+    const bRect = gtileTabRects[bIdx];
+    const node1 = splitter.getSplitNodeFromTab(aRect.tab);
+    const node2 = splitter.getSplitNodeFromTab(bRect.tab);
+    if (!node1 || !node2) return;
+    splitter.swapNodes(node1, node2);
+    const viewData = splitter._data[splitter.currentView];
+    splitter.applyGridLayout(viewData.layoutTree);
+    const activeTab = aRect.tab;
+    mapCurrentLayoutToGrid(viewData);
+    gtileActiveRegionIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
+    if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
+  }
+
+  function setupGtileMouseEvents(grid, cellLayer, modeSwitch) {
+    const DRAG_THRESHOLD = 5;
+
+    // --- Hint detection: mouse hints on grid hover, revert on leave ---
+    grid.addEventListener('mousemove', () => {
+      if (!gtileMode) return;
+      if (!gtileMouseHints) {
+        gtileMouseHints = true;
+        updateGtileOverlay();
+      }
+    }, { passive: true });
+
+    grid.addEventListener('mouseleave', () => {
+      if (!gtileMode) return;
+      if (gtileMouseHints && !(gtileDrag && gtileDrag.isDragging) && !gtileMouseSelecting) {
+        gtileMouseHints = false;
+        updateGtileOverlay();
+      }
+    }, { passive: true });
+
+    // --- Mode switch: clickable ---
+    modeSwitch.querySelectorAll('.gtile-mode-btn').forEach(btn => {
+      btn.style.cursor = 'pointer';
+      btn.addEventListener('click', (e) => {
+        if (!gtileMode) return;
+        e.stopPropagation();
+        const newMode = btn.dataset.mode;
+        if (newMode === gtileSubMode) return;
+        if (newMode === 'resize') {
+          gtileSubMode = 'resize';
+          gtileOverlay.classList.remove('mode-move');
+          gtileOverlay.classList.add('mode-resize');
+          gtileHeld = false;
+          const activeRect = gtileTabRects[gtileActiveRegionIdx];
+          if (activeRect) {
+            gtileFocusedTab = activeRect.tab;
+            const cx = (activeRect.left + (100 - activeRect.right)) / 2;
+            const cy = (activeRect.top + (100 - activeRect.bottom)) / 2;
+            gtileCursor.col = Math.max(0, Math.min(GTILE_COLS - 1, Math.round(cx / 100 * GTILE_COLS - 0.5)));
+            gtileCursor.row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.round(cy / 100 * GTILE_ROWS - 0.5)));
+          }
+          gtileSelecting = false;
+          gtileAnchor = null;
+        } else {
+          gtileSubMode = 'move';
+          gtileOverlay.classList.remove('mode-resize');
+          gtileOverlay.classList.add('mode-move');
+          gtileSelecting = false;
+          gtileAnchor = null;
+        }
+        updateGtileOverlay();
+      });
+    });
+
+    // --- Move mode: click to select, drag to grab & swap ---
+    let moveMouseDown = null; // { idx, startX, startY, offsetXPct, offsetYPct, regW, regH }
+
+    grid.addEventListener('mousedown', (e) => {
+      if (!gtileMode || gtileSubMode !== 'move' || e.button !== 0) return;
+
+      // Find which region was clicked
+      const regionEl = e.target.closest('.zenleap-gtile-region');
+      if (!regionEl) return;
+
+      const clickedTab = [...gtileRegionElements.entries()].find(([, el]) => el === regionEl)?.[0];
+      if (!clickedTab) return;
+      const idx = gtileTabRects.findIndex(r => r.tab === clickedTab);
+      if (idx < 0) return;
+
+      e.preventDefault();
+      gtileActiveRegionIdx = idx;
+
+      const gridRect = grid.getBoundingClientRect();
+      const regionRect = regionEl.getBoundingClientRect();
+      const rect = gtileTabRects[idx];
+      moveMouseDown = {
+        idx,
+        startX: e.clientX, startY: e.clientY,
+        offsetXPct: (e.clientX - regionRect.left) / gridRect.width * 100,
+        offsetYPct: (e.clientY - regionRect.top) / gridRect.height * 100,
+        regW: 100 - rect.left - rect.right,
+        regH: 100 - rect.top - rect.bottom,
+      };
+      updateGtileOverlay();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!moveMouseDown || !gtileMode || gtileSubMode !== 'move') return;
+
+      const dx = e.clientX - moveMouseDown.startX;
+      const dy = e.clientY - moveMouseDown.startY;
+
+      if (!gtileDrag && Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
+
+      // Enter drag mode
+      if (!gtileDrag) {
+        gtileDrag = {
+          idx: moveMouseDown.idx,
+          isDragging: true,
+          swapIdx: -1,
+          origRects: gtileTabRects.map(r => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })),
+          offsetXPct: moveMouseDown.offsetXPct,
+          offsetYPct: moveMouseDown.offsetYPct,
+          regW: moveMouseDown.regW,
+          regH: moveMouseDown.regH,
+        };
+
+        const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+        if (regionEl) {
+          regionEl.classList.add('gtile-dragging');
+          // Disable position transitions on dragged element
+          regionEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.15s, border-color 0.15s';
+        }
+
+        // Show ghost at original position
+        const orig = gtileDrag.origRects[gtileDrag.idx];
+        const gap = 2;
+        if (gtileGhostEl) {
+          gtileGhostEl.style.display = 'block';
+          gtileGhostEl.style.inset = `calc(${orig.top}% + ${gap}px) calc(${orig.right}% + ${gap}px) calc(${orig.bottom}% + ${gap}px) calc(${orig.left}% + ${gap}px)`;
+        }
+        updateGtileOverlay();
+      }
+
+      // Position dragged region following mouse
+      const gridRect = grid.getBoundingClientRect();
+      const mxPct = (e.clientX - gridRect.left) / gridRect.width * 100;
+      const myPct = (e.clientY - gridRect.top) / gridRect.height * 100;
+      let newL = Math.max(0, Math.min(100 - gtileDrag.regW, mxPct - gtileDrag.offsetXPct));
+      let newT = Math.max(0, Math.min(100 - gtileDrag.regH, myPct - gtileDrag.offsetYPct));
+      const newR = 100 - newL - gtileDrag.regW;
+      const newB = 100 - newT - gtileDrag.regH;
+
+      const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+      if (regionEl) {
+        const gap = 2;
+        regionEl.style.inset = `calc(${newT}% + ${gap}px) calc(${newR}% + ${gap}px) calc(${newB}% + ${gap}px) calc(${newL}% + ${gap}px)`;
+      }
+
+      // Hit test: which original region zone is mouse cursor over?
+      const cursorXPct = mxPct, cursorYPct = myPct;
+      let bestIdx = -1;
+      for (let i = 0; i < gtileTabRects.length; i++) {
+        if (i === gtileDrag.idx) continue;
+        const o = gtileDrag.origRects[i];
+        if (cursorXPct >= o.left && cursorXPct <= (100 - o.right) &&
+            cursorYPct >= o.top && cursorYPct <= (100 - o.bottom)) {
+          bestIdx = i;
+          break;
+        }
+      }
+
+      // Update swap partner if changed
+      if (bestIdx !== gtileDrag.swapIdx) {
+        // Revert previous partner
+        if (gtileDrag.swapIdx >= 0) {
+          const prevOrig = gtileDrag.origRects[gtileDrag.swapIdx];
+          const prevRect = gtileTabRects[gtileDrag.swapIdx];
+          prevRect.left = prevOrig.left; prevRect.top = prevOrig.top;
+          prevRect.right = prevOrig.right; prevRect.bottom = prevOrig.bottom;
+        }
+        // Set new partner
+        if (bestIdx >= 0) {
+          const dragOrig = gtileDrag.origRects[gtileDrag.idx];
+          const partnerRect = gtileTabRects[bestIdx];
+          partnerRect.left = dragOrig.left; partnerRect.top = dragOrig.top;
+          partnerRect.right = dragOrig.right; partnerRect.bottom = dragOrig.bottom;
+          // Ghost moves to partner's original position (landing zone)
+          const partnerOrig = gtileDrag.origRects[bestIdx];
+          const gap = 2;
+          if (gtileGhostEl) {
+            gtileGhostEl.style.inset = `calc(${partnerOrig.top}% + ${gap}px) calc(${partnerOrig.right}% + ${gap}px) calc(${partnerOrig.bottom}% + ${gap}px) calc(${partnerOrig.left}% + ${gap}px)`;
+          }
+        } else {
+          // No partner: ghost at drag origin
+          const orig = gtileDrag.origRects[gtileDrag.idx];
+          const gap = 2;
+          if (gtileGhostEl) {
+            gtileGhostEl.style.inset = `calc(${orig.top}% + ${gap}px) calc(${orig.right}% + ${gap}px) calc(${orig.bottom}% + ${gap}px) calc(${orig.left}% + ${gap}px)`;
+          }
+        }
+        gtileDrag.swapIdx = bestIdx;
+        updateGtileOverlay();
+      }
+    }, { passive: true });
+
+    document.addEventListener('mouseup', (e) => {
+      if (!gtileMode || gtileSubMode !== 'move') { moveMouseDown = null; return; }
+      if (!moveMouseDown) return;
+
+      if (gtileDrag && gtileDrag.isDragging) {
+        const draggedEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+        if (draggedEl) {
+          draggedEl.classList.remove('gtile-dragging');
+          draggedEl.style.transition = '';
+        }
+        if (gtileGhostEl) gtileGhostEl.style.display = 'none';
+
+        if (gtileDrag.swapIdx >= 0) {
+          // Confirm swap via the split tree
+          const aIdx = gtileDrag.idx;
+          const bIdx = gtileDrag.swapIdx;
+          // Restore original rects before performing real swap
+          for (let i = 0; i < gtileTabRects.length; i++) {
+            const orig = gtileDrag.origRects[i];
+            gtileTabRects[i].left = orig.left; gtileTabRects[i].top = orig.top;
+            gtileTabRects[i].right = orig.right; gtileTabRects[i].bottom = orig.bottom;
+          }
+          gtileDrag = null;
+          performGtileSwapByIndex(aIdx, bIdx);
+          flashGtileGrid('gtile-rotated'); // green-ish confirmation pulse
+        } else {
+          // No swap target: revert
+          const orig = gtileDrag.origRects[gtileDrag.idx];
+          gtileTabRects[gtileDrag.idx].left = orig.left;
+          gtileTabRects[gtileDrag.idx].top = orig.top;
+          gtileTabRects[gtileDrag.idx].right = orig.right;
+          gtileTabRects[gtileDrag.idx].bottom = orig.bottom;
+          gtileDrag = null;
+        }
+        updateGtileOverlay();
+      }
+
+      moveMouseDown = null;
+    });
+
+    // --- Resize mode: hover tracking on cells ---
+    cellLayer.addEventListener('mousemove', (e) => {
+      if (!gtileMode || gtileSubMode !== 'resize') return;
+      const gridRect = grid.getBoundingClientRect();
+      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor((e.clientX - gridRect.left) / gridRect.width * GTILE_COLS)));
+      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor((e.clientY - gridRect.top) / gridRect.height * GTILE_ROWS)));
+      gtileCursor.col = col;
+      gtileCursor.row = row;
+      updateGtileOverlay();
+    });
+
+    // --- Resize mode: click+drag to select cells, or click non-target region to change target ---
+    // Disambiguate click vs drag: always start cell selection on mousedown,
+    // but on mouseup if the mouse didn't move, treat as a click to change target.
+    let resizeMouseStart = null; // { x, y, potentialTargetTab }
+    cellLayer.addEventListener('mousedown', (e) => {
+      if (!gtileMode || gtileSubMode !== 'resize' || e.button !== 0) return;
+      e.preventDefault();
+
+      const gridRect = grid.getBoundingClientRect();
+      const clickXPct = (e.clientX - gridRect.left) / gridRect.width * 100;
+      const clickYPct = (e.clientY - gridRect.top) / gridRect.height * 100;
+
+      // Check if click is over a non-target region (for potential target change on simple click)
+      let potentialTargetTab = null;
+      for (let i = 0; i < gtileTabRects.length; i++) {
+        const rect = gtileTabRects[i];
+        if (rect.tab === gtileFocusedTab) continue;
+        if (clickXPct >= rect.left && clickXPct <= (100 - rect.right) &&
+            clickYPct >= rect.top && clickYPct <= (100 - rect.bottom)) {
+          potentialTargetTab = rect.tab;
+          break;
+        }
+      }
+
+      resizeMouseStart = { x: e.clientX, y: e.clientY, potentialTargetTab };
+
+      // Always start cell selection (drag will extend it, click will be caught on mouseup)
+      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor(clickXPct / 100 * GTILE_COLS)));
+      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor(clickYPct / 100 * GTILE_ROWS)));
+      gtileAnchor = { col, row };
+      gtileCursor.col = col;
+      gtileCursor.row = row;
+      gtileSelecting = true;
+      gtileMouseSelecting = true;
+      updateGtileOverlay();
+    });
+
+    // Drag extends selection (document-level for dragging outside cells)
+    document.addEventListener('mousemove', (e) => {
+      if (!gtileMode || gtileSubMode !== 'resize' || !gtileMouseSelecting) return;
+      const gridRect = grid.getBoundingClientRect();
+      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor((e.clientX - gridRect.left) / gridRect.width * GTILE_COLS)));
+      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor((e.clientY - gridRect.top) / gridRect.height * GTILE_ROWS)));
+      gtileCursor.col = col;
+      gtileCursor.row = row;
+      updateGtileOverlay();
+    }, { passive: true });
+
+    // Release: disambiguate click (change target) vs drag (apply cell selection)
+    document.addEventListener('mouseup', (e) => {
+      if (!gtileMode || gtileSubMode !== 'resize' || !gtileMouseSelecting) return;
+      gtileMouseSelecting = false;
+
+      const CLICK_THRESHOLD = 5; // px — below this, treat as a click not a drag
+      const didDrag = resizeMouseStart &&
+        (Math.abs(e.clientX - resizeMouseStart.x) > CLICK_THRESHOLD ||
+         Math.abs(e.clientY - resizeMouseStart.y) > CLICK_THRESHOLD);
+
+      if (!didDrag && resizeMouseStart?.potentialTargetTab) {
+        // Simple click on a non-target region — change resize target
+        gtileFocusedTab = resizeMouseStart.potentialTargetTab;
+        gtileSelecting = false;
+        gtileAnchor = null;
+        resizeMouseStart = null;
+        updateGtileOverlay();
+        return;
+      }
+
+      resizeMouseStart = null;
+      // Drag completed — apply the layout (same as pressing Enter with a selection)
+      if (gtileSelecting && gtileAnchor) {
+        exitGtileMode(true);
+      }
+    });
+
+  }
+
+  function flashGtileGrid(cls) {
+    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
+    if (!grid) return;
+    grid.classList.remove(cls);
+    void grid.offsetHeight;
+    grid.classList.add(cls);
+    setTimeout(() => grid.classList.remove(cls), 400);
   }
 
   // --- Split Layout Rotation ---
@@ -12276,7 +12693,6 @@
           border-color 0.15s;
         border: 1.5px solid transparent;
         overflow: hidden;
-        cursor: default;
         user-select: none;
       }
       .zenleap-gtile-region::before {
@@ -12318,6 +12734,45 @@
       .zenleap-gtile-region.gtile-held .gtile-region-title {
         color: #61afef;
       }
+
+      /* Mouse drag state */
+      .zenleap-gtile-region.gtile-dragging {
+        z-index: 10;
+        border-color: #61afef !important;
+        box-shadow:
+          0 0 0 2px rgba(97, 175, 239, 0.4),
+          0 8px 32px rgba(97, 175, 239, 0.2),
+          0 16px 48px rgba(0, 0, 0, 0.4);
+        transform: scale(1.03);
+        cursor: grabbing;
+        pointer-events: none;
+        transition: transform 0.12s ease-out, box-shadow 0.15s, border-color 0.15s;
+      }
+      .zenleap-gtile-region.gtile-dragging::before { opacity: 0.25; }
+      .zenleap-gtile-region.gtile-dragging .gtile-region-title { color: #61afef; }
+
+      /* Swap target highlight during drag */
+      .zenleap-gtile-region.gtile-swap-target {
+        z-index: 1;
+        border-color: rgba(97, 175, 239, 0.5) !important;
+      }
+      .zenleap-gtile-region.gtile-swap-target::before { opacity: 0.2; }
+
+      /* Ghost (drag placeholder) */
+      .zenleap-gtile-ghost {
+        position: absolute;
+        border-radius: 8px;
+        border: 1.5px dashed rgba(97, 175, 239, 0.3);
+        background: rgba(97, 175, 239, 0.03);
+        pointer-events: none;
+        z-index: 0;
+        transition:
+          inset 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      /* Move mode: grab cursor on regions */
+      #zenleap-gtile-overlay.mode-move .zenleap-gtile-region { cursor: grab; }
+      #zenleap-gtile-overlay.mode-move .zenleap-gtile-region.gtile-dragging { cursor: grabbing; }
 
       /* Region text */
       .gtile-region-title {
@@ -12370,6 +12825,7 @@
         border-radius: 3px;
         margin: 2px;
         transition: background 0.08s, border-color 0.08s;
+        cursor: crosshair;
       }
       .zenleap-gtile-cell.gtile-cursor {
         border-color: rgba(255, 255, 255, 0.6);
@@ -12403,26 +12859,27 @@
 
       /* --- Hints Bar --- */
       #zenleap-gtile-hints {
-        padding: 10px 20px;
+        padding: 10px 16px;
         border-top: 1px solid rgba(255, 255, 255, 0.08);
-        font-size: 11px;
+        font-size: 10px;
         color: #555;
         display: flex;
-        gap: 14px;
+        gap: 10px;
         justify-content: center;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+        white-space: nowrap;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       }
       #zenleap-gtile-hints kbd {
         background: rgba(255, 255, 255, 0.08);
         color: #777;
-        padding: 2px 6px;
+        padding: 1px 5px;
         border-radius: 3px;
         font-family: monospace;
-        font-size: 10px;
+        font-size: 9px;
         font-weight: 600;
         border: 1px solid rgba(255, 255, 255, 0.06);
-        margin-right: 3px;
+        margin-right: 2px;
       }
 
       /* --- Resize Target Info (header, crossfades with title) --- */
@@ -12502,10 +12959,11 @@
         color: #888;
       }
 
-      /* Dim non-target regions in resize mode */
+      /* Dim non-target regions in resize mode (clickable to change target) */
       #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region:not(.gtile-resize-target) {
         opacity: 0.4;
         transition: opacity 0.2s ease-out;
+        cursor: pointer;
       }
       #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region:not(.gtile-resize-target)::before {
         opacity: 0.05;
