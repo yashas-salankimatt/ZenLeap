@@ -9541,6 +9541,14 @@
     if (browseCommandMode) {
       document.documentElement.removeAttribute('data-zenleap-active');
       restoreFocusToContent();
+      // Restore sidebar if we expanded it for compact mode
+      if (sidebarWasExpanded) {
+        setTimeout(() => {
+          hideFloatingSidebar();
+          log('Hid sidebar after browse command exit');
+        }, 150);
+      }
+      sidebarWasExpanded = false;
     }
     browseCommandMode = false;
     browseCommandTabs = [];
@@ -12428,6 +12436,7 @@
           splitFocusInDirection('left');
         } else {
           quickSwitchWorkspace('prev');
+          peekSidebarForQuickNav();
         }
         return;
       }
@@ -12440,6 +12449,7 @@
           splitFocusInDirection('right');
         } else {
           quickSwitchWorkspace('next');
+          peekSidebarForQuickNav();
         }
         return;
       }
