@@ -1494,6 +1494,68 @@
         const tab = gBrowser.selectedTab;
         if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
       }},
+
+      // --- Zen Essential / Pinned Tab ---
+      { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
+        condition: () => {
+          try {
+            const tab = gBrowser.selectedTab;
+            return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group;
+          } catch(e) { return false; }
+        },
+        command: () => {
+          try { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); }
+          catch(e) { log(`Add to essentials failed: ${e}`); }
+      }},
+      { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
+        condition: () => {
+          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'); }
+          catch(e) { return false; }
+        },
+        command: () => {
+          try { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); }
+          catch(e) { log(`Remove from essentials failed: ${e}`); }
+      }},
+      { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
+        command: () => {
+          const tab = gBrowser.selectedTab;
+          exitSearchMode();
+          setTimeout(() => {
+            try {
+              TabContextMenu.contextTab = tab;
+              document.getElementById('context_zen-edit-tab-title')?.doCommand();
+            } catch(e) { log(`Rename tab failed: ${e}`); }
+          }, 100);
+      }},
+      { key: 'edit-tab-icon', label: 'Edit Tab Icon', icon: '🎨', tags: ['tab', 'icon', 'emoji', 'edit', 'custom', 'zen'],
+        command: () => {
+          const tab = gBrowser.selectedTab;
+          exitSearchMode();
+          setTimeout(() => {
+            try {
+              TabContextMenu.contextTab = tab;
+              document.getElementById('context_zen-edit-tab-icon')?.doCommand();
+            } catch(e) { log(`Edit tab icon failed: ${e}`); }
+          }, 100);
+      }},
+      { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
+        condition: () => {
+          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
+          catch(e) { return false; }
+        },
+        command: () => {
+          try { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); }
+          catch(e) { log(`Reset pinned tab failed: ${e}`); }
+      }},
+      { key: 'replace-pinned-url', label: 'Replace Pinned URL with Current', icon: '📌', tags: ['tab', 'pinned', 'replace', 'url', 'current', 'update', 'zen'],
+        condition: () => {
+          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
+          catch(e) { return false; }
+        },
+        command: () => {
+          try { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); }
+          catch(e) { log(`Replace pinned URL failed: ${e}`); }
+      }},
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
       { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'], command: () => {
         const current = gBrowser.selectedTab;
@@ -1511,6 +1573,20 @@
         }, S['timing.unloadTabDelay']);
       }},
 
+      // --- Tab Actions (Context Menu Parity) ---
+      { key: 'reload-tab', label: 'Reload Tab', icon: '🔄', tags: ['tab', 'reload', 'refresh', 'r'], command: () => { gBrowser.reloadTab(gBrowser.selectedTab); } },
+      { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => {
+        try { PlacesCommandHook.bookmarkPage(); }
+        catch(e) { log(`Bookmark tab failed: ${e}`); }
+      }},
+      { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => {
+        try { SessionStore.undoCloseTab(window, 0); }
+        catch(e) { log(`Reopen closed tab failed: ${e}`); }
+      }},
+      { key: 'select-all-tabs', label: 'Select All Tabs (Browse Mode)', icon: '☑', tags: ['tab', 'select', 'all', 'sel'], command: () => {
+        const allTabs = getVisibleTabs().filter(t => !t.closing && t.parentNode);
+        selectTabsInBrowseMode(allTabs);
+      }},
       // --- Tab Selection (Multi-Step) ---
       { key: 'select-matching-tabs', label: 'Select Matching Tabs...', icon: '🔎', tags: ['tab', 'select', 'search', 'match', 'filter', 'batch', 'sel', 'find'], subFlow: 'tab-search' },
       { key: 'deduplicate-tabs', label: 'Deduplicate Tabs (Close Duplicates)', icon: '🧹', tags: ['tab', 'duplicate', 'deduplicate', 'close', 'clean', 'unique', 'dedup'], subFlow: 'dedup-preview' },
@@ -1733,6 +1809,40 @@
           try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
         },
         subFlow: 'rename-folder-picker' },
+      { key: 'change-folder-icon', label: 'Change Folder Icon...', icon: '🎨', tags: ['folder', 'icon', 'emoji', 'edit', 'fld', 'fol'],
+        condition: () => {
+          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'change-folder-icon-picker' },
+      { key: 'unload-folder-tabs', label: 'Unload All Tabs in Folder...', icon: '💤', tags: ['folder', 'unload', 'discard', 'memory', 'suspend', 'fld', 'fol'],
+        condition: () => {
+          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'unload-folder-picker' },
+      { key: 'create-subfolder', label: 'Create Subfolder...', icon: '📁', tags: ['folder', 'subfolder', 'create', 'new', 'nested', 'mk', 'fld', 'fol'],
+        condition: () => {
+          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'create-subfolder-picker' },
+      { key: 'convert-folder-to-workspace', label: 'Convert Folder to Workspace...', icon: '🗂', tags: ['folder', 'workspace', 'convert', 'space', 'fld', 'fol'],
+        condition: () => {
+          try { return !!window.gZenFolders && !!window.gZenWorkspaces && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'folder-to-workspace-picker' },
+      { key: 'unpack-folder', label: 'Unpack Folder (Keep Tabs)...', icon: '📦', tags: ['folder', 'unpack', 'dissolve', 'remove', 'keep', 'tabs', 'fld', 'fol'],
+        condition: () => {
+          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
+        },
+        subFlow: 'unpack-folder-picker' },
+      { key: 'move-folder-to-workspace', label: 'Move Folder to Workspace...', icon: '🗂', tags: ['folder', 'move', 'workspace', 'space', 'mv', 'fld', 'fol'],
+        condition: () => {
+          try {
+            return !!window.gZenFolders && !!window.gZenWorkspaces &&
+              (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1 &&
+              gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0;
+          } catch(e) { return false; }
+        },
+        subFlow: 'move-folder-to-ws-folder-picker' },
 
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
@@ -1797,6 +1907,10 @@
       { key: 'browse:split-view', label: `Split ${tabLabel} into Split View`, icon: '◫', tags: [...browseTags, 'split', 'view', 'side', 'pane'],
         condition: () => { try { return !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4; } catch(e) { return false; } },
         command: () => { splitBrowseTabs(browseCommandTabs); } },
+      { key: 'browse:reload', label: `Reload ${tabLabel}`, icon: '🔄', tags: [...browseTags, 'reload', 'refresh'],
+        command: () => { reloadMatchedTabs(browseCommandTabs); } },
+      { key: 'browse:bookmark', label: `Bookmark ${tabLabel}`, icon: '🔖', tags: [...browseTags, 'bookmark', 'save', 'star'],
+        command: () => { bookmarkMatchedTabs(browseCommandTabs); } },
     ];
   }
 
@@ -2034,6 +2148,14 @@
       case 'browse-folder-picker': return 'Choose a folder...';
       case 'browse-folder-name-input': return 'Enter folder name...';
       case 'sort-picker': return 'Sort by...';
+      case 'change-folder-icon-picker': return 'Select a folder to change icon...';
+      case 'unload-folder-picker': return 'Select a folder to unload tabs...';
+      case 'unload-folder-progress': return 'Unloading...';
+      case 'create-subfolder-picker': return 'Select a parent folder...';
+      case 'folder-to-workspace-picker': return 'Select a folder to convert to workspace...';
+      case 'unpack-folder-picker': return 'Select a folder to unpack...';
+      case 'move-folder-to-ws-folder-picker': return 'Select a folder to move...';
+      case 'move-folder-to-ws-workspace-picker': return 'Select destination workspace...';
       default: return 'Type a command...';
     }
   }
@@ -2118,6 +2240,27 @@
         return getFolderNameInputResults(query);
       case 'sort-picker':
         return getSortPickerResults(query);
+      case 'change-folder-icon-picker':
+        return getFolderPickerForAction(query, '🎨', 'change-icon');
+      case 'unload-folder-picker':
+        return getFolderPickerForAction(query, '💤', 'unload');
+      case 'unload-folder-progress': {
+        const data = commandSubFlow?.data;
+        const count = data?.getCount?.() || 0;
+        const total = data?.total || 0;
+        const done = count >= total;
+        return [{ key: 'unload-progress', label: done ? `Done — unloaded ${total} tab${total !== 1 ? 's' : ''}` : `Unloading... ${count} / ${total}`, icon: done ? '✓' : '💤', tags: [] }];
+      }
+      case 'create-subfolder-picker':
+        return getFolderPickerForAction(query, '📁', 'subfolder');
+      case 'folder-to-workspace-picker':
+        return getFolderPickerForAction(query, '🗂', 'convert');
+      case 'unpack-folder-picker':
+        return getFolderPickerForAction(query, '📦', 'unpack');
+      case 'move-folder-to-ws-folder-picker':
+        return getFolderPickerForAction(query, '🗂', 'move-ws');
+      case 'move-folder-to-ws-workspace-picker':
+        return getMoveToWorkspacePickerResults(query);
       default:
         return [];
     }
@@ -2129,6 +2272,33 @@
       return [{ key: 'folder-name:prompt', label: 'Type a name for the new folder and press Enter', icon: '📁', tags: [] }];
     }
     return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
+  }
+
+  // Generic folder picker for context-menu-parity sub-flows
+  function getFolderPickerForAction(query, icon, actionPrefix) {
+    const results = [];
+    try {
+      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+      for (const folder of folders) {
+        const folderWsId = folder.getAttribute('zen-workspace-id');
+        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
+        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
+        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+        results.push({
+          key: `${actionPrefix}-folder:${folder.id}`,
+          label: name,
+          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+          icon,
+          tags: ['folder', actionPrefix, name.toLowerCase()],
+          folder: folder,
+        });
+      }
+    } catch (e) { log(`Error getting folders for ${actionPrefix}: ${e}`); }
+    if (results.length === 0) {
+      return [{ key: `${actionPrefix}-folder:none`, label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    return fuzzyFilterAndSort(results, query);
   }
 
   function getDeleteFolderPickerResults(query) {
@@ -2728,6 +2898,144 @@
         }
         break;
       }
+
+      // --- Folder context-menu-parity sub-flows ---
+      case 'change-folder-icon-picker':
+        if (result.folder) {
+          const targetFolder = result.folder;
+          exitSearchMode();
+          setTimeout(() => {
+            try {
+              if (typeof gZenFolders?.changeFolderUserIcon === 'function') gZenFolders.changeFolderUserIcon(targetFolder);
+              else log('changeFolderUserIcon not available');
+            } catch(e) { log(`Change folder icon failed: ${e}`); }
+          }, 100);
+        }
+        break;
+
+      case 'unload-folder-picker':
+        if (result.folder) {
+          const targetFolder = result.folder;
+          if (targetFolder) {
+            // Show "Unloading..." sub-flow while tabs are being discarded
+            enterSubFlow('unload-folder-progress', `Unload: ${targetFolder.label || 'folder'}`);
+            const folderTabs = (targetFolder.tabs || []).filter(t =>
+              t && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('pending') && !t.closing
+            );
+            const total = folderTabs.length;
+            let count = 0;
+            // Unload tabs one at a time with a small delay so the UI stays responsive
+            function unloadNext() {
+              if (count < total) {
+                try { gBrowser.discardBrowser(folderTabs[count]); } catch(e) {}
+                count++;
+                renderCommandResults();
+                setTimeout(unloadNext, 50);
+              } else {
+                log(`Unloaded ${count} tabs in folder: ${targetFolder.label || 'folder'}`);
+                exitSearchMode();
+              }
+            }
+            // Store progress state for the sub-flow results to read
+            commandSubFlow.data = { total, getCount: () => count };
+            renderCommandResults();
+            setTimeout(unloadNext, 50);
+          }
+        }
+        break;
+
+      case 'create-subfolder-picker':
+        if (result.folder) {
+          const targetFolder = result.folder;
+          exitSearchMode();
+          setTimeout(() => {
+            try {
+              if (typeof targetFolder.createSubfolder === 'function') targetFolder.createSubfolder();
+              else if (typeof gZenFolders?.createSubfolder === 'function') gZenFolders.createSubfolder(targetFolder);
+              else log('createSubfolder not available');
+            } catch(e) { log(`Create subfolder failed: ${e}`); }
+          }, 100);
+        }
+        break;
+
+      case 'folder-to-workspace-picker':
+        if (result.folder) {
+          const targetFolder = result.folder;
+          if (targetFolder && window.gZenWorkspaces) {
+            (async () => {
+              try {
+                const folderName = targetFolder.label || 'Untitled';
+                const currentWorkspace = gZenWorkspaces.getActiveWorkspaceFromCache();
+                const icon = targetFolder.icon?.querySelector('svg .icon image');
+                let selectedTab = targetFolder.tabs?.find(t => t.selected);
+
+                const newSpace = await gZenWorkspaces.createAndSaveWorkspace(
+                  folderName,
+                  icon?.getAttribute('href'),
+                  false,
+                  currentWorkspace?.containerTabId || 0,
+                  {
+                    beforeChangeCallback: async (newWorkspace) => {
+                      await new Promise((resolve) => {
+                        requestAnimationFrame(async () => {
+                          const wsPinnedContainer = gZenWorkspaces.workspaceElement(newWorkspace.uuid)?.pinnedTabsContainer;
+                          const tabs = (targetFolder.allItems || targetFolder.tabs || []).filter(t => !t.hasAttribute('zen-empty-tab'));
+                          if (wsPinnedContainer) wsPinnedContainer.append(...tabs);
+                          if (typeof targetFolder.delete === 'function') await targetFolder.delete();
+                          gBrowser.tabContainer._invalidateCachedTabs();
+                          if (selectedTab) {
+                            selectedTab.setAttribute('zen-workspace-id', newWorkspace.uuid);
+                            selectedTab.removeAttribute('folder-active');
+                            gZenWorkspaces.lastSelectedWorkspaceTabs[newWorkspace.uuid] = selectedTab;
+                          }
+                          resolve();
+                        });
+                      });
+                    },
+                  }
+                );
+                log(`Converted folder "${folderName}" to workspace`);
+              } catch(e) { log(`Convert folder to workspace failed: ${e}`); }
+            })();
+          }
+        }
+        exitSearchMode();
+        break;
+
+      case 'unpack-folder-picker':
+        if (result.folder) {
+          const targetFolder = result.folder;
+          try {
+            if (typeof targetFolder.unpackTabs === 'function') targetFolder.unpackTabs();
+            else if (typeof gZenFolders?.ungroupTabsFromActiveGroups === 'function') {
+              const tabs = (targetFolder.tabs || []).filter(t => t && !t.hasAttribute('zen-empty-tab'));
+              gZenFolders.ungroupTabsFromActiveGroups(tabs);
+            }
+            log(`Unpacked folder: ${targetFolder.label || 'folder'}`);
+          } catch(e) { log(`Unpack folder failed: ${e}`); }
+        }
+        exitSearchMode();
+        break;
+
+      case 'move-folder-to-ws-folder-picker':
+        if (result.folder) {
+          enterSubFlow('move-folder-to-ws-workspace-picker', `Move: ${result.label}`);
+          commandSubFlow.data = { folder: result.folder, folderName: result.label };
+        }
+        break;
+
+      case 'move-folder-to-ws-workspace-picker':
+        if (result.workspaceId) {
+          const folderData = commandSubFlow?.data;
+          if (folderData?.folder && window.gZenFolders) {
+            try {
+              gZenFolders.changeFolderToSpace(folderData.folder, result.workspaceId);
+              log(`Moved folder "${folderData.folderName}" to workspace`);
+            } catch(e) { log(`Move folder to workspace failed: ${e}`); }
+          }
+        }
+        exitSearchMode();
+        break;
     }
   }
 
@@ -2807,6 +3115,22 @@
       log(`Unloaded ${count} matching tabs`);
     }, S['timing.unloadTabDelay']);
 
+    exitSearchMode();
+  }
+
+  function reloadMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    for (const t of validTabs) gBrowser.reloadTab(t);
+    log(`Reloaded ${validTabs.length} tabs`);
+    exitSearchMode();
+  }
+
+  function bookmarkMatchedTabs(tabs) {
+    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    try {
+      // Use bookmarkTabs() which is the same API the context menu uses
+      PlacesCommandHook.bookmarkTabs(validTabs);
+    } catch(e) { log(`Bookmark tabs failed: ${e}`); }
     exitSearchMode();
   }
 
