@@ -26,6 +26,7 @@
     'keys.global.splitFocusDown':  { default: { key: 'j', code: 'KeyJ', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Down',  description: 'Focus split pane below, or switch to next tab down',      category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Up',    description: 'Focus split pane above, or switch to previous tab up',    category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Right', description: 'Focus split pane right, or switch to next workspace',     category: 'Keybindings', group: 'Global Triggers' },
+    'keys.global.splitResize':     { default: { key: ' ', code: 'Space', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Resize (gTile)', description: 'Open gTile-like grid overlay to resize/move tabs in split view (Alt+Space)', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
 
     // --- Keybindings: Leap Mode ---
@@ -330,6 +331,23 @@
   let settingsSearchQuery = '';
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
+
+  // gTile mode state
+  let gtileMode = false;
+  let gtileOverlay = null;
+  let gtileFocusedTab = null;
+  let gtileSubMode = 'move';         // 'move' or 'resize'
+  let gtileActiveRegionIdx = 0;      // Index into gtileTabRects (move mode)
+  let gtileHeld = false;             // Tab "picked up" in move mode
+  let gtileCursor = { col: 0, row: 0 }; // Cell cursor (resize mode)
+  let gtileSelecting = false;
+  let gtileAnchor = null;            // { col, row } - resize selection start
+  let gtileTabRects = [];            // Tab regions: { tab, left, top, right, bottom, color }
+  let gtileRegionElements = new Map(); // tab -> DOM element (for animated transitions)
+
+  const GTILE_COLS = 6;
+  const GTILE_ROWS = 4;
+  const GTILE_REGION_COLORS = ['blue', 'purple', 'green', 'yellow'];
 
   // Utility: Convert relative distance to display string (always numeric)
   function numberToDisplay(num) {
@@ -1699,57 +1717,31 @@
             window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
         } catch(e) { return false; }
       }},
-      { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '⟳', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
+      { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '\u27F3', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
         try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return;
-          const viewData = splitter._data[splitter.currentView];
-          if (!viewData || !viewData.layoutTree) return;
-
-          const layoutTree = viewData.layoutTree;
-
-          // Check if layout is rotatable (must have a simple direction to toggle)
-          function canRotateTree(node) {
-            if (!node) return false;
-            // A leaf node (no children) can't be rotated
-            if (!node.children || node.children.length === 0) return false;
-            return node.direction === 'row' || node.direction === 'column';
-          }
-
-          function rotateTree(node) {
-            if (!node) return;
-            if (node.direction === 'row') {
-              node.direction = 'column';
-            } else if (node.direction === 'column') {
-              node.direction = 'row';
-            }
-            // Recursively rotate nested layouts
-            if (node.children) {
-              for (const child of node.children) {
-                rotateTree(child);
-              }
-            }
-          }
-
-          if (!canRotateTree(layoutTree)) {
-            log('Layout is not rotatable');
-            return;
-          }
-
-          rotateTree(layoutTree);
-          splitter.activateSplitView(viewData, true);
+          rotateSplitLayout();
         } catch (e) { log(`Split rotate layout failed: ${e}`); }
       }, condition: () => {
         try {
           const splitter = window.gZenViewSplitter;
           if (!splitter?.splitViewActive) return false;
           const viewData = splitter._data[splitter.currentView];
-          if (!viewData?.layoutTree) return false;
-          const lt = viewData.layoutTree;
-          return lt.direction === 'row' || lt.direction === 'column';
+          return !!(viewData?.layoutTree);
         } catch(e) { return false; }
       }},
-      { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '⊡', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
+      { key: 'split-reset-sizes', label: 'Split View: Reset Layout Sizes', icon: '\u2B1C', tags: ['split', 'view', 'reset', 'sizes', 'equal', 'normalize', 'balance'], command: () => {
+        try {
+          resetLayoutSizes();
+        } catch (e) { log(`Split reset sizes failed: ${e}`); }
+      }, condition: () => {
+        try {
+          const splitter = window.gZenViewSplitter;
+          if (!splitter?.splitViewActive) return false;
+          const viewData = splitter._data[splitter.currentView];
+          return !!(viewData?.layoutTree);
+        } catch(e) { return false; }
+      }},
+      { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
         try {
           const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
           if (container) window.gZenViewSplitter.removeTabFromSplit(container);
@@ -1759,6 +1751,14 @@
           if (!window.gZenViewSplitter?.splitViewActive) return false;
           const viewData = window.gZenViewSplitter._data[window.gZenViewSplitter.currentView];
           return viewData?.tabs?.includes(gBrowser.selectedTab);
+        } catch(e) { return false; }
+      }},
+      { key: 'split-resize-gtile', label: 'Split View: Resize (gTile)', icon: '\u25A6', tags: ['split', 'view', 'resize', 'gtile', 'grid', 'tile', 'move', 'layout'], command: () => {
+        enterGtileMode();
+      }, condition: () => {
+        try {
+          return window.gZenViewSplitter?.splitViewActive &&
+            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
         } catch(e) { return false; }
       }},
 
@@ -4772,6 +4772,1203 @@
     } catch (e) { log(`Quick workspace switch failed: ${e}`); }
   }
 
+  // ============================================
+  // GTILE MODE (Split View Resize Overlay)
+  // ============================================
+
+  function getNodeClasses() {
+    const splitter = window.gZenViewSplitter;
+    const viewData = splitter._data[splitter.currentView];
+    if (!viewData?.layoutTree) return null;
+
+    const SplitNode = viewData.layoutTree.constructor;
+    let LeafNode = null;
+    function findLeaf(node) {
+      if (!node.children) { LeafNode = node.constructor; return; }
+      for (const child of node.children) {
+        findLeaf(child);
+        if (LeafNode) return;
+      }
+    }
+    findLeaf(viewData.layoutTree);
+    if (!LeafNode) return null;
+    return { SplitNode, LeafNode };
+  }
+
+  function createGtileOverlay() {
+    if (gtileOverlay) return;
+
+    gtileOverlay = document.createElement('div');
+    gtileOverlay.id = 'zenleap-gtile-overlay';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-gtile-backdrop';
+    backdrop.addEventListener('click', () => exitGtileMode(false));
+
+    const panel = document.createElement('div');
+    panel.id = 'zenleap-gtile-panel';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'zenleap-gtile-header';
+
+    const title = document.createElement('div');
+    title.className = 'zenleap-gtile-title';
+    title.textContent = 'Split Layout';
+
+    const modeSwitch = document.createElement('div');
+    modeSwitch.className = 'zenleap-gtile-mode-switch';
+
+    const slider = document.createElement('div');
+    slider.className = 'zenleap-gtile-mode-slider';
+
+    const moveBtn = document.createElement('div');
+    moveBtn.className = 'gtile-mode-btn active';
+    moveBtn.dataset.mode = 'move';
+    moveBtn.textContent = 'Move';
+
+    const resizeBtn = document.createElement('div');
+    resizeBtn.className = 'gtile-mode-btn';
+    resizeBtn.dataset.mode = 'resize';
+    resizeBtn.textContent = 'Resize';
+
+    modeSwitch.appendChild(slider);
+    modeSwitch.appendChild(moveBtn);
+    modeSwitch.appendChild(resizeBtn);
+
+    // Resize target info (shown in resize mode, replaces title)
+    const targetInfo = document.createElement('div');
+    targetInfo.className = 'zenleap-gtile-target-info';
+
+    const targetDot = document.createElement('div');
+    targetDot.className = 'gtile-target-dot';
+    const targetLabel = document.createElement('div');
+    targetLabel.className = 'gtile-target-label';
+    targetLabel.textContent = 'Resizing';
+    const targetName = document.createElement('div');
+    targetName.className = 'gtile-target-name';
+
+    targetInfo.appendChild(targetDot);
+    targetInfo.appendChild(targetLabel);
+    targetInfo.appendChild(targetName);
+
+    header.appendChild(title);
+    header.appendChild(targetInfo);
+    header.appendChild(modeSwitch);
+
+    // Grid
+    const grid = document.createElement('div');
+    grid.id = 'zenleap-gtile-grid';
+
+    // Cell layer (visible in resize mode)
+    const cellLayer = document.createElement('div');
+    cellLayer.className = 'zenleap-gtile-cell-layer';
+
+    for (let r = 0; r < GTILE_ROWS; r++) {
+      for (let c = 0; c < GTILE_COLS; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'zenleap-gtile-cell';
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+        cellLayer.appendChild(cell);
+      }
+    }
+
+    // Selection rect overlay
+    const sel = document.createElement('div');
+    sel.className = 'zenleap-gtile-sel';
+
+    grid.appendChild(cellLayer);
+    grid.appendChild(sel);
+
+    // Hints bar
+    const hints = document.createElement('div');
+    hints.id = 'zenleap-gtile-hints';
+
+    panel.appendChild(header);
+    panel.appendChild(grid);
+    panel.appendChild(hints);
+
+    gtileOverlay.appendChild(backdrop);
+    gtileOverlay.appendChild(panel);
+
+    document.documentElement.appendChild(gtileOverlay);
+    log('gTile overlay created');
+  }
+
+  function enterGtileMode() {
+    if (gtileMode) return;
+
+    const splitter = window.gZenViewSplitter;
+    if (!splitter?.splitViewActive) return;
+
+    const viewData = splitter._data[splitter.currentView];
+    if (!viewData?.tabs || viewData.tabs.length < 2) return;
+
+    // Exit other modes
+    if (leapMode) exitLeapMode(false);
+    if (searchMode) exitSearchMode();
+    if (helpMode) exitHelpMode();
+    if (settingsMode) exitSettingsMode();
+
+    createGtileOverlay();
+
+    gtileMode = true;
+    gtileFocusedTab = gBrowser.selectedTab;
+    gtileSubMode = 'move';
+    gtileHeld = false;
+    gtileSelecting = false;
+    gtileAnchor = null;
+    gtileCursor = { col: 0, row: 0 };
+
+    // Map current tab positions to proportional regions
+    mapCurrentLayoutToGrid(viewData);
+
+    // Set active region to the focused tab
+    gtileActiveRegionIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
+    if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
+
+    gtileOverlay.classList.add('active', 'mode-move');
+    gtileOverlay.classList.remove('mode-resize');
+    updateGtileOverlay();
+
+    log('Entered gTile mode (move)');
+  }
+
+  function exitGtileMode(apply) {
+    if (!gtileMode) return;
+
+    if (apply && gtileSubMode === 'resize') {
+      applyGtileLayout();
+    }
+
+    gtileMode = false;
+    gtileOverlay.classList.remove('active', 'mode-move', 'mode-resize');
+    gtileFocusedTab = null;
+    gtileTabRects = [];
+    gtileSelecting = false;
+    gtileAnchor = null;
+    gtileHeld = false;
+
+    // Remove region elements
+    for (const el of gtileRegionElements.values()) {
+      el.remove();
+    }
+    gtileRegionElements.clear();
+
+    log('Exited gTile mode');
+  }
+
+  function mapCurrentLayoutToGrid(viewData) {
+    gtileTabRects = [];
+    const splitter = window.gZenViewSplitter;
+
+    for (let i = 0; i < viewData.tabs.length; i++) {
+      const tab = viewData.tabs[i];
+      const node = splitter.getSplitNodeFromTab(tab);
+      if (!node?.positionToRoot) continue;
+
+      const pos = node.positionToRoot;
+      gtileTabRects.push({
+        tab,
+        left: pos.left,
+        top: pos.top,
+        right: pos.right,
+        bottom: pos.bottom,
+        color: GTILE_REGION_COLORS[i % GTILE_REGION_COLORS.length],
+      });
+    }
+  }
+
+  function updateGtileOverlay() {
+    if (!gtileOverlay) return;
+
+    const grid = gtileOverlay.querySelector('#zenleap-gtile-grid');
+    const hints = gtileOverlay.querySelector('#zenleap-gtile-hints');
+    const cellLayer = grid.querySelector('.zenleap-gtile-cell-layer');
+
+    // --- Update mode button classes ---
+    gtileOverlay.querySelectorAll('.gtile-mode-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === gtileSubMode);
+    });
+
+    // --- Sync region elements (keyed by tab for smooth transitions) ---
+    const currentTabs = new Set(gtileTabRects.map(r => r.tab));
+
+    // Remove stale elements
+    for (const [tab, el] of gtileRegionElements) {
+      if (!currentTabs.has(tab)) {
+        el.remove();
+        gtileRegionElements.delete(tab);
+      }
+    }
+
+    // Create or update region elements
+    for (let i = 0; i < gtileTabRects.length; i++) {
+      const rect = gtileTabRects[i];
+      let region = gtileRegionElements.get(rect.tab);
+
+      if (!region) {
+        region = document.createElement('div');
+        region.className = 'zenleap-gtile-region';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'gtile-region-title';
+        const badgeEl = document.createElement('div');
+        badgeEl.className = 'gtile-region-badge';
+
+        region.appendChild(titleEl);
+        region.appendChild(badgeEl);
+        grid.insertBefore(region, cellLayer);
+        gtileRegionElements.set(rect.tab, region);
+      }
+
+      // Update position (CSS transitions handle animation)
+      const gap = 2;
+      region.style.inset = `calc(${rect.top}% + ${gap}px) calc(${rect.right}% + ${gap}px) calc(${rect.bottom}% + ${gap}px) calc(${rect.left}% + ${gap}px)`;
+      region.dataset.color = rect.color;
+
+      // Update active/held/resize-target state
+      region.classList.toggle('gtile-active', gtileSubMode === 'move' && i === gtileActiveRegionIdx);
+      region.classList.toggle('gtile-held', gtileSubMode === 'move' && i === gtileActiveRegionIdx && gtileHeld);
+      region.classList.toggle('gtile-resize-target', gtileSubMode === 'resize' && rect.tab === gtileFocusedTab);
+
+      // Update text
+      region.querySelector('.gtile-region-title').textContent = rect.tab.label?.substring(0, 30) || 'Tab';
+      const w = Math.round(100 - rect.left - rect.right);
+      const h = Math.round(100 - rect.top - rect.bottom);
+      region.querySelector('.gtile-region-badge').textContent = `${w}% \u00D7 ${h}%`;
+    }
+
+    // --- Resize target info (header) ---
+    const targetInfoEl = gtileOverlay.querySelector('.zenleap-gtile-target-info');
+    if (targetInfoEl && gtileSubMode === 'resize' && gtileFocusedTab) {
+      const targetRect = gtileTabRects.find(r => r.tab === gtileFocusedTab);
+      const colorMap = { blue: '#61afef', purple: '#c678dd', green: '#98c379', yellow: '#e5c07b' };
+      const hue = targetRect ? colorMap[targetRect.color] || '#61afef' : '#61afef';
+      targetInfoEl.querySelector('.gtile-target-dot').style.setProperty('--target-hue', hue);
+      targetInfoEl.querySelector('.gtile-target-name').textContent = gtileFocusedTab.label || 'Tab';
+    }
+
+    // --- Cell layer (resize mode) ---
+    const cells = grid.querySelectorAll('.zenleap-gtile-cell');
+    const sel = grid.querySelector('.zenleap-gtile-sel');
+
+    if (gtileSubMode === 'resize') {
+      // Reset cells
+      cells.forEach(cell => { cell.className = 'zenleap-gtile-cell'; });
+
+      // Cursor
+      const cursorIdx = gtileCursor.row * GTILE_COLS + gtileCursor.col;
+      if (cursorIdx >= 0 && cursorIdx < cells.length) {
+        cells[cursorIdx].classList.add('gtile-cursor');
+      }
+
+      // Selection
+      if (gtileSelecting && gtileAnchor) {
+        const c1 = Math.min(gtileAnchor.col, gtileCursor.col);
+        const r1 = Math.min(gtileAnchor.row, gtileCursor.row);
+        const c2 = Math.max(gtileAnchor.col, gtileCursor.col);
+        const r2 = Math.max(gtileAnchor.row, gtileCursor.row);
+
+        for (let r = r1; r <= r2; r++) {
+          for (let c = c1; c <= c2; c++) {
+            const idx = r * GTILE_COLS + c;
+            if (idx >= 0 && idx < cells.length) {
+              cells[idx].classList.add('gtile-selected');
+            }
+          }
+        }
+
+        // Position selection rect overlay
+        if (sel) {
+          sel.classList.add('visible');
+          sel.style.top = `${r1 / GTILE_ROWS * 100}%`;
+          sel.style.left = `${c1 / GTILE_COLS * 100}%`;
+          sel.style.bottom = `${(GTILE_ROWS - r2 - 1) / GTILE_ROWS * 100}%`;
+          sel.style.right = `${(GTILE_COLS - c2 - 1) / GTILE_COLS * 100}%`;
+        }
+      } else if (sel) {
+        sel.classList.remove('visible');
+      }
+    } else {
+      // Move mode — reset cell layer
+      cells.forEach(cell => { cell.className = 'zenleap-gtile-cell'; });
+      if (sel) sel.classList.remove('visible');
+    }
+
+    // --- Update hints ---
+    if (hints) {
+      if (gtileSubMode === 'move') {
+        hints.innerHTML = gtileHeld
+          ? '<span><kbd>hjkl</kbd> swap</span><span><kbd>Enter</kbd> drop</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Esc</kbd> close</span>'
+          : '<span><kbd>hjkl</kbd> navigate</span><span><kbd>\u21E7hjkl</kbd> swap</span><span><kbd>Enter</kbd> grab</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>Tab</kbd> resize</span><span><kbd>Esc</kbd> close</span>';
+      } else {
+        hints.innerHTML = gtileSelecting
+          ? '<span><kbd>hjkl</kbd> extend</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
+          : '<span><kbd>\u21E7hjkl</kbd> target</span><span><kbd>hjkl</kbd> cursor</span><span><kbd>Enter</kbd> anchor</span><span><kbd>r</kbd> rotate</span><span><kbd>R</kbd> reset</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+      }
+    }
+  }
+
+  function handleGtileKeyDown(event) {
+    const key = event.key.toLowerCase();
+    const code = event.code;
+
+    // Tab — toggle sub-mode
+    if (key === 'tab') {
+      if (gtileSubMode === 'move') {
+        gtileSubMode = 'resize';
+        gtileOverlay.classList.remove('mode-move');
+        gtileOverlay.classList.add('mode-resize');
+        gtileHeld = false;
+        // Set focused tab to active region's tab for resize
+        const activeRect = gtileTabRects[gtileActiveRegionIdx];
+        if (activeRect) {
+          gtileFocusedTab = activeRect.tab;
+          // Position cell cursor at center of that region
+          const cx = (activeRect.left + (100 - activeRect.right)) / 2;
+          const cy = (activeRect.top + (100 - activeRect.bottom)) / 2;
+          gtileCursor.col = Math.max(0, Math.min(GTILE_COLS - 1, Math.round(cx / 100 * GTILE_COLS - 0.5)));
+          gtileCursor.row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.round(cy / 100 * GTILE_ROWS - 0.5)));
+        }
+        gtileSelecting = false;
+        gtileAnchor = null;
+      } else {
+        gtileSubMode = 'move';
+        gtileOverlay.classList.remove('mode-resize');
+        gtileOverlay.classList.add('mode-move');
+        gtileSelecting = false;
+        gtileAnchor = null;
+      }
+      updateGtileOverlay();
+      return true;
+    }
+
+    // Escape
+    if (key === 'escape') {
+      if (gtileSubMode === 'resize' && gtileSelecting) {
+        gtileSelecting = false;
+        gtileAnchor = null;
+        updateGtileOverlay();
+      } else if (gtileSubMode === 'move' && gtileHeld) {
+        gtileHeld = false;
+        updateGtileOverlay();
+      } else {
+        exitGtileMode(false);
+      }
+      return true;
+    }
+
+    if (gtileSubMode === 'move') {
+      return handleGtileMoveMode(event, key, code);
+    } else {
+      return handleGtileResizeMode(event, key, code);
+    }
+  }
+
+  function handleGtileMoveMode(event, key, code) {
+    let dir = null;
+    if (key === 'h' || key === 'arrowleft' || code === 'KeyH') dir = 'left';
+    else if (key === 'l' || key === 'arrowright' || code === 'KeyL') dir = 'right';
+    else if (key === 'k' || key === 'arrowup' || code === 'KeyK') dir = 'up';
+    else if (key === 'j' || key === 'arrowdown' || code === 'KeyJ') dir = 'down';
+
+    if (dir) {
+      if (event.shiftKey || gtileHeld) {
+        performGtileSwap(dir);
+      } else {
+        const neighborIdx = findGtileNeighbor(dir);
+        if (neighborIdx >= 0) {
+          gtileActiveRegionIdx = neighborIdx;
+          updateGtileOverlay();
+        }
+      }
+      return true;
+    }
+
+    // R (shift+r): reset layout sizes
+    if (event.shiftKey && (key === 'r' || code === 'KeyR')) {
+      handleGtileReset();
+      return true;
+    }
+
+    // r: rotate layout
+    if (key === 'r' || code === 'KeyR') {
+      handleGtileRotate();
+      return true;
+    }
+
+    // Enter/Space: toggle held (grab/drop)
+    if (key === 'enter' || key === ' ') {
+      gtileHeld = !gtileHeld;
+      updateGtileOverlay();
+      return true;
+    }
+
+    // Number presets → switch to resize mode
+    if (key >= '1' && key <= '9') {
+      gtileSubMode = 'resize';
+      gtileOverlay.classList.remove('mode-move');
+      gtileOverlay.classList.add('mode-resize');
+      gtileHeld = false;
+      const activeRect = gtileTabRects[gtileActiveRegionIdx];
+      if (activeRect) gtileFocusedTab = activeRect.tab;
+      const preset = getGtilePreset(parseInt(key));
+      if (preset) {
+        gtileAnchor = { col: preset.col1, row: preset.row1 };
+        gtileCursor.col = preset.col2 - 1;
+        gtileCursor.row = preset.row2 - 1;
+        gtileSelecting = true;
+        updateGtileOverlay();
+      }
+      return true;
+    }
+
+    return true; // Swallow all keys
+  }
+
+  function handleGtileResizeMode(event, key, code) {
+    // Shift+R: reset layout sizes (must be before shift catch-all)
+    if (event.shiftKey && (key === 'r' || code === 'KeyR') && !gtileSelecting) {
+      handleGtileReset();
+      return true;
+    }
+
+    // Shift+direction: switch resize target to adjacent tab
+    if (event.shiftKey) {
+      let dir = null;
+      if (key === 'h' || key === 'arrowleft' || code === 'KeyH') dir = 'left';
+      else if (key === 'l' || key === 'arrowright' || code === 'KeyL') dir = 'right';
+      else if (key === 'k' || key === 'arrowup' || code === 'KeyK') dir = 'up';
+      else if (key === 'j' || key === 'arrowdown' || code === 'KeyJ') dir = 'down';
+
+      if (dir) {
+        switchGtileResizeTarget(dir);
+        return true;
+      }
+      // Shift held with non-direction key — swallow without action
+      return true;
+    }
+
+    // Movement (cursor)
+    let moved = false;
+    if (key === 'h' || key === 'arrowleft' || code === 'KeyH') {
+      if (gtileCursor.col > 0) { gtileCursor.col--; moved = true; }
+    } else if (key === 'l' || key === 'arrowright' || code === 'KeyL') {
+      if (gtileCursor.col < GTILE_COLS - 1) { gtileCursor.col++; moved = true; }
+    } else if (key === 'k' || key === 'arrowup' || code === 'KeyK') {
+      if (gtileCursor.row > 0) { gtileCursor.row--; moved = true; }
+    } else if (key === 'j' || key === 'arrowdown' || code === 'KeyJ') {
+      if (gtileCursor.row < GTILE_ROWS - 1) { gtileCursor.row++; moved = true; }
+    }
+
+    if (moved) {
+      updateGtileOverlay();
+      return true;
+    }
+
+    // r: rotate layout (not during active selection)
+    if ((key === 'r' || code === 'KeyR') && !gtileSelecting) {
+      handleGtileRotate();
+      return true;
+    }
+
+    // Enter/Space — anchor or confirm
+    if (key === 'enter' || key === ' ') {
+      if (!gtileSelecting) {
+        gtileSelecting = true;
+        gtileAnchor = { col: gtileCursor.col, row: gtileCursor.row };
+        updateGtileOverlay();
+      } else {
+        exitGtileMode(true);
+      }
+      return true;
+    }
+
+    // Number presets
+    if (key >= '1' && key <= '9') {
+      const preset = getGtilePreset(parseInt(key));
+      if (preset) {
+        gtileAnchor = { col: preset.col1, row: preset.row1 };
+        gtileCursor.col = preset.col2 - 1;
+        gtileCursor.row = preset.row2 - 1;
+        gtileSelecting = true;
+        updateGtileOverlay();
+      }
+      return true;
+    }
+
+    return true; // Swallow all keys
+  }
+
+  function findGtileNeighbor(direction) {
+    if (gtileTabRects.length === 0) return -1;
+    const active = gtileTabRects[gtileActiveRegionIdx];
+    if (!active) return -1;
+
+    const ax = active.left + (100 - active.left - active.right) / 2;
+    const ay = active.top + (100 - active.top - active.bottom) / 2;
+    const aL = active.left;
+    const aR = 100 - active.right;
+    const aT = active.top;
+    const aB = 100 - active.bottom;
+
+    let bestIdx = -1;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < gtileTabRects.length; i++) {
+      if (i === gtileActiveRegionIdx) continue;
+      const r = gtileTabRects[i];
+      const rx = r.left + (100 - r.left - r.right) / 2;
+      const ry = r.top + (100 - r.top - r.bottom) / 2;
+      const rL = r.left;
+      const rR = 100 - r.right;
+      const rT = r.top;
+      const rB = 100 - r.bottom;
+
+      let valid = false;
+      let dist = 0;
+
+      if (direction === 'right' && rx > ax) {
+        if (rB > aT + 1 && rT < aB - 1) { valid = true; dist = rx - ax; }
+      } else if (direction === 'left' && rx < ax) {
+        if (rB > aT + 1 && rT < aB - 1) { valid = true; dist = ax - rx; }
+      } else if (direction === 'down' && ry > ay) {
+        if (rR > aL + 1 && rL < aR - 1) { valid = true; dist = ry - ay; }
+      } else if (direction === 'up' && ry < ay) {
+        if (rR > aL + 1 && rL < aR - 1) { valid = true; dist = ay - ry; }
+      }
+
+      if (valid && dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+
+    return bestIdx;
+  }
+
+  function performGtileSwap(direction) {
+    const neighborIdx = findGtileNeighbor(direction);
+    if (neighborIdx < 0) return;
+
+    const splitter = window.gZenViewSplitter;
+    if (!splitter) return;
+
+    const activeRect = gtileTabRects[gtileActiveRegionIdx];
+    const neighborRect = gtileTabRects[neighborIdx];
+
+    const node1 = splitter.getSplitNodeFromTab(activeRect.tab);
+    const node2 = splitter.getSplitNodeFromTab(neighborRect.tab);
+    if (!node1 || !node2) return;
+
+    // Swap nodes in the split tree
+    splitter.swapNodes(node1, node2);
+
+    // Re-apply layout to update browser positions
+    const viewData = splitter._data[splitter.currentView];
+    splitter.applyGridLayout(viewData.layoutTree);
+
+    // Re-map regions from updated layout
+    const activeTab = activeRect.tab;
+    mapCurrentLayoutToGrid(viewData);
+
+    // Follow the active tab
+    gtileActiveRegionIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
+    if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
+
+    updateGtileOverlay();
+  }
+
+  function switchGtileResizeTarget(direction) {
+    // Find the focused tab's index in gtileTabRects
+    const currentIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
+    if (currentIdx < 0) return;
+
+    // Temporarily set activeRegionIdx to current target so findGtileNeighbor works
+    const savedIdx = gtileActiveRegionIdx;
+    gtileActiveRegionIdx = currentIdx;
+    const neighborIdx = findGtileNeighbor(direction);
+    gtileActiveRegionIdx = savedIdx;
+
+    if (neighborIdx < 0) return;
+
+    // Switch resize target
+    gtileFocusedTab = gtileTabRects[neighborIdx].tab;
+    // Reset selection when switching target
+    gtileSelecting = false;
+    gtileAnchor = null;
+    updateGtileOverlay();
+  }
+
+  // --- Split Layout Rotation ---
+  // Cycles through 4 arrangements for 3-tab layouts:
+  //   1. row: [single, col:[a,b]]  — left single, right stacked
+  //   2. row: [col:[a,b], single]  — right single, left stacked
+  //   3. col: [single, row:[a,b]]  — top single, bottom side-by-side
+  //   4. col: [row:[a,b], single]  — bottom single, top side-by-side
+  // For 2 tabs: toggles row ↔ column direction.
+  function rotateSplitLayout() {
+    const splitter = window.gZenViewSplitter;
+    if (!splitter?.splitViewActive) return false;
+
+    const viewData = splitter._data[splitter.currentView];
+    if (!viewData?.layoutTree) return false;
+
+    const root = viewData.layoutTree;
+    const tabs = viewData.tabs;
+    if (!tabs || tabs.length < 2) return false;
+
+    // 2 tabs: simple direction toggle
+    if (tabs.length === 2) {
+      if (root.direction === 'row') {
+        root.direction = 'column';
+      } else if (root.direction === 'column') {
+        root.direction = 'row';
+      }
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      splitter.applyGridLayout(root);
+      return true;
+    }
+
+    // 3 tabs: cycle through 6 arrangements
+    // 0: left single  | right 2 stacked vertically   (root=row, [leaf, col])
+    // 1: right single | left 2 stacked vertically     (root=row, [col, leaf])
+    // 2: top single   | bottom 2 side-by-side         (root=column, [leaf, row])
+    // 3: bottom single| top 2 side-by-side            (root=column, [row, leaf])
+    // 4: 3 vertical columns                           (root=row, [leaf, leaf, leaf])
+    // 5: 3 horizontal rows                            (root=column, [leaf, leaf, leaf])
+    if (tabs.length === 3) {
+      const classes = getNodeClasses();
+      if (!classes) return false;
+
+      // Collect all 3 tabs in current visual order (left-to-right / top-to-bottom)
+      let allTabs = [];
+      function collectTabs(node) {
+        if (!node) return;
+        if (!node.children || node.children.length === 0) {
+          if (node.tab) allTabs.push(node.tab);
+        } else {
+          node.children.forEach(collectTabs);
+        }
+      }
+      collectTabs(root);
+      if (allTabs.length !== 3) return false;
+
+      // Detect current position and identify single/pair tabs
+      let pos;
+      let singleTab = null;
+      let pairTabs = [];
+      const isAllLeaves = root.children?.length === 3 &&
+        root.children.every(c => !c.children || c.children.length === 0);
+
+      if (isAllLeaves) {
+        pos = root.direction === 'row' ? 4 : 5;
+      } else if (root.children?.length === 2) {
+        const [first, second] = root.children;
+        const firstIsLeaf = !first.children || first.children.length === 0;
+        const secondIsLeaf = !second.children || second.children.length === 0;
+
+        if (firstIsLeaf && !secondIsLeaf) {
+          singleTab = first.tab;
+          pairTabs = second.children.filter(c => c.tab).map(c => c.tab);
+        } else if (!firstIsLeaf && secondIsLeaf) {
+          singleTab = second.tab;
+          pairTabs = first.children.filter(c => c.tab).map(c => c.tab);
+        }
+
+        if (root.direction === 'row' && firstIsLeaf) pos = 0;
+        else if (root.direction === 'row' && !firstIsLeaf) pos = 1;
+        else if (root.direction === 'column' && firstIsLeaf) pos = 2;
+        else pos = 3;
+      } else {
+        pos = -1; // unknown layout, start from 0
+      }
+
+      const nextPos = (pos + 1) % 6;
+      const size3 = parseFloat((100 / 3).toFixed(4));
+
+      let newRoot;
+      if (nextPos === 4) {
+        // 3 vertical columns
+        newRoot = new classes.SplitNode('row', 100);
+        newRoot.children = [
+          new classes.LeafNode(allTabs[0], size3),
+          new classes.LeafNode(allTabs[1], size3),
+          new classes.LeafNode(allTabs[2], size3),
+        ];
+      } else if (nextPos === 5) {
+        // 3 horizontal rows
+        newRoot = new classes.SplitNode('column', 100);
+        newRoot.children = [
+          new classes.LeafNode(allTabs[0], size3),
+          new classes.LeafNode(allTabs[1], size3),
+          new classes.LeafNode(allTabs[2], size3),
+        ];
+      } else {
+        // Positions 0-3: single + pair arrangements
+        // Preserve single tab identity across rotations; fall back to first tab
+        if (!singleTab || pairTabs.length !== 2) {
+          singleTab = allTabs[0];
+          pairTabs = [allTabs[1], allTabs[2]];
+        }
+
+        const singleLeaf = new classes.LeafNode(singleTab, 50);
+        const pairLeafA = new classes.LeafNode(pairTabs[0], 50);
+        const pairLeafB = new classes.LeafNode(pairTabs[1], 50);
+
+        const pairDir = (nextPos <= 1) ? 'column' : 'row';
+        const rootDir = (nextPos <= 1) ? 'row' : 'column';
+        const singleFirst = (nextPos === 0 || nextPos === 2);
+
+        const pairNode = new classes.SplitNode(pairDir, 50);
+        pairNode.children = [pairLeafA, pairLeafB];
+
+        newRoot = new classes.SplitNode(rootDir, 100);
+        newRoot.children = singleFirst
+          ? [singleLeaf, pairNode]
+          : [pairNode, singleLeaf];
+      }
+
+      // Apply
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      viewData.layoutTree = newRoot;
+      splitter.applyGridLayout(newRoot);
+      return true;
+    }
+
+    // 4+ tabs: cycle through toggle + all-columns + all-rows
+    // Detect if all children are direct leaves of root
+    const classes4 = getNodeClasses();
+    if (!classes4) return false;
+
+    let allTabs4 = [];
+    function collectTabs4(node) {
+      if (!node) return;
+      if (!node.children || node.children.length === 0) {
+        if (node.tab) allTabs4.push(node.tab);
+      } else {
+        node.children.forEach(collectTabs4);
+      }
+    }
+    collectTabs4(root);
+    if (allTabs4.length < 2) return false;
+
+    const isAllLeaves4 = root.children?.length === allTabs4.length &&
+      root.children.every(c => !c.children || c.children.length === 0);
+
+    const size4 = parseFloat((100 / allTabs4.length).toFixed(4));
+
+    if (isAllLeaves4 && root.direction === 'row') {
+      // Currently all-columns → next is all-rows
+      const newRoot = new classes4.SplitNode('column', 100);
+      newRoot.children = allTabs4.map(t => new classes4.LeafNode(t, size4));
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      viewData.layoutTree = newRoot;
+      splitter.applyGridLayout(newRoot);
+    } else if (isAllLeaves4 && root.direction === 'column') {
+      // Currently all-rows → next is toggle directions (back to nested layout)
+      // Rebuild as default 2x2 grid (row of two columns)
+      const half = Math.ceil(allTabs4.length / 2);
+      const leftTabs = allTabs4.slice(0, half);
+      const rightTabs = allTabs4.slice(half);
+
+      const leftNode = new classes4.SplitNode('column', 50);
+      leftNode.children = leftTabs.map(t => new classes4.LeafNode(t, parseFloat((100 / leftTabs.length).toFixed(4))));
+      const rightNode = new classes4.SplitNode('column', 50);
+      rightNode.children = rightTabs.map(t => new classes4.LeafNode(t, parseFloat((100 / rightTabs.length).toFixed(4))));
+
+      const newRoot = new classes4.SplitNode('row', 100);
+      newRoot.children = [leftNode, rightNode];
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      viewData.layoutTree = newRoot;
+      splitter.applyGridLayout(newRoot);
+    } else {
+      // Nested layout → next is all-columns
+      const newRoot = new classes4.SplitNode('row', 100);
+      newRoot.children = allTabs4.map(t => new classes4.LeafNode(t, size4));
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      viewData.layoutTree = newRoot;
+      splitter.applyGridLayout(newRoot);
+    }
+    return true;
+  }
+
+  function flashGtileRotate() {
+    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
+    if (grid) {
+      grid.classList.remove('gtile-rotated');
+      // Force reflow to restart animation
+      void grid.offsetWidth;
+      grid.classList.add('gtile-rotated');
+      setTimeout(() => grid.classList.remove('gtile-rotated'), 400);
+    }
+  }
+
+  function handleGtileRotate() {
+    if (rotateSplitLayout()) {
+      // Re-map regions from updated layout
+      const splitter = window.gZenViewSplitter;
+      const viewData = splitter._data[splitter.currentView];
+      mapCurrentLayoutToGrid(viewData);
+
+      // Maintain active region / focused tab across rotation
+      if (gtileSubMode === 'move') {
+        const activeTab = gtileTabRects[gtileActiveRegionIdx]?.tab;
+        if (activeTab) {
+          const newIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
+          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
+        }
+      } else if (gtileSubMode === 'resize') {
+        // Reset selection state — cell coordinates are meaningless after layout change
+        gtileSelecting = false;
+        gtileAnchor = null;
+        gtileCursor = { col: 0, row: 0 };
+
+        // Re-find focused tab in new region order
+        if (gtileFocusedTab) {
+          const newIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
+          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
+        }
+      }
+
+      updateGtileOverlay();
+      flashGtileRotate();
+    }
+  }
+
+  function resetLayoutSizes() {
+    const splitter = window.gZenViewSplitter;
+    if (!splitter?.splitViewActive) return false;
+
+    const viewData = splitter._data[splitter.currentView];
+    if (!viewData?.layoutTree) return false;
+
+    function normalizeSizes(node) {
+      if (!node.children || node.children.length === 0) return;
+      const equalSize = parseFloat((100 / node.children.length).toFixed(4));
+      for (const child of node.children) {
+        child.sizeInParent = equalSize;
+        normalizeSizes(child);
+      }
+    }
+    normalizeSizes(viewData.layoutTree);
+
+    splitter.removeSplitters();
+    splitter.applyGridLayout(viewData.layoutTree);
+    return true;
+  }
+
+  function flashGtileReset() {
+    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
+    if (grid) {
+      grid.classList.remove('gtile-reset');
+      void grid.offsetWidth;
+      grid.classList.add('gtile-reset');
+      setTimeout(() => grid.classList.remove('gtile-reset'), 400);
+    }
+  }
+
+  function handleGtileReset() {
+    if (resetLayoutSizes()) {
+      const splitter = window.gZenViewSplitter;
+      const viewData = splitter._data[splitter.currentView];
+      mapCurrentLayoutToGrid(viewData);
+
+      if (gtileSubMode === 'move') {
+        const activeTab = gtileTabRects[gtileActiveRegionIdx]?.tab;
+        if (activeTab) {
+          const newIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
+          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
+        }
+      } else if (gtileSubMode === 'resize') {
+        gtileSelecting = false;
+        gtileAnchor = null;
+        gtileCursor = { col: 0, row: 0 };
+        if (gtileFocusedTab) {
+          const newIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
+          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
+        }
+      }
+
+      updateGtileOverlay();
+      flashGtileReset();
+    }
+  }
+
+  function getGtilePreset(num) {
+    switch (num) {
+      case 1: return { col1: 0, row1: 0, col2: 3, row2: GTILE_ROWS }; // left half
+      case 2: return { col1: 3, row1: 0, col2: GTILE_COLS, row2: GTILE_ROWS }; // right half
+      case 3: return { col1: 0, row1: 0, col2: GTILE_COLS, row2: 2 }; // top half
+      case 4: return { col1: 0, row1: 2, col2: GTILE_COLS, row2: GTILE_ROWS }; // bottom half
+      case 5: return { col1: 0, row1: 0, col2: 4, row2: GTILE_ROWS }; // left 2/3
+      case 6: return { col1: 2, row1: 0, col2: GTILE_COLS, row2: GTILE_ROWS }; // right 2/3
+      case 7: return { col1: 0, row1: 0, col2: 2, row2: GTILE_ROWS }; // left 1/3
+      case 8: return { col1: 2, row1: 0, col2: 4, row2: GTILE_ROWS }; // center 1/3
+      case 9: return { col1: 4, row1: 0, col2: GTILE_COLS, row2: GTILE_ROWS }; // right 1/3
+      default: return null;
+    }
+  }
+
+  // --- gTile Layout Application ---
+
+  function applyGtileLayout() {
+    if (!gtileAnchor || !gtileFocusedTab) return;
+
+    const splitter = window.gZenViewSplitter;
+    if (!splitter?.splitViewActive) return;
+
+    const viewData = splitter._data[splitter.currentView];
+    if (!viewData?.tabs) return;
+
+    // Get selected rectangle for the focused tab
+    const selCol1 = Math.min(gtileAnchor.col, gtileCursor.col);
+    const selRow1 = Math.min(gtileAnchor.row, gtileCursor.row);
+    const selCol2 = Math.max(gtileAnchor.col, gtileCursor.col) + 1;
+    const selRow2 = Math.max(gtileAnchor.row, gtileCursor.row) + 1;
+
+    const focusedRect = { tab: gtileFocusedTab, col1: selCol1, row1: selRow1, col2: selCol2, row2: selRow2 };
+
+    const otherTabs = viewData.tabs.filter(t => t !== gtileFocusedTab);
+    if (otherTabs.length === 0) return;
+
+    // Build occupancy grid
+    const occupied = [];
+    for (let r = 0; r < GTILE_ROWS; r++) {
+      occupied.push([]);
+      for (let c = 0; c < GTILE_COLS; c++) {
+        occupied[r].push(r >= selRow1 && r < selRow2 && c >= selCol1 && c < selCol2);
+      }
+    }
+
+    // Find valid rectangular partition of remaining space
+    const remainingRects = partitionRemainingSpace(occupied, otherTabs.length, GTILE_COLS, GTILE_ROWS);
+    if (!remainingRects) {
+      log('gTile: No valid layout found — selection leaves no valid partition for remaining tabs');
+      flashGtileError();
+      return;
+    }
+
+    // Assign other tabs to remaining regions by proximity to their current positions
+    const assignedRects = assignTabsToRegions(otherTabs, remainingRects);
+
+    // Build the final set of rects
+    const allRects = [focusedRect, ...assignedRects];
+
+    // Build split tree from rectangles
+    const classes = getNodeClasses();
+    if (!classes) {
+      log('gTile: Could not get node classes');
+      return;
+    }
+
+    const tree = buildSplitTreeFromRects(allRects, GTILE_COLS, GTILE_ROWS, classes);
+    if (!tree) {
+      log('gTile: Failed to build split tree from rectangles');
+      flashGtileError();
+      return;
+    }
+
+    // Apply the new layout
+    try {
+      splitter.removeSplitters();
+      splitter._tabToSplitNode.clear();
+      viewData.layoutTree = tree;
+      splitter.applyGridLayout(tree);
+      log('gTile: Layout applied successfully');
+    } catch (e) {
+      log(`gTile: Error applying layout: ${e}`);
+    }
+  }
+
+  function flashGtileError() {
+    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
+    if (grid) {
+      grid.classList.add('gtile-error');
+      setTimeout(() => grid.classList.remove('gtile-error'), 400);
+    }
+  }
+
+  function partitionRemainingSpace(occupied, numRects, cols, rows) {
+    // Find first unoccupied cell (scan top-left to bottom-right)
+    let startR = -1, startC = -1;
+    for (let r = 0; r < rows && startR === -1; r++) {
+      for (let c = 0; c < cols && startR === -1; c++) {
+        if (!occupied[r][c]) { startR = r; startC = c; }
+      }
+    }
+
+    if (startR === -1) {
+      return numRects === 0 ? [] : null;
+    }
+    if (numRects === 0) return null;
+
+    // Try all possible rectangles starting from (startR, startC)
+    for (let endC = startC + 1; endC <= cols; endC++) {
+      // Check column validity at startR
+      if (occupied[startR][endC - 1]) break;
+
+      for (let endR = startR + 1; endR <= rows; endR++) {
+        // Check if entire row strip from startC..endC is unoccupied at row endR-1
+        let rowValid = true;
+        for (let c = startC; c < endC; c++) {
+          if (occupied[endR - 1][c]) { rowValid = false; break; }
+        }
+        if (!rowValid) break;
+
+        // Also verify full rectangle is unoccupied (handles irregular previous placements)
+        let rectValid = true;
+        for (let r = startR; r < endR && rectValid; r++) {
+          for (let c = startC; c < endC && rectValid; c++) {
+            if (occupied[r][c]) rectValid = false;
+          }
+        }
+        if (!rectValid) break;
+
+        // Try this rectangle
+        const newOccupied = occupied.map(row => [...row]);
+        for (let r = startR; r < endR; r++) {
+          for (let c = startC; c < endC; c++) {
+            newOccupied[r][c] = true;
+          }
+        }
+
+        const rest = partitionRemainingSpace(newOccupied, numRects - 1, cols, rows);
+        if (rest !== null) {
+          return [{ col1: startC, row1: startR, col2: endC, row2: endR }, ...rest];
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function assignTabsToRegions(tabs, regions) {
+    // Greedy assignment: match each tab to the closest unassigned region
+    const splitter = window.gZenViewSplitter;
+    const assigned = [];
+    const usedRegions = new Set();
+
+    // Compute current center of each tab
+    const tabCenters = tabs.map(tab => {
+      const node = splitter.getSplitNodeFromTab(tab);
+      if (!node?.positionToRoot) return { x: 50, y: 50 };
+      const pos = node.positionToRoot;
+      return {
+        x: (pos.left + (100 - pos.right)) / 2,
+        y: (pos.top + (100 - pos.bottom)) / 2,
+      };
+    });
+
+    // Compute center of each region (in percentage space)
+    const regionCenters = regions.map(r => ({
+      x: ((r.col1 + r.col2) / 2) / GTILE_COLS * 100,
+      y: ((r.row1 + r.row2) / 2) / GTILE_ROWS * 100,
+    }));
+
+    for (let t = 0; t < tabs.length; t++) {
+      let bestRegion = -1;
+      let bestDist = Infinity;
+      for (let ri = 0; ri < regions.length; ri++) {
+        if (usedRegions.has(ri)) continue;
+        const dx = tabCenters[t].x - regionCenters[ri].x;
+        const dy = tabCenters[t].y - regionCenters[ri].y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) { bestDist = dist; bestRegion = ri; }
+      }
+      usedRegions.add(bestRegion);
+      assigned.push({ tab: tabs[t], ...regions[bestRegion] });
+    }
+
+    return assigned;
+  }
+
+  function buildSplitTreeFromRects(tabRects, cols, rows, classes) {
+    if (tabRects.length === 0) return null;
+
+    if (tabRects.length === 1) {
+      return new classes.LeafNode(tabRects[0].tab, 100);
+    }
+
+    // Try vertical cuts: find all column boundaries where no rect crosses
+    const vCuts = [];
+    for (let c = 1; c < cols; c++) {
+      if (tabRects.every(r => r.col2 <= c || r.col1 >= c)) {
+        vCuts.push(c);
+      }
+    }
+
+    if (vCuts.length > 0) {
+      const boundaries = [0, ...vCuts, cols];
+      const children = [];
+
+      for (let i = 0; i < boundaries.length - 1; i++) {
+        const lb = boundaries[i];
+        const rb = boundaries[i + 1];
+        const sliceRects = tabRects
+          .filter(r => r.col1 >= lb && r.col2 <= rb)
+          .map(r => ({ ...r, col1: r.col1 - lb, col2: r.col2 - lb }));
+
+        if (sliceRects.length === 0) continue;
+
+        const child = buildSplitTreeFromRects(sliceRects, rb - lb, rows, classes);
+        if (!child) return null;
+        child.sizeInParent = (rb - lb) / cols * 100;
+        children.push(child);
+      }
+
+      if (children.length === 1) return children[0];
+
+      const node = new classes.SplitNode("row", 100);
+      node.children = children;
+      return node;
+    }
+
+    // Try horizontal cuts
+    const hCuts = [];
+    for (let r = 1; r < rows; r++) {
+      if (tabRects.every(rect => rect.row2 <= r || rect.row1 >= r)) {
+        hCuts.push(r);
+      }
+    }
+
+    if (hCuts.length > 0) {
+      const boundaries = [0, ...hCuts, rows];
+      const children = [];
+
+      for (let i = 0; i < boundaries.length - 1; i++) {
+        const tb = boundaries[i];
+        const bb = boundaries[i + 1];
+        const sliceRects = tabRects
+          .filter(r => r.row1 >= tb && r.row2 <= bb)
+          .map(r => ({ ...r, row1: r.row1 - tb, row2: r.row2 - tb }));
+
+        if (sliceRects.length === 0) continue;
+
+        const child = buildSplitTreeFromRects(sliceRects, cols, bb - tb, classes);
+        if (!child) return null;
+        child.sizeInParent = (bb - tb) / rows * 100;
+        children.push(child);
+      }
+
+      if (children.length === 1) return children[0];
+
+      const node = new classes.SplitNode("column", 100);
+      node.children = children;
+      return node;
+    }
+
+    // No valid cuts — layout is not representable as a split tree
+    return null;
+  }
+
   // Render search results
   function renderSearchResults() {
     if (!searchResultsList) return;
@@ -5295,6 +6492,7 @@
             <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>j</kbd><span>Focus pane below</span></div>
             <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>k</kbd><span>Focus pane above</span></div>
             <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>l</kbd><span>Focus pane to the right</span></div>
+            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>Space</kbd><span>gTile resize overlay</span></div>
           </div>
         </div>
       </div>
@@ -9021,6 +10219,15 @@
       return; // Swallow all other keys while modal is open
     }
 
+    // Handle gTile mode
+    if (gtileMode) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      handleGtileKeyDown(event);
+      return;
+    }
+
     // Handle search mode input first
     if (searchMode) {
       if (handleSearchKeyDown(event)) {
@@ -9156,6 +10363,14 @@
         } else {
           quickSwitchWorkspace('next');
         }
+        return;
+      }
+      // Alt+Space — open gTile resize overlay
+      if (matchCombo(event, S['keys.global.splitResize'])) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        enterGtileMode();
         return;
       }
     }
@@ -9605,7 +10820,7 @@
   // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode,
   //  or Alt/J/K keyup reaching content after Alt+HJKL navigation)
   function handleKeyUp(event) {
-    if (leapMode || searchMode || commandMode || settingsMode || helpMode
+    if (leapMode || searchMode || commandMode || settingsMode || helpMode || gtileMode
         || Date.now() < quickNavInterceptedUntil) {
       event.preventDefault();
       event.stopPropagation();
@@ -9616,6 +10831,11 @@
   function setupKeyboardListener() {
     window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp, true);
+
+    // Close gTile overlay if split view is deactivated externally
+    window.addEventListener('ZenViewSplitter:SplitViewDeactivated', () => {
+      if (gtileMode) exitGtileMode(false);
+    });
     log('Keyboard listener set up');
   }
 
@@ -10017,6 +11237,430 @@
 
       #zenleap-overlay.leap-direction-set #zenleap-hint-label {
         color: #e5c07b !important;
+      }
+
+      /* ===== gTile Overlay — Split Layout Tool ===== */
+      #zenleap-gtile-overlay {
+        position: fixed;
+        top: 0; left: 0;
+        width: 100vw; height: 100vh;
+        z-index: 100003;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+      }
+      #zenleap-gtile-overlay.active {
+        display: flex;
+      }
+
+      #zenleap-gtile-backdrop {
+        position: absolute;
+        top: 0; left: 0;
+        width: 100%; height: 100%;
+        background: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(8px);
+      }
+
+      /* --- Panel --- */
+      #zenleap-gtile-panel {
+        position: relative;
+        width: 95%;
+        max-width: 640px;
+        background: rgba(25, 25, 30, 0.98);
+        border-radius: 16px;
+        box-shadow:
+          0 12px 48px rgba(0, 0, 0, 0.5),
+          0 0 0 1px rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        animation: gtile-appear 0.2s ease-out;
+      }
+      @keyframes gtile-appear {
+        from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+        to   { opacity: 1; transform: scale(1) translateY(0); }
+      }
+
+      /* --- Header --- */
+      .zenleap-gtile-header {
+        padding: 16px 20px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .zenleap-gtile-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #888;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+
+      /* Mode Switcher */
+      .zenleap-gtile-mode-switch {
+        position: relative;
+        display: flex;
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 8px;
+        padding: 2px;
+        gap: 2px;
+      }
+      .zenleap-gtile-mode-slider {
+        position: absolute;
+        top: 2px; left: 2px;
+        width: calc(50% - 2px);
+        height: calc(100% - 4px);
+        background: rgba(97, 175, 239, 0.18);
+        border: 1px solid rgba(97, 175, 239, 0.3);
+        border-radius: 6px;
+        transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-mode-slider {
+        transform: translateX(100%);
+      }
+      .gtile-mode-btn {
+        position: relative;
+        z-index: 1;
+        padding: 5px 14px;
+        border: none;
+        background: transparent;
+        color: #666;
+        font-size: 11px;
+        font-weight: 600;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        letter-spacing: 0.3px;
+        cursor: default;
+        transition: color 0.15s;
+        border-radius: 6px;
+        white-space: nowrap;
+      }
+      .gtile-mode-btn.active {
+        color: #61afef;
+      }
+
+      /* --- Grid --- */
+      #zenleap-gtile-grid {
+        position: relative;
+        margin: 16px;
+        aspect-ratio: 16 / 9;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        overflow: hidden;
+        background-image:
+          linear-gradient(to right, rgba(255,255,255,0.04) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px);
+        background-size: calc(100% / ${GTILE_COLS}) calc(100% / ${GTILE_ROWS});
+        background-position: -1px -1px;
+      }
+      #zenleap-gtile-overlay.mode-resize #zenleap-gtile-grid {
+        background-image:
+          linear-gradient(to right, rgba(255,255,255,0.08) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255,255,255,0.08) 1px, transparent 1px);
+      }
+
+      /* --- Tab Regions (proportional minimap) --- */
+      .zenleap-gtile-region {
+        position: absolute;
+        border-radius: 8px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 8px 10px;
+        transition:
+          inset 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+          background 0.15s,
+          box-shadow 0.15s,
+          border-color 0.15s;
+        border: 1.5px solid transparent;
+        overflow: hidden;
+        cursor: default;
+        user-select: none;
+      }
+      .zenleap-gtile-region::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        opacity: 0.12;
+        background: var(--region-hue);
+        transition: opacity 0.15s;
+      }
+      .zenleap-gtile-region:hover::before,
+      .zenleap-gtile-region.gtile-active::before {
+        opacity: 0.18;
+      }
+
+      /* Color variants */
+      .zenleap-gtile-region[data-color="blue"]   { --region-hue: #61afef; border-color: rgba(97,175,239,0.25); }
+      .zenleap-gtile-region[data-color="purple"] { --region-hue: #c678dd; border-color: rgba(198,120,221,0.2); }
+      .zenleap-gtile-region[data-color="green"]  { --region-hue: #98c379; border-color: rgba(152,195,121,0.2); }
+      .zenleap-gtile-region[data-color="yellow"] { --region-hue: #e5c07b; border-color: rgba(229,192,123,0.2); }
+
+      /* Active cursor in move mode */
+      .zenleap-gtile-region.gtile-active {
+        z-index: 2;
+        border-color: rgba(97, 175, 239, 0.7) !important;
+        box-shadow:
+          0 0 0 1px rgba(97, 175, 239, 0.3),
+          0 0 20px rgba(97, 175, 239, 0.12);
+      }
+      .zenleap-gtile-region.gtile-held {
+        z-index: 3;
+        border-color: #61afef !important;
+        box-shadow:
+          0 0 0 2px rgba(97, 175, 239, 0.4),
+          0 4px 24px rgba(97, 175, 239, 0.15);
+      }
+      .zenleap-gtile-region.gtile-held::before { opacity: 0.25; }
+      .zenleap-gtile-region.gtile-held .gtile-region-title {
+        color: #61afef;
+      }
+
+      /* Region text */
+      .gtile-region-title {
+        position: relative;
+        font-size: 11px;
+        font-weight: 500;
+        color: #bbb;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        transition: color 0.15s;
+        line-height: 1.3;
+      }
+      .zenleap-gtile-region.gtile-active .gtile-region-title {
+        color: #e0e0e0;
+      }
+      .gtile-region-badge {
+        position: relative;
+        font-size: 9px;
+        font-weight: 500;
+        color: #555;
+        font-family: monospace;
+        letter-spacing: 0.3px;
+        transition: color 0.15s;
+      }
+      .zenleap-gtile-region.gtile-active .gtile-region-badge {
+        color: #777;
+      }
+
+      /* --- Cell Layer (resize mode) --- */
+      .zenleap-gtile-cell-layer {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        grid-template-columns: repeat(${GTILE_COLS}, 1fr);
+        grid-template-rows: repeat(${GTILE_ROWS}, 1fr);
+        gap: 0;
+        z-index: 5;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-cell-layer {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .zenleap-gtile-cell {
+        border: 1px solid transparent;
+        border-radius: 3px;
+        margin: 2px;
+        transition: background 0.08s, border-color 0.08s;
+      }
+      .zenleap-gtile-cell.gtile-cursor {
+        border-color: rgba(255, 255, 255, 0.6);
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+      }
+      .zenleap-gtile-cell.gtile-selected {
+        background: rgba(97, 175, 239, 0.35);
+        border-color: rgba(97, 175, 239, 0.5);
+      }
+      .zenleap-gtile-cell.gtile-selected.gtile-cursor {
+        background: rgba(97, 175, 239, 0.5);
+        border-color: #61afef;
+        box-shadow: 0 0 8px rgba(97, 175, 239, 0.2);
+      }
+
+      /* Selection preview overlay */
+      .zenleap-gtile-sel {
+        position: absolute;
+        z-index: 4;
+        border-radius: 6px;
+        border: 2px solid rgba(97, 175, 239, 0.6);
+        background: rgba(97, 175, 239, 0.08);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.12s, inset 0.1s;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-sel.visible {
+        opacity: 1;
+      }
+
+      /* --- Hints Bar --- */
+      #zenleap-gtile-hints {
+        padding: 10px 20px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 11px;
+        color: #555;
+        display: flex;
+        gap: 14px;
+        justify-content: center;
+        flex-wrap: wrap;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      #zenleap-gtile-hints kbd {
+        background: rgba(255, 255, 255, 0.08);
+        color: #777;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 10px;
+        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        margin-right: 3px;
+      }
+
+      /* --- Resize Target Info (header, crossfades with title) --- */
+      .zenleap-gtile-target-info {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        flex: 1;
+        margin-right: 16px;
+        overflow: hidden;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-title {
+        display: none;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-target-info {
+        display: flex;
+        animation: gtile-target-fadein 0.18s ease-out;
+      }
+      @keyframes gtile-target-fadein {
+        from { opacity: 0; transform: translateX(-6px); }
+        to   { opacity: 1; transform: translateX(0); }
+      }
+
+      .gtile-target-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--target-hue, #61afef);
+        flex-shrink: 0;
+        box-shadow: 0 0 8px var(--target-hue, #61afef);
+        animation: gtile-dot-pulse 2.4s ease-in-out infinite;
+      }
+      @keyframes gtile-dot-pulse {
+        0%, 100% { opacity: 0.8; }
+        50% { opacity: 1; }
+      }
+
+      .gtile-target-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        flex-shrink: 0;
+      }
+
+      .gtile-target-name {
+        font-size: 12px;
+        font-weight: 500;
+        color: #bbb;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        flex: 1;
+        min-width: 0;
+      }
+
+      /* --- Resize target region highlight --- */
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region.gtile-resize-target {
+        z-index: 3;
+        border-color: var(--region-hue) !important;
+        border-width: 2px;
+        box-shadow:
+          0 0 0 1px color-mix(in srgb, var(--region-hue) 35%, transparent),
+          0 0 20px color-mix(in srgb, var(--region-hue) 15%, transparent);
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region.gtile-resize-target::before {
+        opacity: 0.22;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region.gtile-resize-target .gtile-region-title {
+        color: #e0e0e0;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region.gtile-resize-target .gtile-region-badge {
+        color: #888;
+      }
+
+      /* Dim non-target regions in resize mode */
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region:not(.gtile-resize-target) {
+        opacity: 0.4;
+        transition: opacity 0.2s ease-out;
+      }
+      #zenleap-gtile-overlay.mode-resize .zenleap-gtile-region:not(.gtile-resize-target)::before {
+        opacity: 0.05;
+      }
+
+      /* --- Rotate feedback: accent pulse on grid border --- */
+      #zenleap-gtile-grid.gtile-rotated {
+        animation: gtile-rotate-pulse 0.4s ease-out;
+      }
+      @keyframes gtile-rotate-pulse {
+        0% {
+          border-color: rgba(97, 175, 239, 0.45);
+          box-shadow: inset 0 0 24px rgba(97, 175, 239, 0.06);
+        }
+        100% {
+          border-color: rgba(255, 255, 255, 0.06);
+          box-shadow: none;
+        }
+      }
+
+      /* --- Reset sizes feedback: green pulse on grid border --- */
+      #zenleap-gtile-grid.gtile-reset {
+        animation: gtile-reset-pulse 0.4s ease-out;
+      }
+      @keyframes gtile-reset-pulse {
+        0% {
+          border-color: rgba(152, 195, 121, 0.7);
+          box-shadow: inset 0 0 24px rgba(152, 195, 121, 0.07);
+        }
+        100% {
+          border-color: rgba(255, 255, 255, 0.06);
+          box-shadow: none;
+        }
+      }
+
+      /* --- Error flash --- */
+      #zenleap-gtile-grid.gtile-error {
+        animation: gtile-shake 0.35s ease-out;
+        border-color: rgba(224, 108, 117, 0.5) !important;
+      }
+      @keyframes gtile-shake {
+        0%, 100% { transform: translateX(0); }
+        20% { transform: translateX(-3px); }
+        40% { transform: translateX(3px); }
+        60% { transform: translateX(-2px); }
+        80% { transform: translateX(2px); }
+      }
+
+      #zenleap-gtile-panel::-webkit-scrollbar { width: 6px; }
+      #zenleap-gtile-panel::-webkit-scrollbar-track { background: transparent; }
+      #zenleap-gtile-panel::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 3px;
       }
     `;
     document.head.appendChild(style);
