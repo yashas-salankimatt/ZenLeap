@@ -11,9 +11,9 @@
     <key>CFBundleDisplayName</key>
     <string>ZenLeap Manager</string>
     <key>CFBundleVersion</key>
-    <string>2.8.0</string>
+    <string>3.0.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.8.0</string>
+    <string>3.0.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>

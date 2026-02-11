@@ -4,8 +4,8 @@
   "description": "Vim-style relative tab numbering with keyboard navigation (Ctrl+Space chord). Requires fx-autoconfig for full functionality.",
   "homepage": "https://github.com/yashas-salankimatt/ZenLeap",
   "author": "ZenLeap",
-  "version": "2.8.0",
+  "version": "3.0.0",
   "tags": ["tabs", "keyboard", "vim", "navigation"],
   "createdAt": "2025-02-05",
-  "updatedAt": "2026-02-09"
+  "updatedAt": "2026-02-10"
 }

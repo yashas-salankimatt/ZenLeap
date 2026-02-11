@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        2.8.0  // Keep in sync with VERSION constant below
+// @version        3.0.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '2.8.0';
+  const VERSION = '3.0.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -88,6 +88,7 @@
     'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
     'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
     'timing.quickNavSidebarPeek':  { default: 1000, type: 'number', label: 'Quick Nav Sidebar Peek', description: 'Show sidebar after Alt+J/K in compact mode (ms, 0 to disable)', category: 'Timing', group: 'Delays', min: 0, max: 5000, step: 100 },
+    'timing.jjThreshold':          { default: 150, type: 'number', label: 'jj Escape Threshold', description: 'Max gap between two j presses to trigger normal mode escape (ms)', category: 'Timing', group: 'Timeouts', min: 50, max: 500, step: 10 },
 
     // --- Display ---
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
@@ -283,7 +284,7 @@
   let searchVimMode = 'insert';  // 'insert' or 'normal'
   let searchCursorPos = 0;
   // jj-to-normal-mode state
-  const JJ_THRESHOLD_MS = 150;   // Max gap between two j presses to trigger escape
+  // jj threshold is now configurable via S['timing.jjThreshold']
   let jjPending = false;          // true while waiting for a possible second j
   let jjPendingTimeout = null;    // timeout handle for flushing a single j
   let jjSavedValue = null;        // input value snapshot before first j
@@ -1415,7 +1416,7 @@
           jjSavedValue = searchInput.value;
           jjSavedCursor = searchInput.selectionStart || 0;
           jjPending = true;
-          jjPendingTimeout = setTimeout(flushPendingJ, JJ_THRESHOLD_MS);
+          jjPendingTimeout = setTimeout(flushPendingJ, S['timing.jjThreshold']);
         }
         return;
       }

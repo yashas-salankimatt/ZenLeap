@@ -5,6 +5,76 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-02-10
+
+### Added
+- **gTile Split-View Overlay** - Keyboard-driven grid overlay for managing split view layouts
+  - `Alt+Space` opens the overlay when split view is active
+  - **Move mode**: navigate regions (`hjkl`), grab/drop tabs (`Shift+hjkl` or Space to grab)
+  - **Resize mode**: grid-cell cursor for precise tab sizing, selection anchoring, `1-9` presets
+  - Layout rotation (`r`): cycles through all meaningful arrangements for 2-4 tabs
+  - Reset sizes (`Shift+R`): normalizes all tabs to equal proportions
+  - Tab/Shift+Tab to switch between Move and Resize modes
+  - Command palette entries: "Split View: Resize (gTile)" and "Rotate Layout"
+- **Command Bar Parity with Right-Click Menu** - 19 new commands covering all context menu actions
+  - Tab commands: reload, bookmark, reopen closed tab, select all, rename tab, edit tab icon, add/remove essentials, reset pinned tab, replace pinned URL
+  - Folder commands: change icon, unload all tabs (with progress UI), create subfolder, convert to workspace, unpack folder, move folder to workspace
+  - Browse mode commands: reload selected tabs, bookmark selected tabs
+- **Alt+HJKL Global Navigation** - Quick tab/workspace navigation without entering leap mode
+  - `Alt+J/K` switch to adjacent tabs (or focus split panes when in split view)
+  - `Alt+H/L` switch workspaces (or focus split panes)
+  - Split view pane focus is attempted first; at boundaries falls back to tab/workspace switching
+- **Browse Mode Split View** - Create split views from browse mode selections
+  - Select 2-4 tabs with Space, then use command bar → "Split into Split View"
+  - Uses Zen's native `splitTabs()` API
+- **Sidebar Peek in Compact Mode** - Sidebar temporarily shows during Alt+J/K navigation
+  - Auto-hides after configurable delay (default 1000ms)
+  - Rapid presses reset the timer
+  - New setting: `timing.quickNavSidebarPeek` (0 to disable)
+- **Folder Selection, Yank/Paste** - Full folder support in browse mode
+  - Folders can be selected (Space), yanked (y), and pasted (p/P) alongside tabs
+  - Cross-workspace folder paste with circular nesting and max depth guards
+  - Pasting onto a tab inside a folder nests yanked items as subfolders
+  - Deduplication removes individual tabs whose parent folder is also yanked
+- **Multi-Digit Browse Numbers** - Replaced letter/special-char numbering (A-Z, !@#) with plain multi-digit numbers
+  - 300ms accumulation timeout for multi-digit jumps (configurable in Settings > Timing)
+  - Cleaner, more intuitive display: `10`, `15`, `42` instead of `A`, `F`, `!`
+- **Two-Stage Escape in Browse Mode** - First Escape clears selection, yank buffer, and pending state; second Escape exits browse mode
+- **jj Normal Mode Escape** - Typing `jj` rapidly in search/command bar insert mode escapes to normal mode
+  - Configurable threshold (Settings > Timing > jj Escape Threshold, default 150ms)
+  - Searching for literal "jj" still works with a pause between presses
+- **Tab Preview in Search Bars** - Preview panel generalized to all tab search contexts (not just browse mode and dedup)
+- **"Remove Tab from Split View" Command** - Extract a tab from split view (searchable by unsplit, maximize, extract, detach, pop)
+- **Input Interception for Alt+HJKL** - Prevents keydown/keyup events from leaking to web pages during quick navigation
+
+### Changed
+- Tab numbering now uses plain multi-digit numbers instead of A-Z and special characters
+- Alt+H/J/K/L keybindings now function as general navigation (tab switching + workspace switching) rather than only split view focus
+- Installer now installs to all profiles by default when `--profile` flag is omitted
+
+### Fixed
+- Folder nesting regression from folderAfterRef initialization placing yanked folders as siblings instead of children
+- Multi-folder paste ordering and folder-anchor tab positioning
+- jj normal mode moving selection down 3 instead of 2
+- jj escape leaking first j into search query
+- Shift-select in browse mode not deselecting on direction reversal
+- Stale preview lingering during search tab navigation
+- Frame script accumulation in content processes (replaced per-call loadFrameScript with static reusable script)
+- Browse command targeting wrong tab when folders present (switched to getVisibleItems)
+- Visible items cache not invalidated on folder collapse/expand
+- Session load promise not cleaned up in finally block
+
+### Performance
+- O(1) browse mode j/k navigation via previous-highlighted-item tracking (was O(N) full-list scan)
+- Search input debounced by 32ms to coalesce rapid keystrokes
+- Relative numbers use reverse mark map for O(1) lookup and rAF coalescing for tab events
+- Session restore uses event-driven `waitFor()` polling instead of fixed setTimeout sleeps
+- Centralized tab recency field access via `getTabLastAccessed()` helper
+- Command cache with 500ms TTL; visible items microtask-scoped cache; workspace name map cache
+- Singleton init guard prevents duplicate listeners/styles on re-injection
+- Lightweight `updateSelectionHighlight()` for search j/k (avoids full DOM rebuild)
+- Event delegation for search result clicks and favicon errors
+
 ## [2.8.0] - 2026-02-09
 
 ### Added
@@ -275,6 +345,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.0.0 | 2026-02-10 | gTile split overlay, command bar parity, Alt+HJKL navigation, folder yank/paste, multi-digit numbers, jj escape |
 | 2.8.0 | 2026-02-09 | Workspace sessions, tab sorting, browse command bar, folder interaction, split focus, dedup preview |
 | 2.7.0 | 2026-02-07 | Tab deduplication, bulk unload, browse preview, 0/$ keys, bug fixes |
 | 2.6.0 | 2026-02-05 | Cross-workspace search, exact match quotes, appearance customization |

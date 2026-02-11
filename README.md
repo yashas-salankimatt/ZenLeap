@@ -7,10 +7,7 @@ A vim-style relative tab numbering and keyboard navigation mod for [Zen Browser]
 ### Relative Tab Numbers
 Like vim's relative line numbers, shows distance from current tab:
 - Current tab: `·`
-- Nearby tabs: `1`, `2`, `3`, ... `9`
-- Extended range: `A`-`Z` (10-35)
-- Special characters: `!@#$%^&*()` (36-45)
-- Overflow: `+` (46+)
+- All other tabs: plain multi-digit numbers (`1`, `2`, ... `10`, `15`, `42`, ...)
 
 ### Keyboard Navigation
 
@@ -34,7 +31,7 @@ Like vim's relative line numbers, shows distance from current tab:
 | `Escape` | Exit leap mode |
 
 #### Browse Mode
-Navigate and manipulate tabs visually:
+Navigate and manipulate tabs and folders visually:
 
 | Keys | Action |
 |------|--------|
@@ -44,16 +41,17 @@ Navigate and manipulate tabs visually:
 | `h` / `l` | Switch workspace (prev/next) |
 | `Enter` | Open highlighted tab / toggle folder |
 | `x` | Close highlighted/selected tabs |
-| `Space` | Toggle multi-select on highlighted tab |
+| `Space` | Toggle multi-select on highlighted tab or folder |
 | `Shift+J` / `Shift+K` | Extend selection down/up |
-| `y` / `Y` | Yank highlighted or selected tabs |
-| `p` | Paste yanked tabs after highlighted tab |
-| `P` | Paste yanked tabs before highlighted tab |
+| `y` / `Y` | Yank highlighted or selected items (tabs and folders) |
+| `p` | Paste yanked items after highlighted position |
+| `P` | Paste yanked items before highlighted position |
 | `Ctrl+Shift+/` | Open command bar with selection |
-| `1-9, a-z` | Jump N tabs from origin |
-| `Escape` | Cancel, return to original tab |
+| `0-9` | Multi-digit jump (300ms accumulation timeout) |
+| `Escape` (1st) | Clear selection, yank buffer, and pending state |
+| `Escape` (2nd) | Exit browse mode, return to original tab |
 
-Yank/paste works across workspaces — yank tabs in one workspace, switch with `h`/`l`, paste in another.
+Yank/paste works across workspaces — yank tabs and folders in one workspace, switch with `h`/`l`, paste in another. Pasting onto a tab inside a folder nests yanked items as subfolders.
 
 **Tab Preview:** A floating thumbnail preview appears when you pause on a tab in browse mode, showing the page screenshot, title, and URL. Configurable delay in Settings > Timing.
 
@@ -103,17 +101,19 @@ Quickly find and switch to any tab with fuzzy search:
 **Vim Mode in Search:**
 - Starts in INSERT mode for typing
 - `Escape` toggles to NORMAL mode
+- `jj` (typed rapidly) escapes to NORMAL mode from INSERT mode
 - Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`, `j`, `k`
 - Editing: `x`, `s`, `S`, `D`, `C`
 - Insert switches: `i`, `a`, `I`, `A`
 - Can be disabled in Settings > Display > Vim Mode in Search/Command (Escape will close the bar directly)
+- jj threshold configurable in Settings > Timing
 
 ### Command Palette
 A searchable command palette for quick access to any action:
 - `Ctrl+Shift+/` — Open command palette directly
 - `Ctrl+/` → type `>` — Switch to command mode from search
 
-Available commands include: close/duplicate/pin/mute/unload/deduplicate tabs, switch/move to workspace, create/delete/rename workspace, add to/create/delete/rename folder, sort tabs, save/restore/list workspace sessions, toggle fullscreen/reader mode/sidebar, zoom controls, split view, and more. Commands have short alias tags (e.g., `del`, `mv`, `ws`) for fast fuzzy matching.
+Available commands include: close/duplicate/pin/mute/unload/deduplicate/reload/bookmark tabs, rename tab, edit tab icon, add/remove essentials, reset pinned tab, replace pinned URL, reopen closed tab, select all tabs, switch/move to workspace, create/delete/rename workspace, add to/create/delete/rename folder, change folder icon, unload folder tabs, create subfolder, convert folder to workspace, unpack folder, move folder to workspace, sort tabs, group by domain, save/restore/list workspace sessions, split view controls (resize/rotate/remove tab), toggle fullscreen/reader mode/sidebar, zoom controls, and more. Commands have short alias tags (e.g., `del`, `mv`, `ws`) for fast fuzzy matching.
 
 **Multi-step commands:** Some commands open sub-flows (hierarchical pick-action-then-pick-target):
 - "Select matching tabs" → search tabs → pick action (close, unload, move to workspace, add to folder)
@@ -122,10 +122,11 @@ Available commands include: close/duplicate/pin/mute/unload/deduplicate tabs, sw
 - "Add to folder" → pick folder or create new
 - "Delete/Rename folder" → pick folder → confirm/input name
 - "Delete/Rename workspace" → pick workspace → confirm/input name
+- "Move folder to workspace" → pick folder → pick workspace
 - "Sort tabs" → pick sort method
 - "Deduplicate tabs" → preview duplicates → confirm
 
-**Browse mode integration:** Press `Ctrl+Shift+/` in browse mode to open the command bar with your selected/highlighted tabs as context. Dynamic commands (close, move, folder, pin, mute, etc.) operate on the browse selection.
+**Browse mode integration:** Press `Ctrl+Shift+/` in browse mode to open the command bar with your selected/highlighted tabs as context. Dynamic commands (close, move, folder, pin, mute, split view, reload, bookmark, etc.) operate on the browse selection.
 
 ### Workspace Sessions
 Save and restore sets of tabs for context-switching:
@@ -141,13 +142,22 @@ Organize tabs from the command palette:
 - "Group Tabs by Domain" — auto-creates folders per domain (for domains with 2+ tabs)
 - Preserves pinned tab and folder positions
 
-### Split View Navigation
-Navigate between split panes without a mouse:
-- `Alt+h` — focus pane to the left
-- `Alt+j` — focus pane below
-- `Alt+k` — focus pane above
-- `Alt+l` — focus pane to the right
-- Works globally when Zen's split view is active
+### Quick Navigation (Alt+HJKL)
+Navigate tabs, workspaces, and split panes without entering leap mode:
+- `Alt+j` / `Alt+k` — switch to adjacent tab (or focus split pane below/above)
+- `Alt+h` / `Alt+l` — switch workspace (or focus split pane left/right)
+- In split view, pane focus is attempted first; at boundaries falls back to tab/workspace switching
+- In compact mode, the sidebar temporarily peeks on `Alt+J/K` so you can see which tab is selected (configurable delay in Settings > Timing)
+
+### Split View Layout (gTile)
+Keyboard-driven grid overlay for resizing and rearranging split view tabs:
+- `Alt+Space` — open the gTile overlay when split view is active
+- **Move mode** (default): `hjkl` to navigate regions, `Shift+hjkl` or grab/drop to swap tabs
+- **Resize mode** (`Tab` to switch): grid-cell cursor, selection anchoring, `1-9` presets for quick sizing
+- `r` — rotate layout (cycles through all meaningful arrangements for 2-4 tabs)
+- `Shift+R` — reset all tabs to equal sizes
+- `Escape` — close the overlay
+- Also available via command palette: "Split View: Resize (gTile)"
 
 ### Help & Settings
 - `Ctrl+Space` → `?` — Open help modal with all keybindings
@@ -156,33 +166,35 @@ Navigate between split panes without a mouse:
 
 ### Settings Modal
 Customize every keybinding, delay, and display option:
-- **Keybindings** — Rebind all keys with an intuitive key recorder
-- **Timing** — Adjust timeouts and delays
+- **Keybindings** — Rebind all keys with an intuitive key recorder (leap mode, browse mode, global triggers including Alt+HJKL and gTile overlay)
+- **Timing** — Adjust timeouts and delays (leap timeout, gg timeout, browse number timeout, jj escape threshold, preview delay, sidebar peek duration)
 - **Appearance** — Color pickers for all tab badge, highlight, mark, and selection colors
-- **Display** — Customize indicators, limits, and cross-workspace search
+- **Display** — Customize indicators, limits, cross-workspace search, vim mode toggle, tab-as-enter
 - **Advanced** — Debug mode, recency tuning
 - Search bar to filter settings
 - Per-setting reset buttons
 - Settings persist across browser restarts
 
 ### Compact Mode Support
-When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating.
+When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating. The sidebar also temporarily peeks when using `Alt+J/K` quick navigation (configurable duration, 0 to disable).
 
 ## Visual Demo
 
 ```
 Tab List (vertical):        With ZenLeap:
-┌─────────────────┐        ┌─────────────────┐
-│ GitHub          │        │ [3] GitHub      │   ← 3 tabs above
-│ YouTube         │        │ [2] YouTube     │   ← 2 tabs above
-│ Twitter         │        │ [1] Twitter     │   ← 1 tab above
-│ ► My Project    │  →     │ [·] My Project  │   ← CURRENT TAB
-│ Docs            │        │ [1] Docs        │   ← 1 tab below
-│ Stack Overflow  │        │ [2] Stack Over..│   ← 2 tabs below
-└─────────────────┘        └─────────────────┘
+┌─────────────────┐        ┌──────────────────┐
+│ GitHub          │        │ [3]  GitHub      │   ← 3 tabs above
+│ YouTube         │        │ [2]  YouTube     │   ← 2 tabs above
+│ Twitter         │        │ [1]  Twitter     │   ← 1 tab above
+│ ► My Project    │  →     │ [·]  My Project  │   ← CURRENT TAB
+│ Docs            │        │ [1]  Docs        │   ← 1 tab below
+│ Stack Overflow  │        │ [2]  Stack Over..│   ← 2 tabs below
+│ ... (8 more)    │        │ [10] Reddit      │   ← multi-digit
+└─────────────────┘        └──────────────────┘
 
 To jump to GitHub: Ctrl+Space → k → 3
 To jump to Docs: Ctrl+Space → j → 1
+To jump far: Ctrl+Space → j → 1 → 0   (jump 10 tabs down)
 ```
 
 ## Installation
@@ -284,6 +296,7 @@ Ctrl+Space → j → j → j → Enter    (move down 3 tabs, open it)
 **Quick jump in browse mode:**
 ```
 Ctrl+Space → j → 5                 (jump 5 tabs down, open it)
+Ctrl+Space → j → 1 → 5            (jump 15 tabs down with multi-digit)
 ```
 
 **Switch workspace in browse mode:**
@@ -365,10 +378,45 @@ Ctrl+Shift+/ → sort tabs           (open sort picker)
 domain                              (sort by domain)
 ```
 
+**Quick navigation without leap mode:**
+```
+Alt+j                               (switch to next tab)
+Alt+k                               (switch to previous tab)
+Alt+l                               (switch to next workspace)
+Alt+h                               (switch to previous workspace)
+```
+
 **Navigate split view panes:**
 ```
 Alt+l                               (focus pane to the right)
 Alt+h                               (focus pane to the left)
+Alt+j                               (focus pane below)
+Alt+k                               (focus pane above)
+```
+
+**Resize/rearrange split view (gTile):**
+```
+Alt+Space                           (open gTile overlay)
+hjkl                                (navigate regions in move mode)
+Shift+hjkl                          (swap tabs between regions)
+Tab                                 (switch to resize mode)
+1-9                                 (apply size preset)
+r                                   (rotate layout)
+Escape                              (close overlay)
+```
+
+**Split selected tabs into split view:**
+```
+Ctrl+Space → j → Space → j → Space  (select 2 tabs)
+Ctrl+Shift+/                         (open command bar)
+split                                (pick "Split into Split View")
+```
+
+**Yank a folder across workspaces:**
+```
+Ctrl+Space → j → (navigate to folder) → y    (yank the folder)
+l                                              (switch workspace)
+p                                              (paste folder here)
 ```
 
 ## Customization
@@ -376,29 +424,13 @@ Alt+h                               (focus pane to the left)
 ### Settings Modal
 Open the settings modal from the help screen (gear icon) or command palette (`> settings`). All keybindings, timing values, and display options can be customized.
 
-### CSS Variables
+### Appearance Customization
 
-Add to your `userChrome.css`:
+All colors are customizable through the Settings modal (Appearance tab). Changes apply instantly with live preview. You can customize:
+- Accent color, tab badge backgrounds and text, direction colors
+- Mark indicator color, browse highlight border, multi-select border
 
-```css
-:root {
-  /* Number badge colors */
-  --zenleap-bg: #505050;
-  --zenleap-color: #e0e0e0;
-
-  /* Current tab highlight */
-  --zenleap-current-bg: #61afef;
-  --zenleap-current-color: #1e1e1e;
-
-  /* Direction colors */
-  --zenleap-up-bg: #455a6f;
-  --zenleap-down-bg: #455a6f;
-
-  /* Font sizes */
-  --zenleap-font-size: 80%;
-  --zenleap-compact-font-size: 70%;
-}
-```
+All styles are injected at runtime via CSS custom properties (`--zl-*`). The `chrome.css` file is intentionally empty — the runtime stylesheet handles everything.
 
 ## Debugging
 
