@@ -335,6 +335,7 @@
 
   // Load user-defined themes from {profile}/chrome/zenleap-themes.json
   // Supports "extends" to inherit from a built-in or other user theme.
+  // Uses topological resolution so extends-chain order doesn't matter.
   async function loadUserThemes() {
     // Reset to built-ins before merging (handles deletions on reload)
     themes = { ...BUILTIN_THEMES };
@@ -342,18 +343,37 @@
     try {
       const content = await IOUtils.readUTF8(themesPath);
       const userThemes = JSON.parse(content);
-      for (const [key, def] of Object.entries(userThemes)) {
-        if (typeof def !== 'object' || !def || key.startsWith('_')) continue;
-        const base = def.extends && BUILTIN_THEMES[def.extends]
-          ? BUILTIN_THEMES[def.extends]
-          : def.extends && themes[def.extends]
-            ? themes[def.extends]
-            : {};
+      const entries = Object.entries(userThemes).filter(([k, v]) => typeof v === 'object' && v && !k.startsWith('_'));
+      const resolved = new Set();
+      const resolving = new Set(); // cycle detection
+
+      function resolve(key, def) {
+        if (resolved.has(key)) return;
+        if (resolving.has(key)) { console.warn(`[ZenLeap] Circular extends detected for theme "${key}", skipping`); return; }
+        resolving.add(key);
+
+        let base = {};
+        if (def.extends) {
+          if (BUILTIN_THEMES[def.extends]) {
+            base = BUILTIN_THEMES[def.extends];
+          } else {
+            const parentEntry = entries.find(([k]) => k === def.extends);
+            if (parentEntry) {
+              resolve(parentEntry[0], parentEntry[1]);
+              base = themes[def.extends] || {};
+            }
+          }
+        }
+
         const { extends: _, ...rest } = def;
         themes[key] = { ...base, ...rest };
         if (!themes[key].name) themes[key].name = key;
+        resolving.delete(key);
+        resolved.add(key);
       }
-      log(`Loaded ${Object.keys(userThemes).filter(k => !k.startsWith('_')).length} user theme(s) from zenleap-themes.json`);
+
+      for (const [key, def] of entries) resolve(key, def);
+      log(`Loaded ${entries.length} user theme(s) from zenleap-themes.json`);
     } catch (e) {
       // Silently ignore missing file — it's optional
       if (e.name !== 'NotFoundError' && (!e.result || e.result !== 0x80520012)) {
@@ -1318,7 +1338,7 @@
 
       #zenleap-search-backdrop {
         position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(8,10,15,0.75);
+        background: var(--zl-backdrop);
         backdrop-filter: blur(var(--zl-backdrop-blur));
       }
 
@@ -1395,9 +1415,9 @@
         color: var(--zl-text-secondary);
       }
       #zenleap-search-ws-toggle.active {
-        background: rgba(167,139,219,0.12);
+        background: color-mix(in srgb, var(--zl-purple) 12%, transparent);
         color: var(--zl-purple);
-        border-color: rgba(167,139,219,0.25);
+        border-color: color-mix(in srgb, var(--zl-purple) 25%, transparent);
       }
 
       #zenleap-search-vim-indicator {
@@ -1477,11 +1497,12 @@
       }
 
       #zenleap-search-hint-bar {
-        display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
-        padding: 10px 20px;
+        display: flex; gap: 12px; justify-content: center; flex-wrap: nowrap;
+        padding: 8px 16px;
         border-top: 1px solid var(--zl-border-subtle);
         font-size: 11px; color: var(--zl-text-muted);
         font-family: var(--zl-font-ui);
+        white-space: nowrap; overflow: hidden;
       }
       #zenleap-search-hint-bar span {
         display: inline-flex; align-items: center; gap: 5px;
@@ -2096,7 +2117,7 @@
         const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
         const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
         file.initWithPath(themesPath);
-        file.launch();
+        try { file.launch(); } catch (e) { console.warn('[ZenLeap] Could not open themes file:', e); }
       }},
 
       // --- Session Management ---
@@ -4989,10 +5010,10 @@
       }
       .zenleap-update-btn.primary:hover { background: var(--zl-accent-40); border-color: var(--zl-accent); }
       .zenleap-update-btn.restart {
-        background: rgba(152,195,121,0.2); color: var(--zl-success);
-        border: 1px solid rgba(152,195,121,0.3);
+        background: color-mix(in srgb, var(--zl-success) 20%, transparent); color: var(--zl-success);
+        border: 1px solid color-mix(in srgb, var(--zl-success) 30%, transparent);
       }
-      .zenleap-update-btn.restart:hover { background: rgba(152,195,121,0.3); border-color: rgba(152,195,121,0.5); }
+      .zenleap-update-btn.restart:hover { background: color-mix(in srgb, var(--zl-success) 30%, transparent); border-color: color-mix(in srgb, var(--zl-success) 50%, transparent); }
       .zenleap-update-btn kbd {
         display: inline-block; font-family: var(--zl-font-mono); font-size: 10px; font-weight: 600;
         background: var(--zl-bg-elevated); padding: 1px 5px; border-radius: var(--zl-r-sm);
@@ -8342,7 +8363,7 @@
         background: none; border: none; color: var(--zl-text-muted); font-size: 16px; cursor: pointer;
         padding: 4px 6px; border-radius: var(--zl-r-sm); transition: all 0.15s; flex-shrink: 0;
       }
-      .zenleap-settings-reset-btn:hover { color: var(--zl-error); background: rgba(224, 108, 117, 0.1); }
+      .zenleap-settings-reset-btn:hover { color: var(--zl-error); background: color-mix(in srgb, var(--zl-error) 10%, transparent); }
       .zenleap-settings-footer {
         padding: 12px 24px; border-top: 1px solid var(--zl-border-subtle);
         display: flex; justify-content: center;
@@ -8431,7 +8452,7 @@
       }
       .zenleap-theme-card-btn:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
       .zenleap-theme-card-btn.delete:hover {
-        color: var(--zl-error); border-color: rgba(224,108,117,0.3); background: rgba(224,108,117,0.1);
+        color: var(--zl-error); border-color: color-mix(in srgb, var(--zl-error) 30%, transparent); background: color-mix(in srgb, var(--zl-error) 10%, transparent);
       }
       /* Editor Panel */
       .zenleap-theme-editor-panel {
@@ -8897,6 +8918,7 @@
 
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'zenleap-theme-card-btn delete';
+    deleteBtn.dataset.key = key;
     deleteBtn.textContent = 'Delete';
     deleteBtn.addEventListener('click', () => deleteUserTheme(key));
     actions.appendChild(deleteBtn);
@@ -8962,7 +8984,7 @@
     nameInput.type = 'text';
     nameInput.value = themeEditorName;
     nameInput.placeholder = 'My Custom Theme';
-    nameInput.className = 'zenleap-theme-editor-input';
+    nameInput.className = 'zenleap-theme-editor-input zenleap-theme-editor-name';
     nameInput.addEventListener('input', () => { themeEditorName = nameInput.value; });
     nameRow.appendChild(nameLabel);
     nameRow.appendChild(nameInput);
@@ -9212,7 +9234,11 @@
   }
 
   async function saveThemeFromEditor() {
-    if (!themeEditorName.trim()) return;
+    if (!themeEditorName.trim()) {
+      const nameInput = settingsModal?.querySelector('.zenleap-theme-editor-name');
+      if (nameInput) { nameInput.style.borderColor = 'var(--zl-error)'; nameInput.placeholder = 'Name required'; setTimeout(() => { nameInput.style.borderColor = ''; nameInput.placeholder = 'Theme name'; }, 2000); }
+      return;
+    }
 
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
     let rawThemes = {};
@@ -9248,22 +9274,28 @@
 
     themeEditorActive = false;
     renderSettingsContent();
-
-    // Update the theme selector dropdown if it exists
-    const select = settingsModal?.querySelector('.zenleap-select');
-    if (select && select.closest('[data-id="appearance.theme"]')) {
-      renderSettingsContent();
-    }
   }
 
   async function deleteUserTheme(key) {
+    const themeName = themes[key]?.name || key;
+    // Show inline confirmation on the delete button
+    const btn = settingsModal?.querySelector(`.zenleap-theme-card-btn.delete[data-key="${key}"]`);
+    if (btn && !btn.dataset.confirming) {
+      btn.dataset.confirming = 'true';
+      btn.textContent = 'Confirm?';
+      btn.style.color = 'var(--zl-error)';
+      btn.style.borderColor = 'var(--zl-error)';
+      setTimeout(() => { if (btn.dataset.confirming) { delete btn.dataset.confirming; btn.textContent = 'Delete'; btn.style.color = ''; btn.style.borderColor = ''; } }, 3000);
+      return;
+    }
+
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
     try {
       const content = await IOUtils.readUTF8(themesPath);
       const rawThemes = JSON.parse(content);
       delete rawThemes[key];
       await IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2));
-      log(`Deleted theme "${key}"`);
+      log(`Deleted theme "${themeName}"`);
     } catch (e) {
       console.warn('[ZenLeap] Error deleting theme:', e);
       return;
@@ -12922,11 +12954,12 @@
     root.style.setProperty('--zl-accent-glow', t.accentGlow);
     root.style.setProperty('--zl-accent-border', t.accentBorder);
     // Derived accent opacities (for browse mode compatibility)
-    root.style.setProperty('--zl-accent-20', hexToRgba(t.accent, 0.2));
-    root.style.setProperty('--zl-accent-15', hexToRgba(t.accent, 0.15));
-    root.style.setProperty('--zl-accent-60', hexToRgba(t.accent, 0.6));
-    root.style.setProperty('--zl-accent-80', hexToRgba(t.accent, 0.8));
-    root.style.setProperty('--zl-accent-40', hexToRgba(t.accent, 0.4));
+    const accentHex = toHex6(t.accent);
+    root.style.setProperty('--zl-accent-20', hexToRgba(accentHex, 0.2));
+    root.style.setProperty('--zl-accent-15', hexToRgba(accentHex, 0.15));
+    root.style.setProperty('--zl-accent-60', hexToRgba(accentHex, 0.6));
+    root.style.setProperty('--zl-accent-80', hexToRgba(accentHex, 0.8));
+    root.style.setProperty('--zl-accent-40', hexToRgba(accentHex, 0.4));
     // Semantic colors
     root.style.setProperty('--zl-blue', t.blue);
     root.style.setProperty('--zl-purple', t.purple);
@@ -12968,13 +13001,13 @@
     root.style.setProperty('--zl-noise-opacity', t.noiseOpacity);
     root.style.setProperty('--zl-backdrop-blur', t.backdropBlur);
     root.style.setProperty('--zl-panel-alpha', t.panelAlpha);
-    root.style.setProperty('--zl-backdrop', `rgba(0,0,0,${t.panelAlpha === '0.98' ? '0.65' : '0.5'})`);
+    root.style.setProperty('--zl-backdrop', `rgba(0,0,0,${parseFloat(t.panelAlpha) >= 0.95 ? '0.65' : '0.5'})`);
     root.style.setProperty('--zl-blur', `blur(${t.backdropBlur})`);
 
-    // Browse mode variables (derived from theme)
-    const highlight = t.highlight;
-    const selected = t.selected;
-    const mark = t.mark;
+    // Browse mode variables (derived from theme — normalize for user themes)
+    const highlight = toHex6(t.highlight);
+    const selected = toHex6(t.selected);
+    const mark = toHex6(t.mark);
 
     root.style.setProperty('--zl-highlight', highlight);
     root.style.setProperty('--zl-highlight-20', hexToRgba(highlight, 0.2));
@@ -13108,7 +13141,7 @@
       .zenleap-folder-delete-backdrop {
         position: absolute;
         inset: 0;
-        background: rgba(8,10,15,0.75);
+        background: var(--zl-backdrop);
         backdrop-filter: blur(var(--zl-backdrop-blur));
       }
 
@@ -13414,7 +13447,7 @@
         position: absolute;
         top: 0; left: 0;
         width: 100%; height: 100%;
-        background: rgba(8,10,15,0.75);
+        background: var(--zl-backdrop);
         backdrop-filter: blur(var(--zl-backdrop-blur));
       }
 
@@ -13537,9 +13570,9 @@
 
       /* Region color variants (themed) */
       .zenleap-gtile-region[data-color="blue"]   { --region-hue: var(--zl-region-blue);   border-color: var(--zl-accent-border); }
-      .zenleap-gtile-region[data-color="purple"] { --region-hue: var(--zl-region-purple); border-color: rgba(167,139,219,0.2); }
-      .zenleap-gtile-region[data-color="green"]  { --region-hue: var(--zl-region-green);  border-color: rgba(110,196,125,0.2); }
-      .zenleap-gtile-region[data-color="yellow"] { --region-hue: var(--zl-region-gold);   border-color: rgba(212,184,92,0.2); }
+      .zenleap-gtile-region[data-color="purple"] { --region-hue: var(--zl-region-purple); border-color: color-mix(in srgb, var(--zl-region-purple) 20%, transparent); }
+      .zenleap-gtile-region[data-color="green"]  { --region-hue: var(--zl-region-green);  border-color: color-mix(in srgb, var(--zl-region-green) 20%, transparent); }
+      .zenleap-gtile-region[data-color="yellow"] { --region-hue: var(--zl-region-gold);   border-color: color-mix(in srgb, var(--zl-region-gold) 20%, transparent); }
 
       .zenleap-gtile-region.gtile-active {
         z-index: 2;
