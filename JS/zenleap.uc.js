@@ -391,7 +391,7 @@
       blue: '#268bd2', purple: '#6c71c4', green: '#859900',
       red: '#dc322f', cyan: '#2aa198', gold: '#b58900',
       regionBlue: '#268bd2', regionPurple: '#6c71c4', regionGreen: '#859900', regionGold: '#b58900',
-      textPrimary: '#93a1a1', textSecondary: '#839496', textTertiary: '#586e75', textMuted: '#073642',
+      textPrimary: '#93a1a1', textSecondary: '#839496', textTertiary: '#586e75', textMuted: '#405b62',
       borderSubtle: 'rgba(147,161,161,0.04)', borderDefault: 'rgba(147,161,161,0.08)', borderStrong: 'rgba(147,161,161,0.14)',
       rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
       fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
@@ -15476,6 +15476,53 @@
     document.head.appendChild(style);
   }
 
+  // Hook into Zen workspace changes to re-apply browser theme
+  let _workspaceHookRetries = 0;
+  function setupWorkspaceThemeHook() {
+    if (!window.gZenThemePicker || !window.gZenWorkspaces) {
+      if (++_workspaceHookRetries > 10) {
+        log('Workspace theme hook: globals not found after 10 retries, skipping');
+        return;
+      }
+      setTimeout(setupWorkspaceThemeHook, 500);
+      return;
+    }
+
+    // Guard against double-wrapping if the script is reloaded in the same window
+    if (gZenThemePicker._zenleapWrapped) {
+      log('Workspace theme hook already installed, skipping');
+      return;
+    }
+
+    // Primary: wrap onWorkspaceChange for zero-flash override.
+    // Zen calls this inside a requestAnimationFrame during workspace switches,
+    // which overwrites our CSS custom properties. By wrapping it, we re-apply
+    // our theme in the same rAF callback — before the browser paints — so the
+    // user never sees native Zen colors flash through.
+    try {
+      const _origOnWorkspaceChange = gZenThemePicker.onWorkspaceChange.bind(gZenThemePicker);
+      gZenThemePicker.onWorkspaceChange = (...args) => {
+        _origOnWorkspaceChange(...args);
+        if (S['appearance.applyToBrowser']) {
+          applyBrowserTheme();
+        }
+      };
+      gZenThemePicker._zenleapWrapped = true;
+    } catch (e) {
+      log(`Warning: Could not wrap onWorkspaceChange: ${e}`);
+    }
+
+    // Safety net: also use the official change listener API so any other code
+    // path that resets CSS properties gets caught after animations complete.
+    gZenWorkspaces.addChangeListeners(() => {
+      if (S['appearance.applyToBrowser']) {
+        applyBrowserTheme();
+      }
+    });
+
+    log('Workspace theme hook installed');
+  }
+
   // Legacy compat wrapper
   function applyThemeColors() { applyTheme(); }
 
@@ -16306,6 +16353,7 @@
     setupTabListeners();
     setupKeyboardListener();
     setupUrlbarVimMode();
+    setupWorkspaceThemeHook();
     updateRelativeNumbers();
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
