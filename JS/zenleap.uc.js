@@ -1010,6 +1010,369 @@
     applyTheme();
   }
 
+  // ── Export / Import ──
+
+  function exportSettings() {
+    const overrides = {};
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      if (schema.hidden) continue;
+      if (JSON.stringify(S[id]) !== JSON.stringify(schema.default)) {
+        overrides[id] = S[id];
+      }
+    }
+    const payload = {
+      _zenleap: true,
+      version: VERSION,
+      exportedAt: new Date().toISOString(),
+      settings: overrides,
+    };
+    const json = JSON.stringify(payload, null, 2);
+    (async () => {
+      try {
+        // Resolve downloads directory cross-platform:
+        // 1. Downloads module (handles macOS/Windows/Linux/XDG correctly)
+        // 2. browser.download.dir pref (user override)
+        // 3. Home directory fallback
+        let downloadsDir;
+        try {
+          const { Downloads } = ChromeUtils.importESModule('resource://gre/modules/Downloads.sys.mjs');
+          downloadsDir = await Downloads.getPreferredDownloadsDirectory();
+        } catch (e1) {
+          try {
+            downloadsDir = Services.prefs.getStringPref('browser.download.dir');
+          } catch (e2) {
+            downloadsDir = PathUtils.join(PathUtils.homeDir, 'Downloads');
+          }
+        }
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const filePath = PathUtils.join(downloadsDir, `zenleap-settings-${ts}.json`);
+        await IOUtils.write(filePath, new TextEncoder().encode(json));
+        showSettingsToast('success', 'Settings exported to Downloads');
+      } catch (e) {
+        log(`Export failed: ${e}`);
+        showSettingsToast('error', 'Export failed');
+      }
+    })();
+  }
+
+  function importSettingsFromFile() {
+    const MAX_FILE_SIZE = 1024 * 1024; // 1 MB guard
+    // In chrome context, use nsIFilePicker if available, else hidden <input>
+    if (typeof Cc !== 'undefined' && Cc['@mozilla.org/filepicker;1']) {
+      const fp = Cc['@mozilla.org/filepicker;1'].createInstance(Ci.nsIFilePicker);
+      fp.init(window.browsingContext, 'Import ZenLeap Settings', Ci.nsIFilePicker.modeOpen);
+      fp.appendFilter('JSON Files', '*.json');
+      fp.appendFilters(Ci.nsIFilePicker.filterAll);
+      fp.open(async (result) => {
+        if (result === Ci.nsIFilePicker.returnOK && fp.file) {
+          try {
+            const info = await IOUtils.stat(fp.file.path);
+            if (info.size > MAX_FILE_SIZE) {
+              showSettingsToast('error', 'File too large (max 1 MB)');
+              return;
+            }
+            const bytes = await IOUtils.read(fp.file.path);
+            const text = new TextDecoder().decode(bytes);
+            processImportedJSON(text);
+          } catch (e) {
+            log(`Import read failed: ${e}`);
+            showSettingsToast('error', 'Failed to read file');
+          }
+        }
+      });
+    } else {
+      // Fallback: hidden file input
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.style.display = 'none';
+      input.addEventListener('change', () => {
+        const file = input.files[0];
+        if (!file) { input.remove(); return; }
+        if (file.size > MAX_FILE_SIZE) {
+          showSettingsToast('error', 'File too large (max 1 MB)');
+          input.remove();
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => processImportedJSON(reader.result);
+        reader.onerror = () => showSettingsToast('error', 'Failed to read file');
+        reader.readAsText(file);
+        input.remove();
+      });
+      document.documentElement.appendChild(input);
+      input.click();
+    }
+  }
+
+  function isValidSettingValue(value, schema) {
+    switch (schema.type) {
+      case 'toggle': return typeof value === 'boolean';
+      case 'number':
+        if (typeof value !== 'number' || isNaN(value)) return false;
+        if (schema.min !== undefined && value < schema.min) return false;
+        if (schema.max !== undefined && value > schema.max) return false;
+        return true;
+      case 'text': case 'color': case 'key': return typeof value === 'string';
+      case 'select': return typeof value === 'string' && (!schema.options || schema.options.some(o => o.value === value));
+      case 'combo': return typeof value === 'object' && value !== null && typeof value.key === 'string';
+      default: return true;
+    }
+  }
+
+  function processImportedJSON(text) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      showSettingsToast('error', 'Invalid JSON file');
+      return;
+    }
+    if (!data || typeof data !== 'object') {
+      showSettingsToast('error', 'Invalid settings file');
+      return;
+    }
+    // Accept both { _zenleap, settings: {...} } and raw overrides object
+    const incoming = data._zenleap ? (data.settings || {}) : data;
+    if (typeof incoming !== 'object') {
+      showSettingsToast('error', 'Invalid settings format');
+      return;
+    }
+
+    // Build diff of changes (only valid values)
+    const changes = [];
+    const validIncoming = {};
+    for (const [id, newVal] of Object.entries(incoming)) {
+      const schema = SETTINGS_SCHEMA[id];
+      if (!schema || schema.hidden) continue;
+      if (!isValidSettingValue(newVal, schema)) continue;
+      validIncoming[id] = newVal;
+      if (JSON.stringify(S[id]) !== JSON.stringify(newVal)) {
+        changes.push({ id, label: schema.label, from: S[id], to: newVal, schema });
+      }
+    }
+
+    if (changes.length === 0) {
+      showSettingsToast('success', 'Settings already match \u2014 nothing to change');
+      return;
+    }
+
+    showImportConfirmation(changes, validIncoming);
+  }
+
+  function applyImportedSettings(incoming) {
+    for (const [id, value] of Object.entries(incoming)) {
+      const schema = SETTINGS_SCHEMA[id];
+      if (!schema || schema.hidden) continue;
+      S[id] = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+    }
+    saveSettings();
+    applyThemeColors();
+    renderSettingsContent();
+    showSettingsToast('success', 'Settings imported successfully');
+  }
+
+  // ── Settings toast notification ──
+
+  let settingsToastEl = null;
+
+  function showSettingsToast(type, message) {
+    if (settingsToastEl) { try { settingsToastEl.remove(); } catch(e) {} settingsToastEl = null; }
+    const toast = document.createElement('div');
+    toast.className = `zenleap-settings-toast ${type}`;
+
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 24 24');
+    icon.setAttribute('fill', 'none');
+    icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', type === 'success' ? '2.5' : '2');
+    icon.setAttribute('stroke-linecap', 'round');
+    icon.setAttribute('stroke-linejoin', 'round');
+
+    if (type === 'success') {
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      poly.setAttribute('points', '20 6 9 17 4 12');
+      icon.appendChild(poly);
+    } else {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', '12'); circle.setAttribute('cy', '12'); circle.setAttribute('r', '10');
+      const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l1.setAttribute('x1', '15'); l1.setAttribute('y1', '9'); l1.setAttribute('x2', '9'); l1.setAttribute('y2', '15');
+      const l2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l2.setAttribute('x1', '9'); l2.setAttribute('y1', '9'); l2.setAttribute('x2', '15'); l2.setAttribute('y2', '15');
+      icon.appendChild(circle); icon.appendChild(l1); icon.appendChild(l2);
+    }
+
+    const text = document.createElement('span');
+    text.textContent = message;
+
+    toast.appendChild(icon);
+    toast.appendChild(text);
+    document.documentElement.appendChild(toast);
+    settingsToastEl = toast;
+
+    setTimeout(() => {
+      toast.style.animation = 'zenleap-settings-toast-out 0.2s ease-in forwards';
+      setTimeout(() => { try { toast.remove(); } catch(e) {} if (settingsToastEl === toast) settingsToastEl = null; }, 200);
+    }, 2500);
+  }
+
+  // ── Import confirmation dialog ──
+
+  function showImportConfirmation(changes, incoming) {
+    dismissImportConfirmation();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'zenleap-import-overlay';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zenleap-import-backdrop';
+    backdrop.addEventListener('click', dismissImportConfirmation);
+
+    const dialog = document.createElement('div');
+    dialog.className = 'zenleap-import-dialog';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'zenleap-import-dialog-header';
+
+    const iconWrap = document.createElement('div');
+    iconWrap.className = 'zenleap-import-dialog-icon';
+    const importSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    importSvg.setAttribute('viewBox', '0 0 24 24');
+    importSvg.setAttribute('fill', 'none');
+    importSvg.setAttribute('stroke', 'currentColor');
+    importSvg.setAttribute('stroke-width', '2');
+    importSvg.setAttribute('stroke-linecap', 'round');
+    importSvg.setAttribute('stroke-linejoin', 'round');
+    const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    p1.setAttribute('points', '17 8 12 3 7 8');
+    const l1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    l1.setAttribute('x1', '12'); l1.setAttribute('y1', '3'); l1.setAttribute('x2', '12'); l1.setAttribute('y2', '15');
+    const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p2.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
+    importSvg.appendChild(p1); importSvg.appendChild(l1); importSvg.appendChild(p2);
+    iconWrap.appendChild(importSvg);
+
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'zenleap-import-dialog-title';
+    title.textContent = 'Import Settings';
+    const subtitle = document.createElement('div');
+    subtitle.className = 'zenleap-import-dialog-subtitle';
+    subtitle.textContent = 'Review changes before applying';
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(subtitle);
+
+    header.appendChild(iconWrap);
+    header.appendChild(titleWrap);
+
+    // Changes list
+    const changesList = document.createElement('div');
+    changesList.className = 'zenleap-import-changes';
+
+    for (const change of changes) {
+      const row = document.createElement('div');
+      row.className = 'zenleap-import-change-row';
+
+      const name = document.createElement('span');
+      name.className = 'zenleap-import-change-name';
+      name.textContent = change.label;
+
+      const fromEl = document.createElement('span');
+      fromEl.className = 'zenleap-import-change-from';
+      fromEl.textContent = formatImportValue(change.from, change.schema);
+
+      const arrow = document.createElement('span');
+      arrow.className = 'zenleap-import-change-arrow';
+      arrow.textContent = '\u2192';
+
+      const toEl = document.createElement('span');
+      toEl.className = 'zenleap-import-change-to';
+      toEl.textContent = formatImportValue(change.to, change.schema);
+
+      row.appendChild(name);
+      row.appendChild(fromEl);
+      row.appendChild(arrow);
+      row.appendChild(toEl);
+      changesList.appendChild(row);
+    }
+
+    // Summary
+    const totalSettings = Object.keys(SETTINGS_SCHEMA).filter(id => !SETTINGS_SCHEMA[id].hidden).length;
+    const summary = document.createElement('div');
+    summary.className = 'zenleap-import-summary';
+
+    const infoSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    infoSvg.setAttribute('width', '14'); infoSvg.setAttribute('height', '14');
+    infoSvg.setAttribute('viewBox', '0 0 24 24');
+    infoSvg.setAttribute('fill', 'none');
+    infoSvg.style.color = 'var(--zl-accent)';
+    infoSvg.setAttribute('stroke', 'currentColor');
+    infoSvg.setAttribute('stroke-width', '2');
+    infoSvg.setAttribute('stroke-linecap', 'round');
+    infoSvg.setAttribute('stroke-linejoin', 'round');
+    const ic = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    ic.setAttribute('cx', '12'); ic.setAttribute('cy', '12'); ic.setAttribute('r', '10');
+    const il1 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    il1.setAttribute('x1', '12'); il1.setAttribute('y1', '16'); il1.setAttribute('x2', '12'); il1.setAttribute('y2', '12');
+    const il2 = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    il2.setAttribute('x1', '12'); il2.setAttribute('y1', '8'); il2.setAttribute('x2', '12.01'); il2.setAttribute('y2', '8');
+    infoSvg.appendChild(ic); infoSvg.appendChild(il1); infoSvg.appendChild(il2);
+
+    const summaryText = document.createElement('span');
+    const strong = document.createElement('strong');
+    strong.textContent = changes.length;
+    summaryText.appendChild(strong);
+    summaryText.appendChild(document.createTextNode(` setting${changes.length === 1 ? '' : 's'} will be changed \u00B7 ${totalSettings - changes.length} unchanged`));
+
+    summary.appendChild(infoSvg);
+    summary.appendChild(summaryText);
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-import-dialog-actions';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'zenleap-import-btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', dismissImportConfirmation);
+
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'zenleap-import-btn-apply';
+    applyBtn.textContent = 'Apply Changes';
+    applyBtn.addEventListener('click', () => {
+      dismissImportConfirmation();
+      applyImportedSettings(incoming);
+    });
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(applyBtn);
+
+    dialog.appendChild(header);
+    dialog.appendChild(changesList);
+    dialog.appendChild(summary);
+    dialog.appendChild(actions);
+
+    overlay.appendChild(backdrop);
+    overlay.appendChild(dialog);
+    document.documentElement.appendChild(overlay);
+  }
+
+  function dismissImportConfirmation() {
+    const existing = document.getElementById('zenleap-import-overlay');
+    if (existing) existing.remove();
+  }
+
+  function formatImportValue(value, schema) {
+    if (schema?.type === 'combo' && typeof value === 'object') {
+      return formatKeyDisplay(value, schema);
+    }
+    if (schema?.type === 'toggle') return value ? 'on' : 'off';
+    if (typeof value === 'string' && value.length > 12) return value.slice(0, 12) + '\u2026';
+    return String(value);
+  }
+
   // Helper: check if a keyboard event matches a combo-type setting
   function matchCombo(event, combo) {
     if (!combo || typeof combo !== 'object') return false;
@@ -8799,6 +9162,59 @@
     // Footer (create button via createElement — innerHTML strips <button> in chrome context)
     const footer = document.createElement('div');
     footer.className = 'zenleap-settings-footer';
+
+    // Left side: Export + Import
+    const footerActions = document.createElement('div');
+    footerActions.className = 'zenleap-settings-footer-actions';
+
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'zenleap-settings-pill zenleap-pill-export';
+    const exportSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    exportSvg.setAttribute('viewBox', '0 0 24 24');
+    exportSvg.setAttribute('fill', 'none');
+    exportSvg.setAttribute('stroke', 'currentColor');
+    exportSvg.setAttribute('stroke-width', '2');
+    exportSvg.setAttribute('stroke-linecap', 'round');
+    exportSvg.setAttribute('stroke-linejoin', 'round');
+    const ePath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    ePath1.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
+    const ePoly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    ePoly.setAttribute('points', '7 10 12 15 17 10');
+    const eLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    eLine.setAttribute('x1', '12'); eLine.setAttribute('y1', '15'); eLine.setAttribute('x2', '12'); eLine.setAttribute('y2', '3');
+    exportSvg.appendChild(ePath1); exportSvg.appendChild(ePoly); exportSvg.appendChild(eLine);
+    const exportLabel = document.createElement('span');
+    exportLabel.textContent = 'Export';
+    exportBtn.appendChild(exportSvg);
+    exportBtn.appendChild(exportLabel);
+    exportBtn.addEventListener('click', () => exportSettings());
+
+    const importBtn = document.createElement('button');
+    importBtn.className = 'zenleap-settings-pill zenleap-pill-import';
+    const importSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    importSvg.setAttribute('viewBox', '0 0 24 24');
+    importSvg.setAttribute('fill', 'none');
+    importSvg.setAttribute('stroke', 'currentColor');
+    importSvg.setAttribute('stroke-width', '2');
+    importSvg.setAttribute('stroke-linecap', 'round');
+    importSvg.setAttribute('stroke-linejoin', 'round');
+    const iPath1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    iPath1.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
+    const iPoly = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    iPoly.setAttribute('points', '17 8 12 3 7 8');
+    const iLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    iLine.setAttribute('x1', '12'); iLine.setAttribute('y1', '3'); iLine.setAttribute('x2', '12'); iLine.setAttribute('y2', '15');
+    importSvg.appendChild(iPath1); importSvg.appendChild(iPoly); importSvg.appendChild(iLine);
+    const importLabel = document.createElement('span');
+    importLabel.textContent = 'Import';
+    importBtn.appendChild(importSvg);
+    importBtn.appendChild(importLabel);
+    importBtn.addEventListener('click', () => importSettingsFromFile());
+
+    footerActions.appendChild(exportBtn);
+    footerActions.appendChild(importBtn);
+
+    // Right side: Reset All
     const resetAllBtn = document.createElement('button');
     resetAllBtn.className = 'zenleap-settings-reset-all';
     resetAllBtn.textContent = 'Reset All to Defaults';
@@ -8806,6 +9222,8 @@
       resetAllSettings();
       renderSettingsContent();
     });
+
+    footer.appendChild(footerActions);
     footer.appendChild(resetAllBtn);
 
     container.appendChild(header);
@@ -8952,17 +9370,45 @@
       }
       .zenleap-settings-reset-btn:hover { color: var(--zl-error); background: color-mix(in srgb, var(--zl-error) 10%, transparent); }
       .zenleap-settings-footer {
-        padding: 12px 24px; border-top: 1px solid var(--zl-border-subtle);
-        display: flex; justify-content: center;
+        padding: 14px 24px; border-top: 1px solid var(--zl-border-subtle);
+        display: flex; align-items: center; justify-content: space-between;
       }
+      .zenleap-settings-footer-actions {
+        display: flex; align-items: center; gap: 6px;
+      }
+      .zenleap-settings-pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 7px 14px; border-radius: var(--zl-r-sm); border: 1px solid transparent;
+        font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.18s;
+        font-family: var(--zl-font-ui); white-space: nowrap;
+      }
+      .zenleap-settings-pill svg { width: 14px; height: 14px; flex-shrink: 0; transition: transform 0.18s; }
+      .zenleap-pill-export {
+        background: var(--zl-accent-dim); border-color: var(--zl-accent-border); color: var(--zl-accent);
+      }
+      .zenleap-pill-export:hover {
+        background: var(--zl-accent-mid); border-color: var(--zl-accent);
+      }
+      .zenleap-pill-export:hover svg { transform: translateY(-1px); }
+      .zenleap-pill-export:active { transform: scale(0.97); }
+      .zenleap-pill-import {
+        background: var(--zl-bg-raised); border-color: var(--zl-border-strong); color: var(--zl-text-secondary);
+      }
+      .zenleap-pill-import:hover {
+        background: var(--zl-bg-hover); border-color: var(--zl-border-strong); color: var(--zl-text-primary);
+      }
+      .zenleap-pill-import:hover svg { transform: translateY(1px); }
+      .zenleap-pill-import:active { transform: scale(0.97); }
       .zenleap-settings-reset-all {
-        background: rgba(224, 108, 117, 0.1); border: 1px solid rgba(224, 108, 117, 0.3);
-        color: var(--zl-error); padding: 6px 16px; border-radius: var(--zl-r-sm); cursor: pointer;
-        font-size: 12px; font-weight: 500; transition: all 0.15s; font-family: var(--zl-font-ui);
+        background: color-mix(in srgb, var(--zl-error) 8%, transparent);
+        border: 1px solid color-mix(in srgb, var(--zl-error) 20%, transparent);
+        color: var(--zl-error); padding: 7px 14px; border-radius: var(--zl-r-sm); cursor: pointer;
+        font-size: 12px; font-weight: 500; transition: all 0.18s; font-family: var(--zl-font-ui);
       }
       .zenleap-settings-reset-all:hover {
-        background: rgba(224, 108, 117, 0.2); border-color: rgba(224, 108, 117, 0.5);
+        background: color-mix(in srgb, var(--zl-error) 15%, transparent); border-color: color-mix(in srgb, var(--zl-error) 35%, transparent);
       }
+      .zenleap-settings-reset-all:active { transform: scale(0.97); }
       .zenleap-color-control { display: flex; align-items: center; gap: 8px; }
       .zenleap-color-picker {
         width: 32px; height: 32px; border: none; border-radius: var(--zl-r-sm);
@@ -9303,6 +9749,100 @@
         transition: all 0.15s;
       }
       .zenleap-theme-editor-cancel-btn:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+      /* Import confirmation dialog */
+      #zenleap-import-overlay {
+        position: fixed; inset: 0; z-index: 100010;
+        display: flex; align-items: center; justify-content: center; padding: 20px;
+        animation: zenleap-import-overlay-in 0.2s ease-out;
+      }
+      @keyframes zenleap-import-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+      .zenleap-import-backdrop {
+        position: absolute; inset: 0; background: var(--zl-backdrop); backdrop-filter: blur(4px);
+      }
+      .zenleap-import-dialog {
+        position: relative; width: 100%; max-width: 440px;
+        background: var(--zl-bg-surface); border: 1px solid var(--zl-border-subtle);
+        border-radius: var(--zl-r-xl); overflow: hidden;
+        box-shadow: var(--zl-shadow-modal);
+        animation: zenleap-import-dialog-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      @keyframes zenleap-import-dialog-in {
+        from { opacity: 0; transform: scale(0.96) translateY(-6px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      .zenleap-import-dialog-header {
+        padding: 18px 20px 14px; display: flex; align-items: center; gap: 10px;
+      }
+      .zenleap-import-dialog-icon {
+        width: 32px; height: 32px; border-radius: var(--zl-r-md);
+        background: var(--zl-accent-dim);
+        display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      }
+      .zenleap-import-dialog-icon svg { width: 16px; height: 16px; color: var(--zl-accent); }
+      .zenleap-import-dialog-title { font-size: 15px; font-weight: 600; color: var(--zl-text-primary); }
+      .zenleap-import-dialog-subtitle { font-size: 12px; color: var(--zl-text-muted); margin-top: 2px; }
+      .zenleap-import-changes {
+        padding: 0 20px; max-height: 220px; overflow-y: auto;
+      }
+      .zenleap-import-changes::-webkit-scrollbar { width: 6px; }
+      .zenleap-import-changes::-webkit-scrollbar-track { background: transparent; }
+      .zenleap-import-changes::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+      .zenleap-import-change-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 10px; border-radius: var(--zl-r-sm); font-size: 12px; transition: background 0.1s;
+      }
+      .zenleap-import-change-row:hover { background: var(--zl-bg-hover); }
+      .zenleap-import-change-name { flex: 1; color: var(--zl-text-secondary); font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-import-change-arrow { color: var(--zl-text-muted); flex-shrink: 0; font-size: 11px; }
+      .zenleap-import-change-from { color: var(--zl-text-tertiary); font-family: var(--zl-font-mono); font-size: 11px; max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-import-change-to { color: var(--zl-gold); font-family: var(--zl-font-mono); font-size: 11px; font-weight: 600; max-width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-import-summary {
+        margin: 12px 20px; padding: 8px 12px;
+        background: var(--zl-accent-dim); border: 1px solid var(--zl-accent-border);
+        border-radius: var(--zl-r-md); font-size: 12px; color: var(--zl-text-tertiary);
+        display: flex; align-items: center; gap: 6px;
+      }
+      .zenleap-import-summary strong { color: var(--zl-accent); font-weight: 600; }
+      .zenleap-import-dialog-actions {
+        padding: 14px 20px; display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+        border-top: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-import-btn-cancel {
+        padding: 7px 16px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-border-strong);
+        background: var(--zl-bg-raised); color: var(--zl-text-secondary); font-size: 12px; font-weight: 500;
+        font-family: var(--zl-font-ui); cursor: pointer; transition: all 0.15s;
+      }
+      .zenleap-import-btn-cancel:hover { background: var(--zl-bg-hover); color: var(--zl-text-primary); }
+      .zenleap-import-btn-apply {
+        padding: 7px 18px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-accent-border);
+        background: var(--zl-accent-dim); color: var(--zl-accent); font-size: 12px; font-weight: 600;
+        font-family: var(--zl-font-ui); cursor: pointer; transition: all 0.15s;
+      }
+      .zenleap-import-btn-apply:hover { background: var(--zl-accent-mid); border-color: var(--zl-accent); }
+      .zenleap-import-btn-apply:active, .zenleap-import-btn-cancel:active { transform: scale(0.97); }
+      /* Settings toast */
+      .zenleap-settings-toast {
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        z-index: 100020; display: inline-flex; align-items: center; gap: 8px;
+        padding: 10px 18px; background: var(--zl-bg-surface);
+        border: 1px solid var(--zl-border-subtle); border-radius: var(--zl-r-md);
+        box-shadow: var(--zl-shadow-modal);
+        font-size: 13px; font-weight: 500; backdrop-filter: blur(12px);
+        font-family: var(--zl-font-ui);
+        animation: zenleap-settings-toast-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        white-space: nowrap;
+      }
+      @keyframes zenleap-settings-toast-in {
+        from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(0.96); }
+        to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+      }
+      @keyframes zenleap-settings-toast-out {
+        from { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+        to { opacity: 0; transform: translateX(-50%) translateY(4px) scale(0.97); }
+      }
+      .zenleap-settings-toast svg { width: 15px; height: 15px; flex-shrink: 0; }
+      .zenleap-settings-toast.success { border-color: color-mix(in srgb, var(--zl-success) 15%, transparent); color: var(--zl-success); }
+      .zenleap-settings-toast.error { border-color: color-mix(in srgb, var(--zl-error) 15%, transparent); color: var(--zl-error); }
     `;
     document.head.appendChild(style);
     document.documentElement.appendChild(modal);
@@ -9707,6 +10247,7 @@
 
   function exitSettingsMode() {
     if (!settingsMode) return;
+    dismissImportConfirmation();
     stopKeyRecording();
     if (themeEditorActive) {
       themeEditorActive = false;
@@ -13918,7 +14459,12 @@
       if (event.key === 'Escape' && !settingsRecordingId) {
         event.preventDefault();
         event.stopPropagation();
-        exitSettingsMode();
+        // Dismiss import confirmation first if open, otherwise close settings
+        if (document.getElementById('zenleap-import-overlay')) {
+          dismissImportConfirmation();
+        } else {
+          exitSettingsMode();
+        }
       } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available') {
         event.preventDefault();
         event.stopPropagation();
