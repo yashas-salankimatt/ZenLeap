@@ -1132,6 +1132,19 @@
   let searchVimIndicator = null;
   let searchBreadcrumb = null;    // Breadcrumb for command sub-flows
 
+  // URL bar vim mode state (Cmd+L / Cmd+T native browser bar)
+  let urlbarVimMode = 'insert';   // 'insert' or 'normal'
+  let urlbarCursorPos = 0;
+  let urlbarVimActive = false;    // true while URL bar is focused and we're managing it
+  let urlbarVimIndicator = null;  // INSERT/NORMAL badge in URL bar
+  let urlbarVimSetupDone = false; // Tracks if listeners have been attached
+  let urlbarSuppressKeypress = false; // Set by keydown handler, cleared by keypress handler
+  // jj-to-normal-mode state for URL bar
+  let urlbarJjPending = false;
+  let urlbarJjPendingTimeout = null;
+  let urlbarJjSavedValue = null;
+  let urlbarJjSavedCursor = 0;
+
   // Command mode state
   let commandMode = false;        // true when in command palette mode
   let commandQuery = '';           // search query within command mode
@@ -1167,6 +1180,10 @@
   let settingsSearchQuery = '';
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
+
+  // About page state
+  let aboutUpdateState = null; // null | 'checking' | 'available' | 'uptodate' | 'error'
+  let aboutRemoteVersion = null;
 
   // Theme live-preview state (for Switch Theme command)
   let _themePreviewOriginal = null; // theme ID to restore on Escape
@@ -8756,7 +8773,7 @@
     const tabs = document.createElement('div');
     tabs.className = 'zenleap-settings-tabs';
     tabs.id = 'zenleap-settings-tabs';
-    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced'].forEach(cat => {
+    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced', 'About'].forEach(cat => {
       const btn = document.createElement('button');
       btn.textContent = cat;
       btn.dataset.tab = cat;
@@ -8770,6 +8787,7 @@
         tabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         renderSettingsContent();
+        if (cat === 'About') checkAboutUpdate();
       });
       tabs.appendChild(btn);
     });
@@ -9021,6 +9039,98 @@
         background: var(--zl-accent-mid); border-color: var(--zl-accent);
       }
 
+      /* ═══ About Page ═══ */
+      .zenleap-about {
+        display: flex; flex-direction: column; align-items: center;
+        padding: 32px 16px 24px; gap: 20px; min-height: 100%;
+      }
+      .zenleap-about-hero { text-align: center; margin-bottom: 4px; }
+      .zenleap-about-title {
+        margin: 0; font-size: 32px; font-weight: 700; color: var(--zl-accent);
+        letter-spacing: -0.5px; line-height: 1;
+      }
+      .zenleap-about-tagline {
+        margin: 12px 0 0; font-size: 15px; font-weight: 500; color: var(--zl-text-primary);
+        letter-spacing: -0.2px;
+      }
+      .zenleap-about-desc {
+        margin: 6px 0 0; font-size: 12px; color: var(--zl-text-muted);
+        max-width: 320px; line-height: 1.5;
+      }
+      .zenleap-about-card {
+        width: 100%; max-width: 360px;
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-subtle);
+        border-radius: var(--zl-r-lg); padding: 14px 18px;
+        transition: border-color 0.15s;
+      }
+      .zenleap-about-card:hover { border-color: var(--zl-border-strong); }
+      .zenleap-about-version-row {
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .zenleap-about-version-label {
+        font-size: 13px; font-weight: 500; color: var(--zl-text-secondary);
+      }
+      .zenleap-about-version-right {
+        display: flex; align-items: center; gap: 10px;
+      }
+      .zenleap-about-version-num {
+        font-size: 13px; font-weight: 600; color: var(--zl-text-primary);
+        font-family: var(--zl-font-mono);
+      }
+      .zenleap-about-update-badge {
+        font-size: 11px; font-weight: 500; padding: 2px 10px;
+        border-radius: 999px; font-family: var(--zl-font-ui);
+        transition: all 0.2s ease;
+      }
+      .zenleap-about-update-badge.checking {
+        color: var(--zl-text-muted); background: var(--zl-bg-elevated);
+        animation: zenleap-about-pulse 1.5s ease-in-out infinite;
+      }
+      .zenleap-about-update-badge.available {
+        color: var(--zl-accent); background: var(--zl-accent-dim);
+        border: 1px solid var(--zl-accent-border);
+      }
+      .zenleap-about-update-badge.uptodate {
+        color: var(--zl-green, var(--zl-text-muted)); background: color-mix(in srgb, var(--zl-green, var(--zl-text-muted)) 12%, transparent);
+      }
+      .zenleap-about-update-badge.error {
+        color: var(--zl-text-muted); background: var(--zl-bg-elevated);
+      }
+      @keyframes zenleap-about-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+      .zenleap-about-update-hint {
+        margin-top: 10px; text-align: center; font-size: 12px; color: var(--zl-text-muted);
+        animation: zenleap-modal-enter 0.3s ease;
+      }
+      .zenleap-about-update-hint kbd {
+        background: var(--zl-accent-dim); color: var(--zl-accent); padding: 2px 7px;
+        border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 11px;
+        font-weight: 600; border: 1px solid var(--zl-accent-border);
+        box-shadow: var(--zl-shadow-kbd);
+      }
+      .zenleap-about-link-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 4px 0; border-radius: var(--zl-r-sm); transition: all 0.15s;
+        cursor: pointer;
+      }
+      .zenleap-about-link-row:hover .zenleap-about-link-url { color: var(--zl-accent); }
+      .zenleap-about-link-icon {
+        color: var(--zl-text-secondary); display: flex; align-items: center; flex-shrink: 0;
+      }
+      .zenleap-about-link-label {
+        font-size: 13px; font-weight: 500; color: var(--zl-text-secondary); flex-shrink: 0;
+      }
+      .zenleap-about-link-url {
+        font-size: 12px; color: var(--zl-text-muted); font-family: var(--zl-font-mono);
+        transition: color 0.15s; margin-left: auto;
+      }
+      .zenleap-about-footer {
+        margin-top: 8px; font-size: 11px; color: var(--zl-text-muted);
+        font-style: italic; opacity: 0.7; text-align: center;
+      }
+
       /* ═══ Theme Editor ═══ */
       .zenleap-theme-editor-section {
         margin-top: 24px; border-top: 1px solid var(--zl-border-subtle); padding-top: 16px;
@@ -9209,6 +9319,19 @@
     if (!body) return;
     const scrollTop = body.scrollTop;
     body.innerHTML = '';
+
+    // Toggle search / footer visibility based on tab
+    const isAbout = settingsActiveTab === 'About';
+    const searchBar = body.parentElement?.querySelector('.zenleap-settings-search');
+    const footer = body.parentElement?.querySelector('.zenleap-settings-footer');
+    if (searchBar) searchBar.style.display = isAbout ? 'none' : '';
+    if (footer) footer.style.display = isAbout ? 'none' : '';
+
+    // About tab — custom layout
+    if (isAbout) {
+      body.appendChild(renderAboutContent());
+      return;
+    }
 
     const isSearching = !!settingsSearchQuery;
 
@@ -9598,7 +9721,174 @@
 
     settingsMode = false;
     settingsModal.classList.remove('active');
+    aboutUpdateState = null;
+    aboutRemoteVersion = null;
     log('Exited settings mode');
+  }
+
+  // ── About Page ─────────────────────────────────────────────────
+
+  let _aboutCheckInFlight = false;
+
+  async function checkAboutUpdate() {
+    if (_aboutCheckInFlight) return;
+    _aboutCheckInFlight = true;
+    aboutUpdateState = 'checking';
+    aboutRemoteVersion = null;
+    renderAboutVersionStatus();
+
+    const result = await checkForZenLeapUpdate();
+    _aboutCheckInFlight = false;
+    if (!settingsMode || settingsActiveTab !== 'About') return;
+
+    if (!result) {
+      aboutUpdateState = 'error';
+    } else if (result.available) {
+      aboutUpdateState = 'available';
+      aboutRemoteVersion = result.remoteVersion;
+    } else {
+      aboutUpdateState = 'uptodate';
+    }
+    renderAboutVersionStatus();
+  }
+
+  function renderAboutVersionStatus() {
+    const badge = document.getElementById('zenleap-about-update-badge');
+    const hint = document.getElementById('zenleap-about-update-hint');
+    if (!badge) return;
+
+    badge.className = 'zenleap-about-update-badge';
+
+    if (aboutUpdateState === 'checking') {
+      badge.textContent = 'checking\u2026';
+      badge.classList.add('checking');
+      if (hint) hint.style.display = 'none';
+    } else if (aboutUpdateState === 'available') {
+      badge.textContent = `v${aboutRemoteVersion} available`;
+      badge.classList.add('available');
+      if (hint) hint.style.display = '';
+    } else if (aboutUpdateState === 'uptodate') {
+      badge.textContent = 'up to date';
+      badge.classList.add('uptodate');
+      if (hint) hint.style.display = 'none';
+    } else if (aboutUpdateState === 'error') {
+      badge.textContent = 'check failed';
+      badge.classList.add('error');
+      if (hint) hint.style.display = 'none';
+    }
+  }
+
+  function renderAboutContent() {
+    const wrap = document.createElement('div');
+    wrap.className = 'zenleap-about';
+
+    // ── Logo / Title ──
+    const hero = document.createElement('div');
+    hero.className = 'zenleap-about-hero';
+
+    const title = document.createElement('h2');
+    title.className = 'zenleap-about-title';
+    title.textContent = 'ZenLeap';
+    hero.appendChild(title);
+
+    const tagline = document.createElement('p');
+    tagline.className = 'zenleap-about-tagline';
+    tagline.textContent = 'Navigate at the speed of thought.';
+    hero.appendChild(tagline);
+
+    const desc = document.createElement('p');
+    desc.className = 'zenleap-about-desc';
+    desc.textContent = 'Vim-style keyboard navigation for your browser. Less reaching, more doing.';
+    hero.appendChild(desc);
+
+    wrap.appendChild(hero);
+
+    // ── Version card ──
+    const versionCard = document.createElement('div');
+    versionCard.className = 'zenleap-about-card';
+
+    const versionRow = document.createElement('div');
+    versionRow.className = 'zenleap-about-version-row';
+
+    const versionLabel = document.createElement('span');
+    versionLabel.className = 'zenleap-about-version-label';
+    versionLabel.textContent = 'Version';
+
+    const versionRight = document.createElement('div');
+    versionRight.className = 'zenleap-about-version-right';
+
+    const versionNum = document.createElement('span');
+    versionNum.className = 'zenleap-about-version-num';
+    versionNum.textContent = `v${VERSION}`;
+
+    const updateBadge = document.createElement('span');
+    updateBadge.id = 'zenleap-about-update-badge';
+    updateBadge.className = 'zenleap-about-update-badge';
+
+    versionRight.appendChild(versionNum);
+    versionRight.appendChild(updateBadge);
+    versionRow.appendChild(versionLabel);
+    versionRow.appendChild(versionRight);
+    versionCard.appendChild(versionRow);
+
+    // Update hint (shown only when update available)
+    const updateHint = document.createElement('div');
+    updateHint.id = 'zenleap-about-update-hint';
+    updateHint.className = 'zenleap-about-update-hint';
+    updateHint.style.display = 'none';
+
+    const hintKbd = document.createElement('kbd');
+    hintKbd.textContent = '\u21B5';
+    const hintText = document.createTextNode(' to update');
+    updateHint.appendChild(hintKbd);
+    updateHint.appendChild(hintText);
+    versionCard.appendChild(updateHint);
+
+    wrap.appendChild(versionCard);
+
+    // ── Links card ──
+    const linksCard = document.createElement('div');
+    linksCard.className = 'zenleap-about-card';
+
+    const githubRow = document.createElement('div');
+    githubRow.className = 'zenleap-about-link-row';
+
+    const ghIcon = document.createElement('span');
+    ghIcon.className = 'zenleap-about-link-icon';
+    ghIcon.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`;
+
+    const ghLabel = document.createElement('span');
+    ghLabel.className = 'zenleap-about-link-label';
+    ghLabel.textContent = 'GitHub';
+
+    const ghUrl = document.createElement('span');
+    ghUrl.className = 'zenleap-about-link-url';
+    ghUrl.textContent = 'yashas-salankimatt/ZenLeap';
+
+    githubRow.appendChild(ghIcon);
+    githubRow.appendChild(ghLabel);
+    githubRow.appendChild(ghUrl);
+
+    githubRow.addEventListener('click', () => {
+      gBrowser.addTab('https://github.com/yashas-salankimatt/ZenLeap', {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      exitSettingsMode();
+    });
+
+    linksCard.appendChild(githubRow);
+    wrap.appendChild(linksCard);
+
+    // ── Footer ──
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-about-footer';
+    footer.textContent = 'Made for those who\u2019d rather not touch the mouse.';
+    wrap.appendChild(footer);
+
+    // Set initial badge state
+    setTimeout(() => renderAboutVersionStatus(), 0);
+
+    return wrap;
   }
 
   // ── Theme Editor ──────────────────────────────────────────────
@@ -11151,6 +11441,595 @@
     // Find end of word
     while (pos < len && !/\s/.test(text[pos])) pos++;
     return Math.max(0, pos - 1);
+  }
+
+  // ============================================
+  // URL BAR VIM MODE (Cmd+L / Cmd+T native bar)
+  // ============================================
+
+  function getUrlbarInput() {
+    try { return gURLBar?.inputField; } catch (e) { return null; }
+  }
+
+  // --- jj helpers for URL bar ---
+  function cancelUrlbarJJ() {
+    if (urlbarJjPendingTimeout) {
+      clearTimeout(urlbarJjPendingTimeout);
+      urlbarJjPendingTimeout = null;
+    }
+    urlbarJjPending = false;
+    urlbarJjSavedValue = null;
+  }
+
+  function flushUrlbarJ() {
+    if (!urlbarJjPending) return;
+    const savedVal = urlbarJjSavedValue;
+    const savedCur = urlbarJjSavedCursor;
+    cancelUrlbarJJ();
+    const input = getUrlbarInput();
+    if (!input) return;
+    // Insert the held 'j' at the saved cursor position
+    input.value = (savedVal !== null ? savedVal : '').slice(0, savedCur) + 'j' +
+                  (savedVal !== null ? savedVal : '').slice(savedCur);
+    input.setSelectionRange(savedCur + 1, savedCur + 1);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // --- Comprehensive keydown handler attached on gURLBar (moz-urlbar ancestor) ---
+  // MUST be on the ancestor (not the input) with capture:true so it fires
+  // during the capture phase BEFORE the event reaches the input element.
+  // stopPropagation() then prevents the event from ever reaching the input,
+  // which is the only reliable way to prevent moz-urlbar's internal editor
+  // from processing the keystroke. Handlers on the input itself fire too
+  // late — moz-urlbar registers its own handlers first and the editor
+  // processes keys before our preventDefault can take effect.
+  function urlbarInputKeyHandler(e) {
+    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+
+    // Skip modifier-only keys — they never generate keypress/beforeinput
+    // and would leave urlbarSuppressKeypress stuck true.
+    if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+
+    // ---- NORMAL MODE: intercept ALL keys ----
+    if (urlbarVimMode === 'normal') {
+      // Escape in normal mode: let Firefox close the URL bar
+      if (e.key === 'Escape') {
+        urlbarVimActive = false;
+        urlbarVimMode = 'insert';
+        cancelUrlbarJJ();
+        hideUrlbarVimIndicator();
+        gURLBar?.removeAttribute('data-zenleap-vim');
+        // Don't preventDefault — let Firefox handle Escape (revert + close)
+        return;
+      }
+
+      // Let browser shortcuts (Cmd/Ctrl+key) pass through unmodified,
+      // except Ctrl+j which we handle as "accept suggestion".
+      if (e.metaKey || (e.ctrlKey && e.key !== 'j')) return;
+
+      // Stop event from reaching input entirely + prevent default action.
+      // CRITICAL: set suppress flag BEFORE dispatching to vim handler,
+      // because the handler may switch to insert mode (i/a/I/A/s/S/C).
+      // The subsequent keypress event would then see insert mode and let
+      // the character through. The flag ensures keypress is also blocked.
+      urlbarSuppressKeypress = true;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      handleUrlbarVimNormalMode(e.key, e);
+      return;
+    }
+
+    // ---- INSERT MODE ----
+    // Escape: switch to normal mode
+    if (e.key === 'Escape') {
+      urlbarSuppressKeypress = true;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      flushUrlbarJ(); // Commit any pending 'j' before switching modes
+      const input = getUrlbarInput();
+      urlbarCursorPos = input ? (input.selectionStart || 0) : 0;
+      urlbarVimMode = 'normal';
+      updateUrlbarVimIndicator();
+      return;
+    }
+
+    // jj detection in insert mode
+    const input = getUrlbarInput();
+    if (!input) return;
+
+    if (e.key === 'j' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      urlbarSuppressKeypress = true;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      if (urlbarJjPending) {
+        // Second j within threshold → escape to normal mode
+        const savedVal = urlbarJjSavedValue;
+        const savedCur = urlbarJjSavedCursor;
+        cancelUrlbarJJ();
+        input.value = savedVal !== null ? savedVal : '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        urlbarCursorPos = savedCur;
+        urlbarVimMode = 'normal';
+        updateUrlbarVimIndicator();
+        // Navigate down to first result so user is on a result in normal mode
+        try {
+          if (gURLBar.view?.isOpen) {
+            gURLBar.controller.userSelectionBehavior = 'arrow';
+            gURLBar.view.selectBy(1, { reverse: false });
+          }
+        } catch (_e) { /* ignore */ }
+      } else {
+        // First j → save state, wait for possible second j
+        urlbarJjSavedValue = input.value;
+        urlbarJjSavedCursor = input.selectionStart || 0;
+        urlbarJjPending = true;
+        urlbarJjPendingTimeout = setTimeout(flushUrlbarJ, S['timing.jjThreshold']);
+      }
+      return;
+    }
+
+    // Flush pending j when any other key arrives
+    if (urlbarJjPending) {
+      flushUrlbarJ();
+    }
+  }
+
+  // Keypress handler — blocks the keypress event that follows an intercepted
+  // keydown. Without this, mode-switching keys (i/a/I/A/s/S/C) would type
+  // their character: keydown switches mode to insert, then keypress fires,
+  // sees insert mode, and lets the character through. The suppress flag
+  // bridges this gap. Uses setTimeout to defer clearing so that beforeinput
+  // (which fires after keypress) can also see the flag.
+  function urlbarKeypressHandler(e) {
+    if (urlbarSuppressKeypress) {
+      // Defer clear so beforeinput handler can also see the flag
+      setTimeout(() => { urlbarSuppressKeypress = false; }, 0);
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      return;
+    }
+    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+    // Belt-and-suspenders: also block keypress if still in normal mode
+    if (urlbarVimMode === 'normal' && e.key !== 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }
+  }
+
+  // beforeinput handler — last line of defense against text insertion.
+  // Checks the suppress flag (deferred-cleared by keypress) and normal mode.
+  function urlbarBeforeinputHandler(e) {
+    if (urlbarSuppressKeypress) {
+      e.preventDefault();
+      return;
+    }
+    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+    if (urlbarVimMode === 'normal') {
+      e.preventDefault();
+    }
+  }
+
+  // --- Focus/blur handlers attached to inputField ---
+  function onUrlbarFocus() {
+    if (urlbarVimActive) return; // Already active
+    urlbarVimActive = true;
+    urlbarVimMode = 'insert';
+    urlbarCursorPos = 0;
+    urlbarSuppressKeypress = false;
+    cancelUrlbarJJ();
+    if (S['display.vimModeInBars']) {
+      ensureUrlbarVimIndicator();
+      updateUrlbarVimIndicator();
+    }
+  }
+
+  function onUrlbarBlur() {
+    if (!urlbarVimActive) return;
+    flushUrlbarJ(); // Commit any pending 'j' before deactivating
+    urlbarVimActive = false;
+    urlbarVimMode = 'insert';
+    urlbarCursorPos = 0;
+    urlbarSuppressKeypress = false;
+    hideUrlbarVimIndicator();
+    gURLBar?.removeAttribute('data-zenleap-vim');
+  }
+
+  // Lazily attach listeners (inputField may not exist at init).
+  function lazySetupUrlbarVim() {
+    if (urlbarVimSetupDone) return;
+
+    const input = getUrlbarInput();
+    if (!input) return;
+
+    // Attach keydown/keypress/beforeinput on gURLBar (the moz-urlbar ancestor)
+    // in capture phase. This fires BEFORE the event reaches the input element,
+    // and stopPropagation() prevents the input from ever seeing it.
+    // This is the ONLY reliable way to prevent moz-urlbar's internal editor
+    // from processing keystrokes.
+    gURLBar.addEventListener('keydown', urlbarInputKeyHandler, true);
+    gURLBar.addEventListener('keypress', urlbarKeypressHandler, true);
+
+    // beforeinput on the input itself — last line of defense
+    input.addEventListener('beforeinput', urlbarBeforeinputHandler, true);
+
+    // Focus/blur listeners for immediate badge display
+    input.addEventListener('focus', onUrlbarFocus);
+    input.addEventListener('blur', onUrlbarBlur);
+
+    urlbarVimSetupDone = true;
+    log('URL bar vim mode listeners attached (on gURLBar capture)');
+
+    // If already focused, activate immediately
+    if (gURLBar.focused) onUrlbarFocus();
+  }
+
+  // --- Indicator badge ---
+  function ensureUrlbarVimIndicator() {
+    if (urlbarVimIndicator && urlbarVimIndicator.isConnected) return;
+
+    // moz-urlbar uses class, not id, for this container
+    const container = gURLBar?.querySelector('.urlbar-input-container')
+      || gURLBar?.inputField?.closest('.urlbar-input-container');
+    if (!container) return;
+
+    urlbarVimIndicator = document.createElement('span');
+    urlbarVimIndicator.id = 'zenleap-urlbar-vim-indicator';
+    urlbarVimIndicator.textContent = 'INSERT';
+
+    // Append at the end of the input container (right side)
+    container.appendChild(urlbarVimIndicator);
+  }
+
+  function updateUrlbarVimIndicator() {
+    if (!S['display.vimModeInBars']) {
+      hideUrlbarVimIndicator();
+      // Clean up normal mode state if we were in it (setting was toggled off)
+      if (urlbarVimMode === 'normal') {
+        urlbarVimMode = 'insert';
+        const input = getUrlbarInput();
+        if (input) {
+          const pos = urlbarCursorPos;
+          input.setSelectionRange(pos, pos); // collapse block cursor selection
+          input.focus();
+        }
+      }
+      gURLBar?.removeAttribute('data-zenleap-vim');
+      return;
+    }
+    if (!urlbarVimIndicator) return;
+
+    urlbarVimIndicator.style.display = 'inline-flex';
+
+    if (urlbarVimMode === 'insert') {
+      urlbarVimIndicator.textContent = 'INSERT';
+      urlbarVimIndicator.classList.remove('normal');
+      gURLBar?.removeAttribute('data-zenleap-vim');
+    } else {
+      urlbarVimIndicator.textContent = 'NORMAL';
+      urlbarVimIndicator.classList.add('normal');
+      gURLBar?.setAttribute('data-zenleap-vim', 'normal');
+      updateUrlbarBlockCursor();
+    }
+  }
+
+  function hideUrlbarVimIndicator() {
+    if (urlbarVimIndicator) urlbarVimIndicator.style.display = 'none';
+  }
+
+  // Use native selection to simulate a block cursor in normal mode.
+  // Selecting exactly one character at the cursor position creates
+  // a highlighted block, styled via ::selection CSS.
+  function updateUrlbarBlockCursor() {
+    const input = getUrlbarInput();
+    if (!input) return;
+
+    const text = input.value || '';
+    const len = text.length;
+
+    if (len === 0) {
+      input.setSelectionRange(0, 0);
+      return;
+    }
+
+    // Clamp cursor position
+    if (urlbarCursorPos >= len) urlbarCursorPos = len - 1;
+    if (urlbarCursorPos < 0) urlbarCursorPos = 0;
+
+    // Select the character at cursor to create block cursor appearance
+    input.setSelectionRange(urlbarCursorPos, urlbarCursorPos + 1);
+  }
+
+  // --- Vim normal mode commands for URL bar ---
+  function handleUrlbarVimNormalMode(key, event) {
+    const input = getUrlbarInput();
+    if (!input) return;
+
+    const text = input.value || '';
+    const len = text.length;
+
+    // Enter / Ctrl+j to accept the currently selected autocomplete suggestion.
+    // Must be checked BEFORE j/k navigation so Ctrl+j isn't caught by the j branch.
+    if (key === 'Enter' || (event.ctrlKey && key === 'j')) {
+      // Exit vim state and let Firefox process the navigation
+      urlbarVimMode = 'insert';
+      urlbarVimActive = false;
+      cancelUrlbarJJ();
+      hideUrlbarVimIndicator();
+      gURLBar?.removeAttribute('data-zenleap-vim');
+      input.setSelectionRange(input.value.length, input.value.length);
+      // Create a fresh event — the original was preventDefault'd/stopPropagation'd
+      // by the capture-phase handler. handleCommand may inspect these flags.
+      try {
+        const syntheticEvent = new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+          ctrlKey: event.ctrlKey, shiftKey: event.shiftKey,
+          altKey: event.altKey, metaKey: event.metaKey,
+        });
+        gURLBar.handleCommand(syntheticEvent);
+      } catch (e) {
+        // handleCommand failed — try loading the URL directly as fallback
+        try {
+          const url = input.value.trim();
+          if (url) {
+            gBrowser.loadURI(Services.io.newURI(url), {
+              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            });
+          }
+        } catch (_) { /* truly no recourse */ }
+      }
+      return;
+    }
+
+    // Result navigation with j/k — use the view's selectBy API.
+    // Set userSelectionBehavior to "arrow" to match Firefox's internal handling,
+    // which prevents re-search and preserves the result list.
+    if (key === 'j' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      try {
+        if (gURLBar.view?.isOpen) {
+          gURLBar.controller.userSelectionBehavior = 'arrow';
+          gURLBar.view.selectBy(1, { reverse: false });
+        }
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    if (key === 'k' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      try {
+        if (gURLBar.view?.isOpen) {
+          gURLBar.controller.userSelectionBehavior = 'arrow';
+          gURLBar.view.selectBy(1, { reverse: true });
+        }
+      } catch (e) { /* ignore */ }
+      return;
+    }
+
+    // Cursor movement commands
+    switch (key) {
+      case 'h': // Left
+        urlbarCursorPos = Math.max(0, urlbarCursorPos - 1);
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'l': // Right
+        urlbarCursorPos = Math.min(len > 0 ? len - 1 : 0, urlbarCursorPos + 1);
+        updateUrlbarBlockCursor();
+        break;
+
+      case '0': // Beginning of line
+        urlbarCursorPos = 0;
+        updateUrlbarBlockCursor();
+        break;
+
+      case '$': // End of line
+        urlbarCursorPos = Math.max(0, len - 1);
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'w': // Word forward
+        urlbarCursorPos = findNextWordBoundary(text, urlbarCursorPos, 'forward');
+        if (urlbarCursorPos >= len && len > 0) urlbarCursorPos = len - 1;
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'b': // Word backward
+        urlbarCursorPos = findNextWordBoundary(text, urlbarCursorPos, 'backward');
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'e': // End of word
+        urlbarCursorPos = findWordEnd(text, urlbarCursorPos);
+        if (urlbarCursorPos >= len && len > 0) urlbarCursorPos = len - 1;
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'G': // Go to last autocomplete result
+        try {
+          if (gURLBar.view?.isOpen) {
+            gURLBar.controller.userSelectionBehavior = 'arrow';
+            const count = gURLBar.view.visibleRowCount || 0;
+            if (count > 0) gURLBar.view.selectBy(count, { reverse: false });
+          }
+        } catch (e) { /* ignore */ }
+        break;
+
+      case 'g': // Go to first autocomplete result
+        try {
+          if (gURLBar.view?.isOpen) {
+            gURLBar.controller.userSelectionBehavior = 'arrow';
+            const count = gURLBar.view.visibleRowCount || 0;
+            if (count > 0) gURLBar.view.selectBy(count, { reverse: true });
+          }
+        } catch (e) { /* ignore */ }
+        break;
+
+      // Insert mode switches
+      case 'i': // Insert at cursor
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'a': // Insert after cursor
+        urlbarCursorPos = Math.min(len, urlbarCursorPos + 1);
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'I': // Insert at beginning
+        urlbarCursorPos = 0;
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(0, 0);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'A': // Insert at end
+        urlbarCursorPos = len;
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(len, len);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      // Editing commands
+      case 'x': // Delete character at cursor
+        if (urlbarCursorPos < len) {
+          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
+          if (urlbarCursorPos >= input.value.length && input.value.length > 0) {
+            urlbarCursorPos = input.value.length - 1;
+          }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          updateUrlbarBlockCursor();
+        }
+        break;
+
+      case 's': // Substitute (delete char and enter insert)
+        if (urlbarCursorPos < len) {
+          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'S': // Substitute entire line (clear all and enter insert mode)
+        input.value = '';
+        urlbarCursorPos = 0;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(0, 0);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'D': // Delete to end of line
+        input.value = text.slice(0, urlbarCursorPos);
+        if (urlbarCursorPos > 0 && input.value.length > 0) {
+          urlbarCursorPos = input.value.length - 1;
+        } else {
+          urlbarCursorPos = 0;
+        }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'C': // Change to end of line (delete to end + insert)
+        input.value = text.slice(0, urlbarCursorPos);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        urlbarVimMode = 'insert';
+        input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
+        input.focus();
+        updateUrlbarVimIndicator();
+        break;
+
+      case 'd': // Delete character (like x for simplicity)
+        if (urlbarCursorPos < len) {
+          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
+          if (urlbarCursorPos >= input.value.length && input.value.length > 0) {
+            urlbarCursorPos = input.value.length - 1;
+          }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          updateUrlbarBlockCursor();
+        }
+        break;
+
+      case 'u': // Undo — trigger native undo on the input
+        input.focus();
+        try { document.execCommand('undo'); } catch (e) { /* undo not available */ }
+        urlbarCursorPos = input.selectionStart || 0;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        updateUrlbarBlockCursor();
+        break;
+
+      case 'p': // Paste after cursor from clipboard
+        navigator.clipboard.readText().then(clip => {
+          if (!clip) return;
+          // Re-read current state — the async gap may have allowed changes
+          const inp = getUrlbarInput();
+          if (!inp || !urlbarVimActive || urlbarVimMode !== 'normal') return;
+          const currentText = inp.value || '';
+          const currentLen = currentText.length;
+          const pos = Math.min(urlbarCursorPos + 1, currentLen);
+          inp.value = currentText.slice(0, pos) + clip + currentText.slice(pos);
+          urlbarCursorPos = pos + clip.length - 1;
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          updateUrlbarBlockCursor();
+        }).catch(() => { /* clipboard read failed */ });
+        break;
+    }
+  }
+
+  // --- Setup: inject CSS for URL bar vim mode (called at init, no inputField dependency) ---
+  function setupUrlbarVimMode() {
+    // Prevent double-initialization of CSS
+    if (document.getElementById('zenleap-urlbar-vim-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'zenleap-urlbar-vim-styles';
+    style.textContent = `
+      #zenleap-urlbar-vim-indicator {
+        font-family: var(--zl-font-mono, 'JetBrains Mono', monospace);
+        font-size: 9px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--zl-accent, #7c6fef);
+        color: var(--zl-bg-base, #1a1a2e);
+        margin-left: 4px;
+        flex-shrink: 0;
+        line-height: 1;
+        align-self: center;
+        pointer-events: none;
+        z-index: 1;
+        order: 999;
+      }
+      #zenleap-urlbar-vim-indicator.normal {
+        background: var(--zl-gold, #d4a754);
+      }
+      /* Block cursor via ::selection styling in normal mode */
+      #urlbar[data-zenleap-vim="normal"] .urlbar-input::selection,
+      #urlbar[data-zenleap-vim="normal"] input.urlbar-input::selection {
+        background-color: var(--zl-gold, #d4a754) !important;
+        color: var(--zl-bg-deep, #13131f) !important;
+      }
+      #urlbar[data-zenleap-vim="normal"] .urlbar-input::-moz-selection,
+      #urlbar[data-zenleap-vim="normal"] input.urlbar-input::-moz-selection {
+        background-color: var(--zl-gold, #d4a754) !important;
+        color: var(--zl-bg-deep, #13131f) !important;
+      }
+    `;
+    document.head.appendChild(style);
+
+    log('URL bar vim mode CSS injected');
   }
 
 
@@ -13034,12 +13913,17 @@
       return;
     }
 
-    // Handle settings mode - Escape to close, all other keys handled by modal
+    // Handle settings mode - Escape to close, Enter to update from About tab
     if (settingsMode) {
       if (event.key === 'Escape' && !settingsRecordingId) {
         event.preventDefault();
         event.stopPropagation();
         exitSettingsMode();
+      } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available') {
+        event.preventDefault();
+        event.stopPropagation();
+        exitSettingsMode();
+        enterUpdateMode();
       }
       return;
     }
@@ -13123,6 +14007,24 @@
       event.stopImmediatePropagation();
       handleGtileKeyDown(event);
       return;
+    }
+
+    // Handle URL bar vim mode (Cmd+L / Cmd+T native browser bar).
+    // Key interception happens at the input level (urlbarInputKeyHandler) because
+    // window-level preventDefault cannot stop moz-urlbar's internal editor.
+    // This block only: (1) lazily attaches listeners, (2) blocks other ZenLeap
+    // handlers from processing keys while the URL bar is focused.
+    if (!searchMode && !leapMode && !settingsMode && !helpMode && !gtileMode && !folderDeleteMode) {
+      try {
+        const _gURLBarFocused = typeof gURLBar !== 'undefined' && gURLBar && gURLBar.focused;
+        if (_gURLBarFocused) {
+          // Lazily set up input-level listeners if not done yet
+          if (!urlbarVimSetupDone) lazySetupUrlbarVim();
+          // In normal mode, block all other ZenLeap handlers.
+          // Actual key prevention is at input level.
+          if (S['display.vimModeInBars'] && urlbarVimActive && urlbarVimMode === 'normal') return;
+        }
+      } catch (_e) { /* ignore */ }
     }
 
     // Handle search mode input first
@@ -13721,7 +14623,8 @@
   //  or browse mode j/k reaching about:newtab search input)
   function handleKeyUp(event) {
     if (leapMode || searchMode || commandMode || settingsMode || helpMode || gtileMode
-        || folderDeleteMode || Date.now() < quickNavInterceptedUntil) {
+        || folderDeleteMode || (urlbarVimActive && urlbarVimMode === 'normal')
+        || Date.now() < quickNavInterceptedUntil) {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -14856,6 +15759,7 @@
     ensureThemesFile();
     setupTabListeners();
     setupKeyboardListener();
+    setupUrlbarVimMode();
     updateRelativeNumbers();
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
