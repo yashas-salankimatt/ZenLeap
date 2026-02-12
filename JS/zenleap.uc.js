@@ -13713,11 +13713,30 @@
     '--zen-primary-color',
     '--zen-main-browser-background',
     '--zen-main-browser-background-toolbar',
+    '--zen-toolbar-element-bg',
+    '--zen-toolbar-element-bg-hover',
+    '--zen-branding-bg',
+    '--zen-branding-bg-reverse',
+    '--zen-colors-primary',
+    '--zen-colors-secondary',
+    '--zen-colors-tertiary',
+    '--zen-colors-border',
+    '--zen-colors-border-contrast',
+    '--zen-colors-input-bg',
+    '--zen-colors-primary-foreground',
+    '--zen-urlbar-background',
+    '--toolbox-textcolor',
+    '--toolbar-color',
+    '--toolbar-bgcolor',
   ];
 
   // Apply or revert Zen Browser chrome theme colors
   function applyBrowserTheme(t) {
     const root = document.documentElement;
+
+    // Always remove injected stylesheet first
+    const existingStyle = document.getElementById('zenleap-browser-theme');
+    if (existingStyle) existingStyle.remove();
 
     if (!S['appearance.applyToBrowser']) {
       // Revert: remove our overrides so Zen's own theme takes over
@@ -13731,14 +13750,106 @@
       t = themes[themeName] || themes.meridian;
     }
 
-    // Map ZenLeap theme colors to Zen Browser chrome properties
+    // Resolve all theme colors
     const accent = toHex6(t.accent);
+    const accentBright = toHex6(t.accentBright);
     const bgBase = toHex6(t.bgBase);
     const bgDeep = toHex6(t.bgDeep);
+    const bgSurface = toHex6(t.bgSurface);
+    const bgRaised = toHex6(t.bgRaised);
+    const bgVoid = toHex6(t.bgVoid);
+    const textPrimary = toHex6(t.textPrimary);
+    const textSecondary = toHex6(t.textSecondary);
+    const textMuted = toHex6(t.textMuted);
 
+    // Core browser chrome properties
     root.style.setProperty('--zen-primary-color', accent);
     root.style.setProperty('--zen-main-browser-background', `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`);
     root.style.setProperty('--zen-main-browser-background-toolbar', `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`);
+
+    // Toolbar element backgrounds (urlbar collapsed state)
+    root.style.setProperty('--zen-toolbar-element-bg', hexToRgba(textPrimary, 0.08));
+    root.style.setProperty('--zen-toolbar-element-bg-hover', hexToRgba(textPrimary, 0.15));
+
+    // Text colors
+    root.style.setProperty('--toolbox-textcolor', textPrimary);
+    root.style.setProperty('--toolbar-color', textPrimary);
+    root.style.setProperty('--toolbar-bgcolor', hexToRgba(bgBase, 0.6));
+
+    // Branding (base bg and contrast text)
+    root.style.setProperty('--zen-branding-bg', bgDeep);
+    root.style.setProperty('--zen-branding-bg-reverse', textPrimary);
+
+    // Zen derived color cascade
+    root.style.setProperty('--zen-colors-primary', bgSurface);
+    root.style.setProperty('--zen-colors-secondary', bgRaised);
+    root.style.setProperty('--zen-colors-tertiary', bgBase);
+    root.style.setProperty('--zen-colors-border', hexToRgba(textSecondary, 0.2));
+    root.style.setProperty('--zen-colors-border-contrast', hexToRgba(textSecondary, 0.11));
+    root.style.setProperty('--zen-colors-input-bg', bgRaised);
+    root.style.setProperty('--zen-colors-primary-foreground', textSecondary);
+    root.style.setProperty('--zen-urlbar-background', bgSurface);
+
+    // Inject urlbar-specific overrides for selectors with hardcoded light-dark() values
+    const style = document.createElement('style');
+    style.id = 'zenleap-browser-theme';
+    style.textContent = `
+      /* ZenLeap browser theme: URL bar overrides */
+      #urlbar[breakout-extend="true"] .urlbar-background {
+        --zen-urlbar-background-base: ${bgSurface} !important;
+        background-color: ${bgSurface} !important;
+        box-shadow: 0px 30px 140px -15px rgba(0, 0, 0, 0.6) !important;
+        outline: 0.5px solid ${hexToRgba(textPrimary, 0.12)} !important;
+      }
+      .urlbarView-row {
+        color: ${textSecondary} !important;
+      }
+      .urlbarView-row[selected] {
+        --zen-selected-bg: ${accent} !important;
+        background-color: ${accent} !important;
+      }
+      .urlbarView-row[selected] *,
+      .urlbarView-row[selected] .urlbarView-title-separator::before {
+        color: ${bgDeep} !important;
+      }
+      .urlbarView-title {
+        color: ${textPrimary} !important;
+      }
+      .urlbarView-url,
+      .urlbarView-title-separator::before {
+        color: ${textMuted} !important;
+      }
+      .urlbarView-row:hover:not([selected]),
+      .urlbarView-row:hover:not([selected]) .urlbarView-favicon {
+        background-color: ${hexToRgba(textPrimary, 0.05)} !important;
+      }
+      .urlbarView-favicon {
+        background-color: ${hexToRgba(textPrimary, 0.04)} !important;
+      }
+      .urlbarView-shortcutContent {
+        background-color: ${hexToRgba(textPrimary, 0.05)} !important;
+        color: ${textSecondary} !important;
+      }
+      .urlbarView-prettyName {
+        background-color: ${hexToRgba(textPrimary, 0.1)} !important;
+        color: ${textSecondary} !important;
+      }
+      #urlbar-label-box,
+      #urlbar-search-mode-indicator {
+        background-color: ${accent} !important;
+        color: ${bgDeep} !important;
+      }
+      .urlbar {
+        --urlbarView-separator-color: ${hexToRgba(textPrimary, 0.1)} !important;
+      }
+      #urlbar .urlbar-input-box {
+        color: ${textPrimary} !important;
+      }
+      .urlbar-input::placeholder {
+        color: ${textMuted} !important;
+      }
+    `;
+    document.head.appendChild(style);
   }
 
   // Legacy compat wrapper
