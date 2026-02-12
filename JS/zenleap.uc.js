@@ -1029,7 +1029,21 @@
     const json = JSON.stringify(payload, null, 2);
     (async () => {
       try {
-        const downloadsDir = Services.dirsvc.get('DfltDwnld', Ci.nsIFile).path;
+        // Resolve downloads directory cross-platform:
+        // 1. Downloads module (handles macOS/Windows/Linux/XDG correctly)
+        // 2. browser.download.dir pref (user override)
+        // 3. Home directory fallback
+        let downloadsDir;
+        try {
+          const { Downloads } = ChromeUtils.importESModule('resource://gre/modules/Downloads.sys.mjs');
+          downloadsDir = await Downloads.getPreferredDownloadsDirectory();
+        } catch (e1) {
+          try {
+            downloadsDir = Services.prefs.getStringPref('browser.download.dir');
+          } catch (e2) {
+            downloadsDir = PathUtils.join(PathUtils.homeDir, 'Downloads');
+          }
+        }
         const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const filePath = PathUtils.join(downloadsDir, `zenleap-settings-${ts}.json`);
         await IOUtils.write(filePath, new TextEncoder().encode(json));
@@ -1293,7 +1307,8 @@
     infoSvg.setAttribute('width', '14'); infoSvg.setAttribute('height', '14');
     infoSvg.setAttribute('viewBox', '0 0 24 24');
     infoSvg.setAttribute('fill', 'none');
-    infoSvg.setAttribute('stroke', '#61afef');
+    infoSvg.style.color = 'var(--zl-accent)';
+    infoSvg.setAttribute('stroke', 'currentColor');
     infoSvg.setAttribute('stroke-width', '2');
     infoSvg.setAttribute('stroke-linecap', 'round');
     infoSvg.setAttribute('stroke-linejoin', 'round');
@@ -9391,7 +9406,7 @@
         font-size: 12px; font-weight: 500; transition: all 0.18s; font-family: var(--zl-font-ui);
       }
       .zenleap-settings-reset-all:hover {
-        background: rgba(224, 108, 117, 0.15); border-color: rgba(224, 108, 117, 0.35);
+        background: color-mix(in srgb, var(--zl-error) 15%, transparent); border-color: color-mix(in srgb, var(--zl-error) 35%, transparent);
       }
       .zenleap-settings-reset-all:active { transform: scale(0.97); }
       .zenleap-color-control { display: flex; align-items: center; gap: 8px; }
