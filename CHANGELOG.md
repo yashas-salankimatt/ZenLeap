@@ -5,6 +5,25 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-02-11
+
+### Added
+- **Apply Theme to Browser** — Optionally apply ZenLeap theme colors to Zen Browser chrome (toolbar, sidebar, URL bar)
+  - New toggle in Settings > Appearance > Theme: "Apply Theme to Browser"
+  - Overrides Zen's full CSS variable cascade (`--zen-primary-color`, `--zen-toolbar-element-bg`, `--zen-colors-*`, `--zen-branding-*`, etc.)
+  - Injects targeted stylesheet for URL bar selectors with hardcoded `light-dark()` values
+  - Covers collapsed/expanded URL bar states, result rows, selection, search mode indicator, favicon badges, and text colors
+  - Cleanly reverts all overrides when toggled off
+- **Switch Theme Command** — `Switch Theme...` in command palette with live preview
+  - Theme picker subflow showing all built-in and custom themes
+  - Live-preview: themes apply as you navigate with j/k, restoring original on Escape
+  - Optional follow-up subflow to apply theme to browser chrome
+- **14 New Built-in Themes** — Monokai, One Dark Pro, Solarized Dark, GitHub Dark, Material Palenight, Ayu Dark, Ayu Mirage, Synthwave '84, Everforest Dark, Kanagawa, Ros\u00e9 Pine, Vesper, Poimandres, Moonlight, Andromeda, Nightfox, Vitesse Dark
+- **Theme Editor Annotations** — Property hints and browser badges in the custom theme editor
+  - Every property shows a subtle hint describing where it appears in the UI
+  - Properties that affect Zen Browser chrome (accent, bgBase, bgDeep) display a "B" badge
+  - Group headers show descriptions and a "Browser" badge for groups that map to browser chrome
+
 ## [3.1.0] - 2026-02-10
 
 ### Added
@@ -388,6 +407,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.2.0 | 2026-02-11 | Apply theme to browser chrome, Switch Theme command with live preview, 14 new built-in themes, theme editor annotations |
 | 3.1.0 | 2026-02-10 | Meridian design system, 7 built-in themes, user theme JSON + visual editor, badge contrast fix, input interception hardening |
 | 3.0.0 | 2026-02-10 | gTile split overlay, command bar parity, Alt+HJKL navigation, folder yank/paste, multi-digit numbers, jj escape |
 | 2.8.0 | 2026-02-09 | Workspace sessions, tab sorting, browse command bar, folder interaction, split focus, dedup preview |
