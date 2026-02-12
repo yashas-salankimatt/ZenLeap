@@ -2855,9 +2855,8 @@
       }},
 
       // --- Workspace Management ---
-      { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'], command: () => {
-        try { document.getElementById('cmd_zenOpenWorkspaceCreation')?.doCommand(); } catch(e) { log(`Create workspace failed: ${e}`); }
-      }},
+      { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'],
+        subFlow: 'create-workspace-input' },
       { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy', 'del', 'rm', 'ws'],
         condition: () => {
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
@@ -3263,6 +3262,7 @@
       case 'rename-workspace-picker': return 'Select a workspace to rename...';
       case 'rename-folder-input': return 'Enter new folder name...';
       case 'rename-workspace-input': return 'Enter new workspace name...';
+      case 'create-workspace-input': return 'Enter new workspace name...';
       case 'save-session-scope': return 'What to save?';
       case 'save-session-input': return 'Type a comment for this snapshot and press Enter...';
       case 'restore-session-picker': return 'Select a session to restore...';
@@ -3346,6 +3346,8 @@
         return getRenameFolderInputResults(query);
       case 'rename-workspace-input':
         return getRenameWorkspaceInputResults(query);
+      case 'create-workspace-input':
+        return getCreateWorkspaceInputResults(query);
       case 'save-session-scope':
         return getSaveSessionScopeResults(query);
       case 'save-session-input':
@@ -3540,10 +3542,9 @@
         }
       }
     } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'switch-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
+    const filtered = fuzzyFilterAndSort(results, query);
+    filtered.push({ key: 'switch-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
+    return filtered;
   }
 
   function getMoveToWorkspacePickerResults(query) {
@@ -3567,10 +3568,9 @@
         }
       }
     } catch (e) { log(`Error getting workspaces for move: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'move-to-workspace:none', label: 'No other workspaces found', icon: '🗂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
+    const filtered = fuzzyFilterAndSort(results, query);
+    filtered.push({ key: 'move-to-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
+    return filtered;
   }
 
   function getRenameWorkspacePickerResults(query) {
@@ -3672,6 +3672,14 @@
     return [{ key: 'rename-workspace-input:confirm', label: `Rename workspace to: "${name}"`, icon: '✏', tags: [] }];
   }
 
+  function getCreateWorkspaceInputResults(query) {
+    const name = (query || '').trim();
+    if (!name) {
+      return [{ key: 'create-workspace-input:prompt', label: 'Type a name for the new workspace and press Enter', icon: '➕', tags: [] }];
+    }
+    return [{ key: 'create-workspace-input:confirm', label: `Create workspace: "${name}"`, icon: '➕', tags: [] }];
+  }
+
   function getTabSearchSubFlowResults(query) {
     // Search tabs including current tab (for batch selection)
     const results = searchTabs(query, { includeCurrent: true });
@@ -3733,7 +3741,9 @@
         }
       }
     } catch (e) { log(`Error getting workspaces: ${e}`); }
-    return fuzzyFilterAndSort(results, query);
+    const filtered = fuzzyFilterAndSort(results, query);
+    filtered.push({ key: 'ws:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
+    return filtered;
   }
 
   function getFolderPickerResults(query) {
@@ -3855,7 +3865,12 @@
         break;
 
       case 'workspace-picker':
-        moveTabsToWorkspace(commandMatchedTabs, result.workspaceId);
+        if (result.key === 'ws:create-new') {
+          enterSubFlow('create-workspace-input', 'New Workspace');
+          commandSubFlow.data = { originFlow: 'workspace-picker' };
+        } else {
+          moveTabsToWorkspace(commandMatchedTabs, result.workspaceId);
+        }
         break;
 
       case 'folder-picker':
@@ -3905,14 +3920,20 @@
         break;
 
       case 'switch-workspace-picker':
-        if (result.workspaceId) {
+        if (result.key === 'switch-workspace:create-new') {
+          enterSubFlow('create-workspace-input', 'New Workspace');
+          commandSubFlow.data = { originFlow: 'switch-workspace-picker' };
+        } else if (result.workspaceId) {
           window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
+          exitSearchMode();
         }
-        exitSearchMode();
         break;
 
       case 'move-to-workspace-picker':
-        if (result.workspaceId) {
+        if (result.key === 'move-to-workspace:create-new') {
+          enterSubFlow('create-workspace-input', 'New Workspace');
+          commandSubFlow.data = { originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab };
+        } else if (result.workspaceId) {
           const tabToMove = gBrowser.selectedTab;
           window.gZenWorkspaces.moveTabToWorkspace(tabToMove, result.workspaceId);
           // Switch to the target workspace and focus the moved tab
@@ -3920,8 +3941,8 @@
             window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
             setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
           }, S['timing.workspaceSwitchDelay'] || 100);
+          exitSearchMode();
         }
-        exitSearchMode();
         break;
 
       case 'add-to-folder-picker':
@@ -3960,6 +3981,15 @@
           const data = commandSubFlow?.data;
           if (name && data?.workspaceId) {
             renameWorkspace(data.workspaceId, name);
+          }
+        }
+        break;
+
+      case 'create-workspace-input':
+        if (result.key === 'create-workspace-input:confirm') {
+          const name = commandQuery.trim();
+          if (name) {
+            handleCreateWorkspaceAndChain(name, commandSubFlow?.data);
           }
         }
         break;
@@ -4040,7 +4070,10 @@
 
       // Browse command mode sub-flows
       case 'browse-workspace-picker':
-        if (result.workspaceId) {
+        if (result.key === 'ws:create-new') {
+          enterSubFlow('create-workspace-input', 'New Workspace');
+          commandSubFlow.data = { originFlow: 'browse-workspace-picker' };
+        } else if (result.workspaceId) {
           moveTabsToWorkspace(browseCommandTabs, result.workspaceId);
         }
         break;
@@ -4187,7 +4220,11 @@
         break;
 
       case 'move-folder-to-ws-workspace-picker':
-        if (result.workspaceId) {
+        if (result.key === 'move-to-workspace:create-new') {
+          const prevData = commandSubFlow?.data;
+          enterSubFlow('create-workspace-input', 'New Workspace');
+          commandSubFlow.data = { originFlow: 'move-folder-to-ws-workspace-picker', folder: prevData?.folder, folderName: prevData?.folderName };
+        } else if (result.workspaceId) {
           const folderData = commandSubFlow?.data;
           if (folderData?.folder && window.gZenFolders) {
             try {
@@ -4195,8 +4232,8 @@
               log(`Moved folder "${folderData.folderName}" to workspace`);
             } catch(e) { log(`Move folder to workspace failed: ${e}`); }
           }
+          exitSearchMode();
         }
-        exitSearchMode();
         break;
 
       // --- Theme Sub-Flows ---
@@ -4534,6 +4571,67 @@
       log(`Moved ${tabs.length} tabs to workspace ${workspaceId}`);
     } catch (e) { log(`Move to workspace failed: ${e}`); }
     exitSearchMode();
+  }
+
+  async function handleCreateWorkspaceAndChain(name, data) {
+    if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
+
+    const originFlow = data?.originFlow;
+
+    try {
+      await gZenWorkspaces.createAndSaveWorkspace(name, undefined, false, 0);
+    } catch (e) {
+      log(`Create workspace failed: ${e}`);
+      exitSearchMode();
+      return;
+    }
+
+    // createAndSaveWorkspace with dontChange=false auto-switches; get the new workspace ID
+    const newWsId = gZenWorkspaces.activeWorkspace;
+
+    switch (originFlow) {
+      case 'workspace-picker':
+        // Move matched tabs (from tab-search → action-picker → workspace-picker) to new workspace
+        moveTabsToWorkspace(commandMatchedTabs, newWsId);
+        return; // moveTabsToWorkspace calls exitSearchMode
+
+      case 'switch-workspace-picker':
+        // Already switched by createAndSaveWorkspace
+        exitSearchMode();
+        return;
+
+      case 'move-to-workspace-picker': {
+        // Move the captured tab to the new workspace
+        const tabToMove = data?.tabToMove;
+        if (tabToMove && !tabToMove.closing) {
+          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, newWsId);
+          setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
+        }
+        exitSearchMode();
+        return;
+      }
+
+      case 'browse-workspace-picker':
+        // Move browse-selected tabs to new workspace
+        moveTabsToWorkspace(browseCommandTabs, newWsId);
+        return; // moveTabsToWorkspace calls exitSearchMode
+
+      case 'move-folder-to-ws-workspace-picker':
+        // Move folder to new workspace
+        if (data?.folder && window.gZenFolders) {
+          try {
+            gZenFolders.changeFolderToSpace(data.folder, newWsId);
+            log(`Moved folder "${data.folderName}" to new workspace "${name}"`);
+          } catch(e) { log(`Move folder to workspace failed: ${e}`); }
+        }
+        exitSearchMode();
+        return;
+
+      default:
+        // Standalone create-workspace command — already switched, just exit
+        exitSearchMode();
+        return;
+    }
   }
 
   function addTabsToFolder(tabs, folderResult) {
