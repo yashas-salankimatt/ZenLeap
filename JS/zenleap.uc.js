@@ -8753,9 +8753,17 @@
     const searchInput = document.createElement('input');
     searchInput.type = 'text';
     searchInput.id = 'zenleap-settings-search-input';
-    searchInput.placeholder = 'Search settings...';
+    searchInput.placeholder = 'Search all settings\u2026';
     searchInput.addEventListener('input', (e) => {
       settingsSearchQuery = e.target.value.toLowerCase();
+      const tabsEl = document.getElementById('zenleap-settings-tabs');
+      if (tabsEl) {
+        if (settingsSearchQuery) {
+          tabsEl.classList.add('searching');
+        } else {
+          tabsEl.classList.remove('searching');
+        }
+      }
       renderSettingsContent();
     });
     searchWrap.appendChild(searchIcon);
@@ -8858,6 +8866,9 @@
       .zenleap-settings-tabs {
         display: flex; padding: 0 24px; gap: 4px;
         border-bottom: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-settings-tabs.searching {
+        display: none;
       }
       .zenleap-settings-tabs button {
         background: none; border: none; color: var(--zl-text-secondary); font-size: 13px; font-weight: 500;
@@ -8979,6 +8990,53 @@
       .zenleap-select option { background: var(--zl-bg-deep); color: var(--zl-text-primary); }
       .zenleap-settings-empty {
         padding: 40px 20px; text-align: center; color: var(--zl-text-muted); font-size: 14px;
+      }
+
+      /* ═══ Cross-tab search: category sections & badges ═══ */
+      .zenleap-settings-search-results-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 0 0 10px; margin-bottom: 4px;
+        border-bottom: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-settings-search-results-header .zenleap-search-result-count {
+        font-size: 11px; color: var(--zl-text-muted); font-weight: 500;
+        letter-spacing: 0.3px;
+      }
+      .zenleap-settings-search-results-header .zenleap-search-clear-btn {
+        background: none; border: 1px solid var(--zl-border-subtle); color: var(--zl-text-secondary);
+        font-size: 11px; padding: 2px 10px; border-radius: var(--zl-r-sm); cursor: pointer;
+        font-family: var(--zl-font-ui); transition: all 0.15s;
+      }
+      .zenleap-settings-search-results-header .zenleap-search-clear-btn:hover {
+        color: var(--zl-text-primary); border-color: var(--zl-border-strong);
+        background: var(--zl-bg-hover);
+      }
+      .zenleap-settings-category-section {
+        margin-bottom: 20px;
+      }
+      .zenleap-settings-category-header {
+        display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding-top: 8px;
+      }
+      .zenleap-settings-category-header .zenleap-cat-label {
+        font-size: 12px; font-weight: 600; color: var(--zl-text-primary);
+        letter-spacing: 0.3px;
+      }
+      .zenleap-settings-category-header .zenleap-cat-divider {
+        flex: 1; height: 1px; background: var(--zl-border-subtle);
+      }
+      .zenleap-settings-category-header .zenleap-cat-count {
+        font-size: 10px; color: var(--zl-text-muted); font-weight: 500;
+      }
+      .zenleap-settings-category-badge {
+        display: inline-flex; align-items: center; gap: 4px;
+        font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;
+        padding: 2px 7px; border-radius: 3px;
+        background: var(--zl-accent-dim); color: var(--zl-accent); border: 1px solid var(--zl-accent-border);
+        cursor: pointer; transition: all 0.15s; vertical-align: middle; margin-left: 6px;
+        line-height: 1.4;
+      }
+      .zenleap-settings-category-badge:hover {
+        background: var(--zl-accent-mid); border-color: var(--zl-accent);
       }
 
       /* ═══ About Page ═══ */
@@ -9275,45 +9333,155 @@
       return;
     }
 
-    const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
-      if (schema.hidden) return false;
-      if (schema.category !== settingsActiveTab) return false;
-      if (settingsSearchQuery) {
+    const isSearching = !!settingsSearchQuery;
+
+    if (isSearching) {
+      // Cross-tab search: search ALL categories
+      const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
+        if (schema.hidden) return false;
         const text = `${schema.label} ${schema.description || ''} ${schema.group} ${id}`.toLowerCase();
         return text.includes(settingsSearchQuery);
+      });
+
+      if (entries.length === 0) {
+        body.innerHTML = '<div class="zenleap-settings-empty">No settings match your search</div>';
+        return;
       }
-      return true;
-    });
 
-    // Group by subcategory
-    const groups = new Map();
-    for (const [id, schema] of entries) {
-      const g = schema.group || 'General';
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push([id, schema]);
-    }
+      // Results header with count + clear button
+      const resultsHeader = document.createElement('div');
+      resultsHeader.className = 'zenleap-settings-search-results-header';
+      const countSpan = document.createElement('span');
+      countSpan.className = 'zenleap-search-result-count';
+      countSpan.textContent = `${entries.length} result${entries.length !== 1 ? 's' : ''} across all tabs`;
+      resultsHeader.appendChild(countSpan);
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'zenleap-search-clear-btn';
+      clearBtn.textContent = 'Clear search';
+      clearBtn.addEventListener('click', () => {
+        const input = document.getElementById('zenleap-settings-search-input');
+        if (input) { input.value = ''; input.focus(); }
+        settingsSearchQuery = '';
+        const tabsEl = document.getElementById('zenleap-settings-tabs');
+        if (tabsEl) tabsEl.classList.remove('searching');
+        renderSettingsContent();
+      });
+      resultsHeader.appendChild(clearBtn);
+      body.appendChild(resultsHeader);
 
-    if (groups.size === 0) {
-      body.innerHTML = '<div class="zenleap-settings-empty">No settings match your search</div>';
-      return;
-    }
-
-    for (const [groupName, items] of groups) {
-      const groupDiv = document.createElement('div');
-      groupDiv.className = 'zenleap-settings-group';
-      const h3 = document.createElement('h3');
-      h3.textContent = groupName;
-      groupDiv.appendChild(h3);
-
-      for (const [id, schema] of items) {
-        groupDiv.appendChild(createSettingRow(id, schema));
+      // Group by category, then by group within each category
+      const categoryOrder = ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced'];
+      const byCategory = new Map();
+      for (const [id, schema] of entries) {
+        const cat = schema.category;
+        if (!byCategory.has(cat)) byCategory.set(cat, []);
+        byCategory.get(cat).push([id, schema]);
       }
-      body.appendChild(groupDiv);
-    }
 
-    // Theme editor section (Appearance tab, no search)
-    if (settingsActiveTab === 'Appearance' && !settingsSearchQuery) {
-      body.appendChild(renderThemeEditorSection());
+      for (const cat of categoryOrder) {
+        if (!byCategory.has(cat)) continue;
+        const catEntries = byCategory.get(cat);
+
+        // Category section
+        const catSection = document.createElement('div');
+        catSection.className = 'zenleap-settings-category-section';
+
+        // Category header with label, divider, and count
+        const catHeader = document.createElement('div');
+        catHeader.className = 'zenleap-settings-category-header';
+        const catLabel = document.createElement('span');
+        catLabel.className = 'zenleap-cat-label';
+        catLabel.textContent = cat;
+        const catDivider = document.createElement('span');
+        catDivider.className = 'zenleap-cat-divider';
+        const catCount = document.createElement('span');
+        catCount.className = 'zenleap-cat-count';
+        catCount.textContent = `${catEntries.length}`;
+        catHeader.appendChild(catLabel);
+        catHeader.appendChild(catDivider);
+        catHeader.appendChild(catCount);
+        catSection.appendChild(catHeader);
+
+        // Sub-group within category
+        const groups = new Map();
+        for (const [id, schema] of catEntries) {
+          const g = schema.group || 'General';
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g).push([id, schema]);
+        }
+
+        for (const [groupName, items] of groups) {
+          const groupDiv = document.createElement('div');
+          groupDiv.className = 'zenleap-settings-group';
+          const h3 = document.createElement('h3');
+          h3.textContent = groupName;
+          // Add a clickable category badge to navigate to that tab
+          const badge = document.createElement('span');
+          badge.className = 'zenleap-settings-category-badge';
+          badge.textContent = cat;
+          badge.title = `Go to ${cat} tab`;
+          badge.addEventListener('click', () => {
+            const input = document.getElementById('zenleap-settings-search-input');
+            if (input) { input.value = ''; }
+            settingsSearchQuery = '';
+            settingsActiveTab = cat;
+            const tabsEl = document.getElementById('zenleap-settings-tabs');
+            if (tabsEl) {
+              tabsEl.classList.remove('searching');
+              tabsEl.querySelectorAll('button').forEach(b => {
+                b.classList.toggle('active', b.dataset.tab === cat);
+              });
+            }
+            renderSettingsContent();
+          });
+          h3.appendChild(badge);
+          groupDiv.appendChild(h3);
+
+          for (const [id, schema] of items) {
+            groupDiv.appendChild(createSettingRow(id, schema));
+          }
+          catSection.appendChild(groupDiv);
+        }
+
+        body.appendChild(catSection);
+      }
+    } else {
+      // Normal tab-scoped view (no search)
+      const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
+        if (schema.hidden) return false;
+        return schema.category === settingsActiveTab;
+      });
+
+      // Group by subcategory
+      const groups = new Map();
+      for (const [id, schema] of entries) {
+        const g = schema.group || 'General';
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push([id, schema]);
+      }
+
+      if (groups.size === 0) {
+        body.innerHTML = '<div class="zenleap-settings-empty">No settings found</div>';
+        return;
+      }
+
+      for (const [groupName, items] of groups) {
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'zenleap-settings-group';
+        const h3 = document.createElement('h3');
+        h3.textContent = groupName;
+        groupDiv.appendChild(h3);
+
+        for (const [id, schema] of items) {
+          groupDiv.appendChild(createSettingRow(id, schema));
+        }
+        body.appendChild(groupDiv);
+      }
+
+      // Theme editor section (Appearance tab only)
+      if (settingsActiveTab === 'Appearance') {
+        body.appendChild(renderThemeEditorSection());
+      }
     }
 
     body.scrollTop = scrollTop;
@@ -9544,6 +9712,13 @@
       themeEditorActive = false;
       applyTheme();
     }
+    // Reset search state so reopening starts fresh
+    settingsSearchQuery = '';
+    const searchInput = document.getElementById('zenleap-settings-search-input');
+    if (searchInput) searchInput.value = '';
+    const tabsEl = document.getElementById('zenleap-settings-tabs');
+    if (tabsEl) tabsEl.classList.remove('searching');
+
     settingsMode = false;
     settingsModal.classList.remove('active');
     aboutUpdateState = null;
