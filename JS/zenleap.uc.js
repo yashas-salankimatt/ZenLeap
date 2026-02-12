@@ -1168,6 +1168,10 @@
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
 
+  // About page state
+  let aboutUpdateState = null; // null | 'checking' | 'available' | 'uptodate' | 'error'
+  let aboutRemoteVersion = null;
+
   // Theme live-preview state (for Switch Theme command)
   let _themePreviewOriginal = null; // theme ID to restore on Escape
 
@@ -8748,7 +8752,7 @@
     const tabs = document.createElement('div');
     tabs.className = 'zenleap-settings-tabs';
     tabs.id = 'zenleap-settings-tabs';
-    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced'].forEach(cat => {
+    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced', 'About'].forEach(cat => {
       const btn = document.createElement('button');
       btn.textContent = cat;
       btn.dataset.tab = cat;
@@ -8762,6 +8766,7 @@
         tabs.querySelectorAll('button').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         renderSettingsContent();
+        if (cat === 'About') checkAboutUpdate();
       });
       tabs.appendChild(btn);
     });
@@ -8963,6 +8968,98 @@
         padding: 40px 20px; text-align: center; color: var(--zl-text-muted); font-size: 14px;
       }
 
+      /* ═══ About Page ═══ */
+      .zenleap-about {
+        display: flex; flex-direction: column; align-items: center;
+        padding: 32px 16px 24px; gap: 20px; min-height: 100%;
+      }
+      .zenleap-about-hero { text-align: center; margin-bottom: 4px; }
+      .zenleap-about-title {
+        margin: 0; font-size: 32px; font-weight: 700; color: var(--zl-accent);
+        letter-spacing: -0.5px; line-height: 1;
+      }
+      .zenleap-about-tagline {
+        margin: 12px 0 0; font-size: 15px; font-weight: 500; color: var(--zl-text-primary);
+        letter-spacing: -0.2px;
+      }
+      .zenleap-about-desc {
+        margin: 6px 0 0; font-size: 12px; color: var(--zl-text-muted);
+        max-width: 320px; line-height: 1.5;
+      }
+      .zenleap-about-card {
+        width: 100%; max-width: 360px;
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-subtle);
+        border-radius: var(--zl-r-lg); padding: 14px 18px;
+        transition: border-color 0.15s;
+      }
+      .zenleap-about-card:hover { border-color: var(--zl-border-strong); }
+      .zenleap-about-version-row {
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .zenleap-about-version-label {
+        font-size: 13px; font-weight: 500; color: var(--zl-text-secondary);
+      }
+      .zenleap-about-version-right {
+        display: flex; align-items: center; gap: 10px;
+      }
+      .zenleap-about-version-num {
+        font-size: 13px; font-weight: 600; color: var(--zl-text-primary);
+        font-family: var(--zl-font-mono);
+      }
+      .zenleap-about-update-badge {
+        font-size: 11px; font-weight: 500; padding: 2px 10px;
+        border-radius: 999px; font-family: var(--zl-font-ui);
+        transition: all 0.2s ease;
+      }
+      .zenleap-about-update-badge.checking {
+        color: var(--zl-text-muted); background: var(--zl-bg-elevated);
+        animation: zenleap-about-pulse 1.5s ease-in-out infinite;
+      }
+      .zenleap-about-update-badge.available {
+        color: var(--zl-accent); background: var(--zl-accent-dim);
+        border: 1px solid var(--zl-accent-border);
+      }
+      .zenleap-about-update-badge.uptodate {
+        color: var(--zl-green, var(--zl-text-muted)); background: color-mix(in srgb, var(--zl-green, var(--zl-text-muted)) 12%, transparent);
+      }
+      .zenleap-about-update-badge.error {
+        color: var(--zl-text-muted); background: var(--zl-bg-elevated);
+      }
+      @keyframes zenleap-about-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+      .zenleap-about-update-hint {
+        margin-top: 10px; text-align: center; font-size: 12px; color: var(--zl-text-muted);
+        animation: zenleap-modal-enter 0.3s ease;
+      }
+      .zenleap-about-update-hint kbd {
+        background: var(--zl-accent-dim); color: var(--zl-accent); padding: 2px 7px;
+        border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 11px;
+        font-weight: 600; border: 1px solid var(--zl-accent-border);
+        box-shadow: var(--zl-shadow-kbd);
+      }
+      .zenleap-about-link-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 4px 0; border-radius: var(--zl-r-sm); transition: all 0.15s;
+        cursor: pointer;
+      }
+      .zenleap-about-link-row:hover .zenleap-about-link-url { color: var(--zl-accent); }
+      .zenleap-about-link-icon {
+        color: var(--zl-text-secondary); display: flex; align-items: center; flex-shrink: 0;
+      }
+      .zenleap-about-link-label {
+        font-size: 13px; font-weight: 500; color: var(--zl-text-secondary); flex-shrink: 0;
+      }
+      .zenleap-about-link-url {
+        font-size: 12px; color: var(--zl-text-muted); font-family: var(--zl-font-mono);
+        transition: color 0.15s; margin-left: auto;
+      }
+      .zenleap-about-footer {
+        margin-top: 8px; font-size: 11px; color: var(--zl-text-muted);
+        font-style: italic; opacity: 0.7; text-align: center;
+      }
+
       /* ═══ Theme Editor ═══ */
       .zenleap-theme-editor-section {
         margin-top: 24px; border-top: 1px solid var(--zl-border-subtle); padding-top: 16px;
@@ -9151,6 +9248,19 @@
     if (!body) return;
     const scrollTop = body.scrollTop;
     body.innerHTML = '';
+
+    // Toggle search / footer visibility based on tab
+    const isAbout = settingsActiveTab === 'About';
+    const searchBar = body.parentElement?.querySelector('.zenleap-settings-search');
+    const footer = body.parentElement?.querySelector('.zenleap-settings-footer');
+    if (searchBar) searchBar.style.display = isAbout ? 'none' : '';
+    if (footer) footer.style.display = isAbout ? 'none' : '';
+
+    // About tab — custom layout
+    if (isAbout) {
+      body.appendChild(renderAboutContent());
+      return;
+    }
 
     const entries = Object.entries(SETTINGS_SCHEMA).filter(([id, schema]) => {
       if (schema.hidden) return false;
@@ -9423,7 +9533,174 @@
     }
     settingsMode = false;
     settingsModal.classList.remove('active');
+    aboutUpdateState = null;
+    aboutRemoteVersion = null;
     log('Exited settings mode');
+  }
+
+  // ── About Page ─────────────────────────────────────────────────
+
+  let _aboutCheckInFlight = false;
+
+  async function checkAboutUpdate() {
+    if (_aboutCheckInFlight) return;
+    _aboutCheckInFlight = true;
+    aboutUpdateState = 'checking';
+    aboutRemoteVersion = null;
+    renderAboutVersionStatus();
+
+    const result = await checkForZenLeapUpdate();
+    _aboutCheckInFlight = false;
+    if (!settingsMode || settingsActiveTab !== 'About') return;
+
+    if (!result) {
+      aboutUpdateState = 'error';
+    } else if (result.available) {
+      aboutUpdateState = 'available';
+      aboutRemoteVersion = result.remoteVersion;
+    } else {
+      aboutUpdateState = 'uptodate';
+    }
+    renderAboutVersionStatus();
+  }
+
+  function renderAboutVersionStatus() {
+    const badge = document.getElementById('zenleap-about-update-badge');
+    const hint = document.getElementById('zenleap-about-update-hint');
+    if (!badge) return;
+
+    badge.className = 'zenleap-about-update-badge';
+
+    if (aboutUpdateState === 'checking') {
+      badge.textContent = 'checking\u2026';
+      badge.classList.add('checking');
+      if (hint) hint.style.display = 'none';
+    } else if (aboutUpdateState === 'available') {
+      badge.textContent = `v${aboutRemoteVersion} available`;
+      badge.classList.add('available');
+      if (hint) hint.style.display = '';
+    } else if (aboutUpdateState === 'uptodate') {
+      badge.textContent = 'up to date';
+      badge.classList.add('uptodate');
+      if (hint) hint.style.display = 'none';
+    } else if (aboutUpdateState === 'error') {
+      badge.textContent = 'check failed';
+      badge.classList.add('error');
+      if (hint) hint.style.display = 'none';
+    }
+  }
+
+  function renderAboutContent() {
+    const wrap = document.createElement('div');
+    wrap.className = 'zenleap-about';
+
+    // ── Logo / Title ──
+    const hero = document.createElement('div');
+    hero.className = 'zenleap-about-hero';
+
+    const title = document.createElement('h2');
+    title.className = 'zenleap-about-title';
+    title.textContent = 'ZenLeap';
+    hero.appendChild(title);
+
+    const tagline = document.createElement('p');
+    tagline.className = 'zenleap-about-tagline';
+    tagline.textContent = 'Navigate at the speed of thought.';
+    hero.appendChild(tagline);
+
+    const desc = document.createElement('p');
+    desc.className = 'zenleap-about-desc';
+    desc.textContent = 'Vim-style keyboard navigation for your browser. Less reaching, more doing.';
+    hero.appendChild(desc);
+
+    wrap.appendChild(hero);
+
+    // ── Version card ──
+    const versionCard = document.createElement('div');
+    versionCard.className = 'zenleap-about-card';
+
+    const versionRow = document.createElement('div');
+    versionRow.className = 'zenleap-about-version-row';
+
+    const versionLabel = document.createElement('span');
+    versionLabel.className = 'zenleap-about-version-label';
+    versionLabel.textContent = 'Version';
+
+    const versionRight = document.createElement('div');
+    versionRight.className = 'zenleap-about-version-right';
+
+    const versionNum = document.createElement('span');
+    versionNum.className = 'zenleap-about-version-num';
+    versionNum.textContent = `v${VERSION}`;
+
+    const updateBadge = document.createElement('span');
+    updateBadge.id = 'zenleap-about-update-badge';
+    updateBadge.className = 'zenleap-about-update-badge';
+
+    versionRight.appendChild(versionNum);
+    versionRight.appendChild(updateBadge);
+    versionRow.appendChild(versionLabel);
+    versionRow.appendChild(versionRight);
+    versionCard.appendChild(versionRow);
+
+    // Update hint (shown only when update available)
+    const updateHint = document.createElement('div');
+    updateHint.id = 'zenleap-about-update-hint';
+    updateHint.className = 'zenleap-about-update-hint';
+    updateHint.style.display = 'none';
+
+    const hintKbd = document.createElement('kbd');
+    hintKbd.textContent = '\u21B5';
+    const hintText = document.createTextNode(' to update');
+    updateHint.appendChild(hintKbd);
+    updateHint.appendChild(hintText);
+    versionCard.appendChild(updateHint);
+
+    wrap.appendChild(versionCard);
+
+    // ── Links card ──
+    const linksCard = document.createElement('div');
+    linksCard.className = 'zenleap-about-card';
+
+    const githubRow = document.createElement('div');
+    githubRow.className = 'zenleap-about-link-row';
+
+    const ghIcon = document.createElement('span');
+    ghIcon.className = 'zenleap-about-link-icon';
+    ghIcon.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`;
+
+    const ghLabel = document.createElement('span');
+    ghLabel.className = 'zenleap-about-link-label';
+    ghLabel.textContent = 'GitHub';
+
+    const ghUrl = document.createElement('span');
+    ghUrl.className = 'zenleap-about-link-url';
+    ghUrl.textContent = 'yashas-salankimatt/ZenLeap';
+
+    githubRow.appendChild(ghIcon);
+    githubRow.appendChild(ghLabel);
+    githubRow.appendChild(ghUrl);
+
+    githubRow.addEventListener('click', () => {
+      gBrowser.addTab('https://github.com/yashas-salankimatt/ZenLeap', {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      exitSettingsMode();
+    });
+
+    linksCard.appendChild(githubRow);
+    wrap.appendChild(linksCard);
+
+    // ── Footer ──
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-about-footer';
+    footer.textContent = 'Made for those who\u2019d rather not touch the mouse.';
+    wrap.appendChild(footer);
+
+    // Set initial badge state
+    setTimeout(() => renderAboutVersionStatus(), 0);
+
+    return wrap;
   }
 
   // ── Theme Editor ──────────────────────────────────────────────
@@ -12859,12 +13136,17 @@
       return;
     }
 
-    // Handle settings mode - Escape to close, all other keys handled by modal
+    // Handle settings mode - Escape to close, Enter to update from About tab
     if (settingsMode) {
       if (event.key === 'Escape' && !settingsRecordingId) {
         event.preventDefault();
         event.stopPropagation();
         exitSettingsMode();
+      } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available') {
+        event.preventDefault();
+        event.stopPropagation();
+        exitSettingsMode();
+        enterUpdateMode();
       }
       return;
     }
