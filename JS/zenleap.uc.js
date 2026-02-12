@@ -102,6 +102,7 @@
 
     // --- Appearance ---
     'appearance.theme': { default: 'meridian', type: 'select', label: 'Theme', description: 'Color theme for all ZenLeap UI components', category: 'Appearance', group: 'Theme', dynamicOptions: 'theme' },
+    'appearance.applyToBrowser': { default: false, type: 'toggle', label: 'Apply Theme to Browser', description: 'Also apply the selected theme colors to the Zen Browser chrome (toolbar, sidebar, backgrounds)', category: 'Appearance', group: 'Theme' },
 
     // --- Advanced ---
     'advanced.debug':              { default: false, type: 'toggle', label: 'Debug Logging', description: 'Log actions to browser console', category: 'Advanced', group: 'Debugging' },
@@ -323,6 +324,464 @@
       badgeBg: '#515475', badgeColor: '#c0caf5',
       upBg: '#7dcfff', downBg: '#9ece6a',
     },
+
+    // ── Monokai Pro: Classic syntax-highlighting-inspired theme ──
+    // Palette: https://monokai.pro
+    'monokai': {
+      name: 'Monokai',
+      bgVoid: '#1a1a1a', bgDeep: '#1e1f1c', bgBase: '#272822',
+      bgSurface: '#2d2e27', bgRaised: '#3e3d32', bgElevated: '#49483e', bgHover: '#585840',
+      accent: '#a6e22e', accentBright: '#b8f240',
+      accentDim: 'rgba(166,226,46,0.10)', accentMid: 'rgba(166,226,46,0.20)',
+      accentGlow: 'rgba(166,226,46,0.35)', accentBorder: 'rgba(166,226,46,0.30)',
+      blue: '#66d9ef', purple: '#ae81ff', green: '#a6e22e',
+      red: '#f92672', cyan: '#66d9ef', gold: '#e6db74',
+      regionBlue: '#66d9ef', regionPurple: '#ae81ff', regionGreen: '#a6e22e', regionGold: '#e6db74',
+      textPrimary: '#f8f8f2', textSecondary: '#b8b8a8', textTertiary: '#75715e', textMuted: '#49483e',
+      borderSubtle: 'rgba(248,248,242,0.04)', borderDefault: 'rgba(248,248,242,0.08)', borderStrong: 'rgba(248,248,242,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(248,248,242,0.08)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(248,248,242,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#a6e22e', selected: '#66d9ef', mark: '#f92672',
+      currentBadgeBg: '#a6e22e', currentBadgeColor: '#272822',
+      badgeBg: '#585840', badgeColor: '#f8f8f2',
+      upBg: '#66d9ef', downBg: '#ae81ff',
+    },
+
+    // ── One Dark Pro: Atom's iconic One Dark ──
+    // Palette: https://github.com/Binaryify/OneDark-Pro
+    'one-dark': {
+      name: 'One Dark Pro',
+      bgVoid: '#1b1d23', bgDeep: '#1e2027', bgBase: '#282c34',
+      bgSurface: '#2c313a', bgRaised: '#333842', bgElevated: '#3b4048', bgHover: '#434852',
+      accent: '#61afef', accentBright: '#7bc4ff',
+      accentDim: 'rgba(97,175,239,0.10)', accentMid: 'rgba(97,175,239,0.20)',
+      accentGlow: 'rgba(97,175,239,0.35)', accentBorder: 'rgba(97,175,239,0.30)',
+      blue: '#61afef', purple: '#c678dd', green: '#98c379',
+      red: '#e06c75', cyan: '#56b6c2', gold: '#e5c07b',
+      regionBlue: '#61afef', regionPurple: '#c678dd', regionGreen: '#98c379', regionGold: '#e5c07b',
+      textPrimary: '#abb2bf', textSecondary: '#7f848e', textTertiary: '#5c6370', textMuted: '#3e4452',
+      borderSubtle: 'rgba(171,178,191,0.04)', borderDefault: 'rgba(171,178,191,0.08)', borderStrong: 'rgba(171,178,191,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(171,178,191,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(171,178,191,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#61afef', selected: '#c678dd', mark: '#e06c75',
+      currentBadgeBg: '#61afef', currentBadgeColor: '#282c34',
+      badgeBg: '#4b5263', badgeColor: '#abb2bf',
+      upBg: '#56b6c2', downBg: '#98c379',
+    },
+
+    // ── Solarized Dark: Ethan Schoonover's precision-crafted palette ──
+    // Palette: https://ethanschoonover.com/solarized
+    'solarized-dark': {
+      name: 'Solarized Dark',
+      bgVoid: '#001e26', bgDeep: '#00212b', bgBase: '#002b36',
+      bgSurface: '#073642', bgRaised: '#0a4050', bgElevated: '#0d4e5e', bgHover: '#1a5c6c',
+      accent: '#268bd2', accentBright: '#3d9ee5',
+      accentDim: 'rgba(38,139,210,0.10)', accentMid: 'rgba(38,139,210,0.20)',
+      accentGlow: 'rgba(38,139,210,0.35)', accentBorder: 'rgba(38,139,210,0.30)',
+      blue: '#268bd2', purple: '#6c71c4', green: '#859900',
+      red: '#dc322f', cyan: '#2aa198', gold: '#b58900',
+      regionBlue: '#268bd2', regionPurple: '#6c71c4', regionGreen: '#859900', regionGold: '#b58900',
+      textPrimary: '#93a1a1', textSecondary: '#839496', textTertiary: '#586e75', textMuted: '#073642',
+      borderSubtle: 'rgba(147,161,161,0.04)', borderDefault: 'rgba(147,161,161,0.08)', borderStrong: 'rgba(147,161,161,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(147,161,161,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(147,161,161,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#268bd2', selected: '#2aa198', mark: '#dc322f',
+      currentBadgeBg: '#268bd2', currentBadgeColor: '#002b36',
+      badgeBg: '#1a5c6c', badgeColor: '#93a1a1',
+      upBg: '#6c71c4', downBg: '#859900',
+    },
+
+    // ── GitHub Dark: GitHub's official dark theme ──
+    // Palette: https://github.com/primer/primitives
+    'github-dark': {
+      name: 'GitHub Dark',
+      bgVoid: '#0a0c10', bgDeep: '#0d1117', bgBase: '#161b22',
+      bgSurface: '#1c2128', bgRaised: '#21262d', bgElevated: '#282e36', bgHover: '#30363d',
+      accent: '#58a6ff', accentBright: '#79c0ff',
+      accentDim: 'rgba(88,166,255,0.10)', accentMid: 'rgba(88,166,255,0.20)',
+      accentGlow: 'rgba(88,166,255,0.35)', accentBorder: 'rgba(88,166,255,0.30)',
+      blue: '#58a6ff', purple: '#d2a8ff', green: '#3fb950',
+      red: '#f85149', cyan: '#56d4dd', gold: '#d29922',
+      regionBlue: '#58a6ff', regionPurple: '#d2a8ff', regionGreen: '#3fb950', regionGold: '#d29922',
+      textPrimary: '#c9d1d9', textSecondary: '#8b949e', textTertiary: '#6e7681', textMuted: '#484f58',
+      borderSubtle: 'rgba(201,209,217,0.04)', borderDefault: 'rgba(201,209,217,0.08)', borderStrong: 'rgba(201,209,217,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(201,209,217,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(201,209,217,0.06)',
+      noiseOpacity: '0.010', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#58a6ff', selected: '#d2a8ff', mark: '#f85149',
+      currentBadgeBg: '#58a6ff', currentBadgeColor: '#0d1117',
+      badgeBg: '#30363d', badgeColor: '#c9d1d9',
+      upBg: '#56d4dd', downBg: '#3fb950',
+    },
+
+    // ── Material Palenight: Material Theme's most popular variant ──
+    // Palette: https://github.com/material-theme/vsc-material-theme
+    'palenight': {
+      name: 'Material Palenight',
+      bgVoid: '#1b1e2b', bgDeep: '#1e2132', bgBase: '#292d3e',
+      bgSurface: '#2f3344', bgRaised: '#34384a', bgElevated: '#3c4056', bgHover: '#444862',
+      accent: '#82aaff', accentBright: '#9fc0ff',
+      accentDim: 'rgba(130,170,255,0.10)', accentMid: 'rgba(130,170,255,0.20)',
+      accentGlow: 'rgba(130,170,255,0.35)', accentBorder: 'rgba(130,170,255,0.30)',
+      blue: '#82aaff', purple: '#c792ea', green: '#c3e88d',
+      red: '#f07178', cyan: '#89ddff', gold: '#ffcb6b',
+      regionBlue: '#82aaff', regionPurple: '#c792ea', regionGreen: '#c3e88d', regionGold: '#ffcb6b',
+      textPrimary: '#a6accd', textSecondary: '#7982a9', textTertiary: '#5c6590', textMuted: '#3c4056',
+      borderSubtle: 'rgba(166,172,205,0.04)', borderDefault: 'rgba(166,172,205,0.08)', borderStrong: 'rgba(166,172,205,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(166,172,205,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(166,172,205,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#82aaff', selected: '#c792ea', mark: '#f07178',
+      currentBadgeBg: '#82aaff', currentBadgeColor: '#292d3e',
+      badgeBg: '#444862', badgeColor: '#a6accd',
+      upBg: '#89ddff', downBg: '#c3e88d',
+    },
+
+    // ── Ayu Dark: Clean minimal dark from Ayu family ──
+    // Palette: https://github.com/ayu-theme/ayu-colors
+    'ayu-dark': {
+      name: 'Ayu Dark',
+      bgVoid: '#0a0e14', bgDeep: '#0b0f15', bgBase: '#0d1017',
+      bgSurface: '#131721', bgRaised: '#191f2b', bgElevated: '#1f2735', bgHover: '#272f3e',
+      accent: '#e6b450', accentBright: '#f0c565',
+      accentDim: 'rgba(230,180,80,0.10)', accentMid: 'rgba(230,180,80,0.20)',
+      accentGlow: 'rgba(230,180,80,0.35)', accentBorder: 'rgba(230,180,80,0.30)',
+      blue: '#39bae6', purple: '#d2a6ff', green: '#7fd962',
+      red: '#f07178', cyan: '#95e6cb', gold: '#e6b450',
+      regionBlue: '#39bae6', regionPurple: '#d2a6ff', regionGreen: '#7fd962', regionGold: '#e6b450',
+      textPrimary: '#bfbdb6', textSecondary: '#7b7d80', textTertiary: '#565b66', textMuted: '#3d424d',
+      borderSubtle: 'rgba(191,189,182,0.04)', borderDefault: 'rgba(191,189,182,0.07)', borderStrong: 'rgba(191,189,182,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(191,189,182,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(191,189,182,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#e6b450', selected: '#39bae6', mark: '#f07178',
+      currentBadgeBg: '#e6b450', currentBadgeColor: '#0d1017',
+      badgeBg: '#272f3e', badgeColor: '#bfbdb6',
+      upBg: '#39bae6', downBg: '#7fd962',
+    },
+
+    // ── Ayu Mirage: Softer mid-tone variant of Ayu ──
+    'ayu-mirage': {
+      name: 'Ayu Mirage',
+      bgVoid: '#171b24', bgDeep: '#1a1e27', bgBase: '#1f2430',
+      bgSurface: '#242936', bgRaised: '#2a2f3c', bgElevated: '#323845', bgHover: '#3a4050',
+      accent: '#ffcc66', accentBright: '#ffd980',
+      accentDim: 'rgba(255,204,102,0.10)', accentMid: 'rgba(255,204,102,0.20)',
+      accentGlow: 'rgba(255,204,102,0.35)', accentBorder: 'rgba(255,204,102,0.30)',
+      blue: '#73d0ff', purple: '#d4bfff', green: '#bae67e',
+      red: '#f28779', cyan: '#95e6cb', gold: '#ffcc66',
+      regionBlue: '#73d0ff', regionPurple: '#d4bfff', regionGreen: '#bae67e', regionGold: '#ffcc66',
+      textPrimary: '#cbccc6', textSecondary: '#8a8d93', textTertiary: '#5c6070', textMuted: '#3a4050',
+      borderSubtle: 'rgba(203,204,198,0.04)', borderDefault: 'rgba(203,204,198,0.07)', borderStrong: 'rgba(203,204,198,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(203,204,198,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(203,204,198,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#ffcc66', selected: '#73d0ff', mark: '#f28779',
+      currentBadgeBg: '#ffcc66', currentBadgeColor: '#1f2430',
+      badgeBg: '#3a4050', badgeColor: '#cbccc6',
+      upBg: '#73d0ff', downBg: '#bae67e',
+    },
+
+    // ── Synthwave '84: Retro-futuristic neon ──
+    // Palette: https://github.com/robb0wen/synthwave-vscode
+    'synthwave': {
+      name: "Synthwave '84",
+      bgVoid: '#1a1028', bgDeep: '#1e1336', bgBase: '#262335',
+      bgSurface: '#2d2844', bgRaised: '#342e50', bgElevated: '#3e375e', bgHover: '#4a4370',
+      accent: '#ff7edb', accentBright: '#ff9de6',
+      accentDim: 'rgba(255,126,219,0.10)', accentMid: 'rgba(255,126,219,0.20)',
+      accentGlow: 'rgba(255,126,219,0.35)', accentBorder: 'rgba(255,126,219,0.30)',
+      blue: '#36f9f6', purple: '#ff7edb', green: '#72f1b8',
+      red: '#fe4450', cyan: '#36f9f6', gold: '#fede5d',
+      regionBlue: '#36f9f6', regionPurple: '#ff7edb', regionGreen: '#72f1b8', regionGold: '#fede5d',
+      textPrimary: '#e0d0ff', textSecondary: '#a599c4', textTertiary: '#6e5e8e', textMuted: '#4a4370',
+      borderSubtle: 'rgba(224,208,255,0.04)', borderDefault: 'rgba(224,208,255,0.08)', borderStrong: 'rgba(224,208,255,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(224,208,255,0.08)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(224,208,255,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '14px', panelAlpha: '0.97',
+      highlight: '#ff7edb', selected: '#36f9f6', mark: '#fe4450',
+      currentBadgeBg: '#ff7edb', currentBadgeColor: '#262335',
+      badgeBg: '#4a4370', badgeColor: '#e0d0ff',
+      upBg: '#36f9f6', downBg: '#72f1b8',
+    },
+
+    // ── Everforest Dark: Comfortable green-toned theme ──
+    // Palette: https://github.com/sainnhe/everforest
+    'everforest': {
+      name: 'Everforest Dark',
+      bgVoid: '#242b2a', bgDeep: '#272e2d', bgBase: '#2d353b',
+      bgSurface: '#343e44', bgRaised: '#3d484d', bgElevated: '#475258', bgHover: '#505c62',
+      accent: '#a7c080', accentBright: '#b8d294',
+      accentDim: 'rgba(167,192,128,0.10)', accentMid: 'rgba(167,192,128,0.20)',
+      accentGlow: 'rgba(167,192,128,0.35)', accentBorder: 'rgba(167,192,128,0.30)',
+      blue: '#7fbbb3', purple: '#d699b6', green: '#a7c080',
+      red: '#e67e80', cyan: '#83c092', gold: '#dbbc7f',
+      regionBlue: '#7fbbb3', regionPurple: '#d699b6', regionGreen: '#a7c080', regionGold: '#dbbc7f',
+      textPrimary: '#d3c6aa', textSecondary: '#9da9a0', textTertiary: '#7a8478', textMuted: '#505c62',
+      borderSubtle: 'rgba(211,198,170,0.04)', borderDefault: 'rgba(211,198,170,0.07)', borderStrong: 'rgba(211,198,170,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(211,198,170,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.35)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(211,198,170,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#a7c080', selected: '#7fbbb3', mark: '#e67e80',
+      currentBadgeBg: '#a7c080', currentBadgeColor: '#2d353b',
+      badgeBg: '#505c62', badgeColor: '#d3c6aa',
+      upBg: '#7fbbb3', downBg: '#83c092',
+    },
+
+    // ── Kanagawa: Inspired by Katsushika Hokusai's The Great Wave ──
+    // Palette: https://github.com/rebelot/kanagawa.nvim
+    'kanagawa': {
+      name: 'Kanagawa',
+      bgVoid: '#16161d', bgDeep: '#181820', bgBase: '#1f1f28',
+      bgSurface: '#252530', bgRaised: '#2a2a37', bgElevated: '#363646', bgHover: '#3e3e52',
+      accent: '#7e9cd8', accentBright: '#9ab4ec',
+      accentDim: 'rgba(126,156,216,0.10)', accentMid: 'rgba(126,156,216,0.20)',
+      accentGlow: 'rgba(126,156,216,0.35)', accentBorder: 'rgba(126,156,216,0.30)',
+      blue: '#7e9cd8', purple: '#957fb8', green: '#76946a',
+      red: '#c34043', cyan: '#7aa89f', gold: '#dca561',
+      regionBlue: '#7e9cd8', regionPurple: '#957fb8', regionGreen: '#76946a', regionGold: '#dca561',
+      textPrimary: '#dcd7ba', textSecondary: '#9a978a', textTertiary: '#727169', textMuted: '#3e3e52',
+      borderSubtle: 'rgba(220,215,186,0.04)', borderDefault: 'rgba(220,215,186,0.07)', borderStrong: 'rgba(220,215,186,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(220,215,186,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(220,215,186,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#7e9cd8', selected: '#dca561', mark: '#c34043',
+      currentBadgeBg: '#7e9cd8', currentBadgeColor: '#1f1f28',
+      badgeBg: '#3e3e52', badgeColor: '#dcd7ba',
+      upBg: '#7aa89f', downBg: '#76946a',
+    },
+
+    // ── Rosé Pine: All natural pine, faux fur, and a bit of soho vibes ──
+    // Palette: https://rosepinetheme.com
+    'rose-pine': {
+      name: 'Rosé Pine',
+      bgVoid: '#14121c', bgDeep: '#17151f', bgBase: '#191724',
+      bgSurface: '#1f1d2e', bgRaised: '#26233a', bgElevated: '#2e2b42', bgHover: '#38354c',
+      accent: '#c4a7e7', accentBright: '#d4bbf5',
+      accentDim: 'rgba(196,167,231,0.10)', accentMid: 'rgba(196,167,231,0.20)',
+      accentGlow: 'rgba(196,167,231,0.35)', accentBorder: 'rgba(196,167,231,0.30)',
+      blue: '#9ccfd8', purple: '#c4a7e7', green: '#31748f',
+      red: '#eb6f92', cyan: '#9ccfd8', gold: '#f6c177',
+      regionBlue: '#9ccfd8', regionPurple: '#c4a7e7', regionGreen: '#31748f', regionGold: '#f6c177',
+      textPrimary: '#e0def4', textSecondary: '#908caa', textTertiary: '#6e6a86', textMuted: '#403d52',
+      borderSubtle: 'rgba(224,222,244,0.04)', borderDefault: 'rgba(224,222,244,0.07)', borderStrong: 'rgba(224,222,244,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(224,222,244,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(224,222,244,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#c4a7e7', selected: '#9ccfd8', mark: '#eb6f92',
+      currentBadgeBg: '#c4a7e7', currentBadgeColor: '#191724',
+      badgeBg: '#38354c', badgeColor: '#e0def4',
+      upBg: '#9ccfd8', downBg: '#31748f',
+    },
+
+    // ── Vesper: Warm dark theme with orange accents ──
+    // Palette: https://github.com/raunofreiberg/vesper
+    'vesper': {
+      name: 'Vesper',
+      bgVoid: '#0e0e0e', bgDeep: '#101010', bgBase: '#141414',
+      bgSurface: '#1b1b1b', bgRaised: '#222222', bgElevated: '#2a2a2a', bgHover: '#333333',
+      accent: '#ffc799', accentBright: '#ffd4b0',
+      accentDim: 'rgba(255,199,153,0.10)', accentMid: 'rgba(255,199,153,0.20)',
+      accentGlow: 'rgba(255,199,153,0.35)', accentBorder: 'rgba(255,199,153,0.30)',
+      blue: '#8eb8e4', purple: '#d5a8e0', green: '#7fb98f',
+      red: '#f5a191', cyan: '#8eb8e4', gold: '#ffc799',
+      regionBlue: '#8eb8e4', regionPurple: '#d5a8e0', regionGreen: '#7fb98f', regionGold: '#ffc799',
+      textPrimary: '#b8b8b8', textSecondary: '#7b7b7b', textTertiary: '#555555', textMuted: '#333333',
+      borderSubtle: 'rgba(184,184,184,0.04)', borderDefault: 'rgba(184,184,184,0.07)', borderStrong: 'rgba(184,184,184,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(184,184,184,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(184,184,184,0.06)',
+      noiseOpacity: '0.018', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#ffc799', selected: '#8eb8e4', mark: '#f5a191',
+      currentBadgeBg: '#ffc799', currentBadgeColor: '#141414',
+      badgeBg: '#333333', badgeColor: '#b8b8b8',
+      upBg: '#8eb8e4', downBg: '#7fb98f',
+    },
+
+    // ── Poimandres: Minimal, dark teal-accented ──
+    // Palette: https://github.com/drcmda/poimandres-theme
+    'poimandres': {
+      name: 'Poimandres',
+      bgVoid: '#1a1c2a', bgDeep: '#1b1e2e', bgBase: '#1b2031',
+      bgSurface: '#212738', bgRaised: '#272d40', bgElevated: '#303648', bgHover: '#3a4055',
+      accent: '#add7ff', accentBright: '#c5e4ff',
+      accentDim: 'rgba(173,215,255,0.10)', accentMid: 'rgba(173,215,255,0.20)',
+      accentGlow: 'rgba(173,215,255,0.35)', accentBorder: 'rgba(173,215,255,0.30)',
+      blue: '#add7ff', purple: '#a6accd', green: '#5de4c7',
+      red: '#d0679d', cyan: '#89ddff', gold: '#fffac2',
+      regionBlue: '#add7ff', regionPurple: '#a6accd', regionGreen: '#5de4c7', regionGold: '#fffac2',
+      textPrimary: '#a6accd', textSecondary: '#767c9d', textTertiary: '#506477', textMuted: '#3a4055',
+      borderSubtle: 'rgba(166,172,205,0.04)', borderDefault: 'rgba(166,172,205,0.07)', borderStrong: 'rgba(166,172,205,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(166,172,205,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(166,172,205,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#add7ff', selected: '#5de4c7', mark: '#d0679d',
+      currentBadgeBg: '#add7ff', currentBadgeColor: '#1b2031',
+      badgeBg: '#3a4055', badgeColor: '#a6accd',
+      upBg: '#89ddff', downBg: '#5de4c7',
+    },
+
+    // ── Moonlight: Soft purple VS Code theme ──
+    // Palette: https://github.com/atomiks/moonlight-vscode-theme
+    'moonlight': {
+      name: 'Moonlight',
+      bgVoid: '#1a1c2e', bgDeep: '#1c1e32', bgBase: '#1e2030',
+      bgSurface: '#222436', bgRaised: '#2a2c40', bgElevated: '#32344a', bgHover: '#3c3e56',
+      accent: '#82aaff', accentBright: '#a0c4ff',
+      accentDim: 'rgba(130,170,255,0.10)', accentMid: 'rgba(130,170,255,0.20)',
+      accentGlow: 'rgba(130,170,255,0.35)', accentBorder: 'rgba(130,170,255,0.30)',
+      blue: '#82aaff', purple: '#c099ff', green: '#c3e88d',
+      red: '#ff757f', cyan: '#86e1fc', gold: '#ffc777',
+      regionBlue: '#82aaff', regionPurple: '#c099ff', regionGreen: '#c3e88d', regionGold: '#ffc777',
+      textPrimary: '#c8d3f5', textSecondary: '#8f98b0', textTertiary: '#636da6', textMuted: '#3c3e56',
+      borderSubtle: 'rgba(200,211,245,0.04)', borderDefault: 'rgba(200,211,245,0.07)', borderStrong: 'rgba(200,211,245,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(200,211,245,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(200,211,245,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#82aaff', selected: '#c099ff', mark: '#ff757f',
+      currentBadgeBg: '#82aaff', currentBadgeColor: '#1e2030',
+      badgeBg: '#3c3e56', badgeColor: '#c8d3f5',
+      upBg: '#86e1fc', downBg: '#c3e88d',
+    },
+
+    // ── Andromeda: Bold, colorful dark theme ──
+    // Palette: https://github.com/EliverLara/Andromeda
+    'andromeda': {
+      name: 'Andromeda',
+      bgVoid: '#1a1a24', bgDeep: '#1e1e2a', bgBase: '#23262e',
+      bgSurface: '#292c36', bgRaised: '#2f323e', bgElevated: '#383c4a', bgHover: '#414558',
+      accent: '#ffe66d', accentBright: '#fff08a',
+      accentDim: 'rgba(255,230,109,0.10)', accentMid: 'rgba(255,230,109,0.20)',
+      accentGlow: 'rgba(255,230,109,0.35)', accentBorder: 'rgba(255,230,109,0.30)',
+      blue: '#6ec1e4', purple: '#c74ded', green: '#96e072',
+      red: '#ee5d43', cyan: '#00e8c6', gold: '#ffe66d',
+      regionBlue: '#6ec1e4', regionPurple: '#c74ded', regionGreen: '#96e072', regionGold: '#ffe66d',
+      textPrimary: '#d5ced9', textSecondary: '#9a929e', textTertiary: '#6b6370', textMuted: '#414558',
+      borderSubtle: 'rgba(213,206,217,0.04)', borderDefault: 'rgba(213,206,217,0.08)', borderStrong: 'rgba(213,206,217,0.14)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(213,206,217,0.08)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(213,206,217,0.06)',
+      noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#ffe66d', selected: '#00e8c6', mark: '#ee5d43',
+      currentBadgeBg: '#ffe66d', currentBadgeColor: '#23262e',
+      badgeBg: '#414558', badgeColor: '#d5ced9',
+      upBg: '#6ec1e4', downBg: '#96e072',
+    },
+
+    // ── Nightfox: Cool-toned Neovim-born theme ──
+    // Palette: https://github.com/EdenEast/nightfox.nvim
+    'nightfox': {
+      name: 'Nightfox',
+      bgVoid: '#131a24', bgDeep: '#152028', bgBase: '#192330',
+      bgSurface: '#1e2a38', bgRaised: '#243140', bgElevated: '#29394a', bgHover: '#324456',
+      accent: '#719cd6', accentBright: '#8db4e8',
+      accentDim: 'rgba(113,156,214,0.10)', accentMid: 'rgba(113,156,214,0.20)',
+      accentGlow: 'rgba(113,156,214,0.35)', accentBorder: 'rgba(113,156,214,0.30)',
+      blue: '#719cd6', purple: '#9d79d6', green: '#81b29a',
+      red: '#c94f6d', cyan: '#63cdcf', gold: '#dbc074',
+      regionBlue: '#719cd6', regionPurple: '#9d79d6', regionGreen: '#81b29a', regionGold: '#dbc074',
+      textPrimary: '#cdcecf', textSecondary: '#93949a', textTertiary: '#6b6e75', textMuted: '#3d4b5c',
+      borderSubtle: 'rgba(205,206,207,0.04)', borderDefault: 'rgba(205,206,207,0.07)', borderStrong: 'rgba(205,206,207,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(205,206,207,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(205,206,207,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#719cd6', selected: '#dbc074', mark: '#c94f6d',
+      currentBadgeBg: '#719cd6', currentBadgeColor: '#192330',
+      badgeBg: '#324456', badgeColor: '#cdcecf',
+      upBg: '#63cdcf', downBg: '#81b29a',
+    },
+
+    // ── Vitesse Dark: Elegant minimal by Anthony Fu ──
+    // Palette: https://github.com/antfu/vscode-theme-vitesse
+    'vitesse': {
+      name: 'Vitesse Dark',
+      bgVoid: '#171717', bgDeep: '#1a1a1a', bgBase: '#1e1e1e',
+      bgSurface: '#252525', bgRaised: '#2b2b2b', bgElevated: '#333333', bgHover: '#3a3a3a',
+      accent: '#4d9375', accentBright: '#5da888',
+      accentDim: 'rgba(77,147,117,0.10)', accentMid: 'rgba(77,147,117,0.20)',
+      accentGlow: 'rgba(77,147,117,0.35)', accentBorder: 'rgba(77,147,117,0.30)',
+      blue: '#4c9a91', purple: '#b38bdb', green: '#4d9375',
+      red: '#cb7676', cyan: '#5eaab5', gold: '#d4976c',
+      regionBlue: '#4c9a91', regionPurple: '#b38bdb', regionGreen: '#4d9375', regionGold: '#d4976c',
+      textPrimary: '#dbd7ca', textSecondary: '#9a958c', textTertiary: '#6b675d', textMuted: '#3a3a3a',
+      borderSubtle: 'rgba(219,215,202,0.04)', borderDefault: 'rgba(219,215,202,0.07)', borderStrong: 'rgba(219,215,202,0.12)',
+      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+      shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(219,215,202,0.07)',
+      shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
+      shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(219,215,202,0.06)',
+      noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
+      highlight: '#4d9375', selected: '#4c9a91', mark: '#cb7676',
+      currentBadgeBg: '#4d9375', currentBadgeColor: '#1e1e1e',
+      badgeBg: '#3a3a3a', badgeColor: '#dbd7ca',
+      upBg: '#5eaab5', downBg: '#4d9375',
+    },
   };
 
   // Mutable themes map: built-ins + user overrides (populated by loadUserThemes)
@@ -411,55 +870,67 @@
   // Theme editor: schema for all editable theme properties
   const THEME_EDITOR_SCHEMA = {
     // Accent (common)
-    accent:          { label: 'Accent',            group: 'Accent',          type: 'color', common: true },
-    accentBright:    { label: 'Accent Bright',     group: 'Accent',          type: 'color', common: true },
-    accentDim:       { label: 'Accent Dim',        group: 'Accent',          type: 'rgba',  common: false },
-    accentMid:       { label: 'Accent Mid',        group: 'Accent',          type: 'rgba',  common: false },
-    accentGlow:      { label: 'Accent Glow',       group: 'Accent',          type: 'rgba',  common: false },
-    accentBorder:    { label: 'Accent Border',     group: 'Accent',          type: 'rgba',  common: false },
+    accent:          { label: 'Accent',            group: 'Accent',          type: 'color', common: true,  hint: 'Primary highlight color', browser: true },
+    accentBright:    { label: 'Accent Bright',     group: 'Accent',          type: 'color', common: true,  hint: 'Hover & focus states' },
+    accentDim:       { label: 'Accent Dim',        group: 'Accent',          type: 'rgba',  common: false, hint: 'Subtle accent backgrounds' },
+    accentMid:       { label: 'Accent Mid',        group: 'Accent',          type: 'rgba',  common: false, hint: 'Medium accent overlays' },
+    accentGlow:      { label: 'Accent Glow',       group: 'Accent',          type: 'rgba',  common: false, hint: 'Glow & shadow effects' },
+    accentBorder:    { label: 'Accent Border',     group: 'Accent',          type: 'rgba',  common: false, hint: 'Accented element borders' },
     // Backgrounds
-    bgBase:          { label: 'Base',              group: 'Backgrounds',     type: 'color', common: true },
-    bgSurface:       { label: 'Surface',           group: 'Backgrounds',     type: 'color', common: true },
-    bgRaised:        { label: 'Raised',            group: 'Backgrounds',     type: 'color', common: true },
-    bgVoid:          { label: 'Void',              group: 'Backgrounds',     type: 'color', common: false },
-    bgDeep:          { label: 'Deep',              group: 'Backgrounds',     type: 'color', common: false },
-    bgElevated:      { label: 'Elevated',          group: 'Backgrounds',     type: 'color', common: false },
-    bgHover:         { label: 'Hover',             group: 'Backgrounds',     type: 'color', common: false },
+    bgBase:          { label: 'Base',              group: 'Backgrounds',     type: 'color', common: true,  hint: 'Default panel background', browser: true },
+    bgSurface:       { label: 'Surface',           group: 'Backgrounds',     type: 'color', common: true,  hint: 'Card & surface backgrounds' },
+    bgRaised:        { label: 'Raised',            group: 'Backgrounds',     type: 'color', common: true,  hint: 'Inputs, buttons, raised elements' },
+    bgVoid:          { label: 'Void',              group: 'Backgrounds',     type: 'color', common: false, hint: 'Deepest shadow areas' },
+    bgDeep:          { label: 'Deep',              group: 'Backgrounds',     type: 'color', common: false, hint: 'Background depth layer', browser: true },
+    bgElevated:      { label: 'Elevated',          group: 'Backgrounds',     type: 'color', common: false, hint: 'Floating elements & dropdowns' },
+    bgHover:         { label: 'Hover',             group: 'Backgrounds',     type: 'color', common: false, hint: 'Hover state backgrounds' },
     // Text
-    textPrimary:     { label: 'Primary',           group: 'Text',            type: 'color', common: true },
-    textSecondary:   { label: 'Secondary',         group: 'Text',            type: 'color', common: true },
-    textTertiary:    { label: 'Tertiary',          group: 'Text',            type: 'color', common: false },
-    textMuted:       { label: 'Muted',             group: 'Text',            type: 'color', common: false },
+    textPrimary:     { label: 'Primary',           group: 'Text',            type: 'color', common: true,  hint: 'Main text & headings' },
+    textSecondary:   { label: 'Secondary',         group: 'Text',            type: 'color', common: true,  hint: 'Labels & descriptions' },
+    textTertiary:    { label: 'Tertiary',          group: 'Text',            type: 'color', common: false, hint: 'Placeholder text' },
+    textMuted:       { label: 'Muted',             group: 'Text',            type: 'color', common: false, hint: 'Disabled & de-emphasized' },
     // Browse Mode
-    highlight:       { label: 'Highlight',         group: 'Browse Mode',     type: 'color', common: true },
-    selected:        { label: 'Selected',          group: 'Browse Mode',     type: 'color', common: true },
-    mark:            { label: 'Mark',              group: 'Browse Mode',     type: 'color', common: false },
-    currentBadgeBg:  { label: 'Current Badge BG',  group: 'Browse Mode',     type: 'color', common: false },
-    currentBadgeColor:{ label: 'Current Badge Text',group: 'Browse Mode',    type: 'color', common: false },
-    badgeBg:         { label: 'Badge BG',          group: 'Browse Mode',     type: 'color', common: false },
-    badgeColor:      { label: 'Badge Text',        group: 'Browse Mode',     type: 'color', common: false },
-    upBg:            { label: 'Up Direction BG',   group: 'Browse Mode',     type: 'color', common: false },
-    downBg:          { label: 'Down Direction BG', group: 'Browse Mode',     type: 'color', common: false },
+    highlight:       { label: 'Highlight',         group: 'Browse Mode',     type: 'color', common: true,  hint: 'Current j/k selection' },
+    selected:        { label: 'Selected',          group: 'Browse Mode',     type: 'color', common: true,  hint: 'Multi-selected tabs (v)' },
+    mark:            { label: 'Mark',              group: 'Browse Mode',     type: 'color', common: false, hint: 'Marked tab indicator (m)' },
+    currentBadgeBg:  { label: 'Current Badge BG',  group: 'Browse Mode',     type: 'color', common: false, hint: 'Active tab badge background' },
+    currentBadgeColor:{ label: 'Current Badge Text',group: 'Browse Mode',    type: 'color', common: false, hint: 'Active tab badge text' },
+    badgeBg:         { label: 'Badge BG',          group: 'Browse Mode',     type: 'color', common: false, hint: 'Tab number badge background' },
+    badgeColor:      { label: 'Badge Text',        group: 'Browse Mode',     type: 'color', common: false, hint: 'Tab number badge text' },
+    upBg:            { label: 'Up Direction BG',   group: 'Browse Mode',     type: 'color', common: false, hint: 'Above-viewport indicator' },
+    downBg:          { label: 'Down Direction BG', group: 'Browse Mode',     type: 'color', common: false, hint: 'Below-viewport indicator' },
     // Semantic Colors
-    blue:            { label: 'Blue',              group: 'Semantic Colors', type: 'color', common: false },
-    purple:          { label: 'Purple',            group: 'Semantic Colors', type: 'color', common: false },
-    green:           { label: 'Green',             group: 'Semantic Colors', type: 'color', common: false },
-    red:             { label: 'Red',               group: 'Semantic Colors', type: 'color', common: false },
-    cyan:            { label: 'Cyan',              group: 'Semantic Colors', type: 'color', common: false },
-    gold:            { label: 'Gold',              group: 'Semantic Colors', type: 'color', common: false },
+    blue:            { label: 'Blue',              group: 'Semantic Colors', type: 'color', common: false, hint: 'Info & links' },
+    purple:          { label: 'Purple',            group: 'Semantic Colors', type: 'color', common: false, hint: 'Special & featured items' },
+    green:           { label: 'Green',             group: 'Semantic Colors', type: 'color', common: false, hint: 'Success & confirmations' },
+    red:             { label: 'Red',               group: 'Semantic Colors', type: 'color', common: false, hint: 'Errors & destructive actions' },
+    cyan:            { label: 'Cyan',              group: 'Semantic Colors', type: 'color', common: false, hint: 'Highlights & secondary info' },
+    gold:            { label: 'Gold',              group: 'Semantic Colors', type: 'color', common: false, hint: 'Warnings & attention' },
     // Borders
-    borderSubtle:    { label: 'Border Subtle',     group: 'Borders',         type: 'rgba',  common: false },
-    borderDefault:   { label: 'Border Default',    group: 'Borders',         type: 'rgba',  common: false },
-    borderStrong:    { label: 'Border Strong',     group: 'Borders',         type: 'rgba',  common: false },
+    borderSubtle:    { label: 'Border Subtle',     group: 'Borders',         type: 'rgba',  common: false, hint: 'Dividers & separators' },
+    borderDefault:   { label: 'Border Default',    group: 'Borders',         type: 'rgba',  common: false, hint: 'Standard element borders' },
+    borderStrong:    { label: 'Border Strong',     group: 'Borders',         type: 'rgba',  common: false, hint: 'Inputs & interactive borders' },
     // gTile Regions
-    regionBlue:      { label: 'Region Blue',       group: 'gTile Regions',   type: 'color', common: false },
-    regionPurple:    { label: 'Region Purple',     group: 'gTile Regions',   type: 'color', common: false },
-    regionGreen:     { label: 'Region Green',      group: 'gTile Regions',   type: 'color', common: false },
-    regionGold:      { label: 'Region Gold',       group: 'gTile Regions',   type: 'color', common: false },
+    regionBlue:      { label: 'Region Blue',       group: 'gTile Regions',   type: 'color', common: false, hint: 'First split region' },
+    regionPurple:    { label: 'Region Purple',     group: 'gTile Regions',   type: 'color', common: false, hint: 'Second split region' },
+    regionGreen:     { label: 'Region Green',      group: 'gTile Regions',   type: 'color', common: false, hint: 'Third split region' },
+    regionGold:      { label: 'Region Gold',       group: 'gTile Regions',   type: 'color', common: false, hint: 'Fourth split region' },
     // Effects
-    noiseOpacity:    { label: 'Noise Opacity',     group: 'Effects',         type: 'text',  common: false },
-    backdropBlur:    { label: 'Backdrop Blur',     group: 'Effects',         type: 'text',  common: false },
-    panelAlpha:      { label: 'Panel Alpha',       group: 'Effects',         type: 'text',  common: false },
+    noiseOpacity:    { label: 'Noise Opacity',     group: 'Effects',         type: 'text',  common: false, hint: 'Texture grain intensity' },
+    backdropBlur:    { label: 'Backdrop Blur',     group: 'Effects',         type: 'text',  common: false, hint: 'Background blur radius' },
+    panelAlpha:      { label: 'Panel Alpha',       group: 'Effects',         type: 'text',  common: false, hint: 'Panel transparency level' },
+  };
+
+  // Group-level descriptions for the theme editor
+  const THEME_GROUP_INFO = {
+    'Accent':          { desc: 'Command bar, buttons, active states, focus rings', browserDesc: 'Toolbar & sidebar accent' },
+    'Backgrounds':     { desc: 'Panels, modals, overlays, command bar', browserDesc: 'Browser background & toolbar' },
+    'Text':            { desc: 'Labels, descriptions, placeholders across all overlays' },
+    'Browse Mode':     { desc: 'Tab sidebar highlights, selection, badges, direction indicators' },
+    'Semantic Colors': { desc: 'Toasts, status indicators, action button colors' },
+    'Borders':         { desc: 'Panel edges, input borders, dividers, separators' },
+    'gTile Regions':   { desc: 'Split-view region colors in the gTile overlay grid' },
+    'Effects':         { desc: 'Noise texture, backdrop blur, panel transparency' },
   };
 
   // Command palette group definitions (for section headers when input is empty)
@@ -470,7 +941,7 @@
     { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
     { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace'] },
     { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
-    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','reload-themes','open-themes-file'] },
+    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','switch-theme','reload-themes','open-themes-file'] },
     { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
   ];
 
@@ -696,6 +1167,9 @@
   let settingsSearchQuery = '';
   let settingsRecordingId = null;
   let settingsRecordingHandler = null;
+
+  // Theme live-preview state (for Switch Theme command)
+  let _themePreviewOriginal = null; // theme ID to restore on Escape
 
   // Theme editor state
   let themeEditorActive = false;
@@ -2108,6 +2582,7 @@
         exitSearchMode();
         setTimeout(() => enterUpdateMode(), 100);
       }},
+      { key: 'switch-theme', label: 'Switch Theme...', icon: '🎨', tags: ['theme', 'color', 'scheme', 'appearance', 'switch', 'meridian', 'dracula', 'nord', 'gruvbox', 'catppuccin', 'tokyo'], subFlow: 'theme-picker' },
       { key: 'reload-themes', label: 'Reload Themes', icon: '🎨', tags: ['theme', 'reload', 'refresh', 'custom', 'user'], command: () => {
         loadUserThemes().then(() => { applyTheme(); log('Themes reloaded'); });
       }},
@@ -2303,6 +2778,10 @@
     if (type === 'tab-search' || type === 'split-tab-picker') {
       commandMatchedTabs = [];
     }
+    // Save current theme for live-preview restore on Escape
+    if (type === 'theme-picker') {
+      _themePreviewOriginal = S['appearance.theme'] || 'meridian';
+    }
     searchSelectedIndex = 0;
     searchCursorPos = 0;
 
@@ -2334,6 +2813,14 @@
     // Clean up session readonly state when leaving session views
     if (currentType === 'session-detail-view' || currentType === 'delete-session-confirm') {
       if (searchInput) searchInput.readOnly = false;
+    }
+
+    // Restore original theme when backing out of theme-picker
+    if (currentType === 'theme-picker' && _themePreviewOriginal) {
+      S['appearance.theme'] = _themePreviewOriginal;
+      saveSettings();
+      applyTheme();
+      _themePreviewOriginal = null;
     }
 
     if (commandSubFlowStack.length === 0) {
@@ -2415,6 +2902,8 @@
       case 'unpack-folder-picker': return 'Select a folder to unpack...';
       case 'move-folder-to-ws-folder-picker': return 'Select a folder to move...';
       case 'move-folder-to-ws-workspace-picker': return 'Select destination workspace...';
+      case 'theme-picker': return 'Select a theme...';
+      case 'theme-browser-confirm': return 'Apply theme to browser too?';
       default: return 'Type a command...';
     }
   }
@@ -2520,9 +3009,43 @@
         return getFolderPickerForAction(query, '🗂', 'move-ws');
       case 'move-folder-to-ws-workspace-picker':
         return getMoveToWorkspacePickerResults(query);
+      case 'theme-picker':
+        return getThemePickerResults(query);
+      case 'theme-browser-confirm':
+        return getThemeBrowserConfirmResults(query);
       default:
         return [];
     }
+  }
+
+  // Theme picker sub-flow: lists all themes (built-in + user) with grouping
+  function getThemePickerResults(query) {
+    const currentTheme = S['appearance.theme'];
+    const results = [];
+
+    for (const [id, t] of Object.entries(themes)) {
+      const isCurrent = id === currentTheme;
+      const isBuiltIn = !!BUILTIN_THEMES[id];
+      results.push({
+        key: `theme:${id}`,
+        label: `${t.name || id}${isCurrent ? ' (current)' : ''}`,
+        sublabel: isBuiltIn ? 'Built-in' : 'Custom',
+        icon: isCurrent ? '◉' : (isBuiltIn ? '◎' : '✎'),
+        tags: ['theme', (t.name || id).toLowerCase(), isBuiltIn ? 'built-in' : 'custom'],
+        themeId: id,
+      });
+    }
+
+    return fuzzyFilterAndSort(results, query);
+  }
+
+  // Browser theme confirmation sub-flow
+  function getThemeBrowserConfirmResults(query) {
+    const options = [
+      { key: 'theme-browser:yes', label: 'Yes, apply to browser too', icon: '✓', tags: ['yes', 'apply', 'browser'] },
+      { key: 'theme-browser:no', label: 'No, only ZenLeap', icon: '✕', tags: ['no', 'zenleap', 'only'] },
+    ];
+    return fuzzyFilterAndSort(options, query);
   }
 
   function getFolderNameInputResults(query) {
@@ -3293,6 +3816,30 @@
             } catch(e) { log(`Move folder to workspace failed: ${e}`); }
           }
         }
+        exitSearchMode();
+        break;
+
+      // --- Theme Sub-Flows ---
+      case 'theme-picker':
+        if (result.themeId) {
+          // User confirmed — clear preview state so exitSubFlow won't revert
+          _themePreviewOriginal = null;
+          S['appearance.theme'] = result.themeId;
+          saveSettings();
+          applyTheme();
+          // Ask about browser application
+          enterSubFlow('theme-browser-confirm', 'Apply to Browser?');
+        }
+        break;
+
+      case 'theme-browser-confirm':
+        if (result.key === 'theme-browser:yes') {
+          S['appearance.applyToBrowser'] = true;
+        } else if (result.key === 'theme-browser:no') {
+          S['appearance.applyToBrowser'] = false;
+        }
+        saveSettings();
+        applyBrowserTheme();
         exitSearchMode();
         break;
     }
@@ -8504,9 +9051,24 @@
       /* Property Groups */
       .zenleap-theme-editor-group { margin-bottom: 16px; }
       .zenleap-theme-editor-group-header {
+        display: flex; align-items: center; gap: 6px;
         font-size: 10px; font-weight: 600; color: var(--zl-text-muted);
-        text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;
+        text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;
         padding-bottom: 4px; border-bottom: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-theme-group-browser-badge {
+        font-size: 8px; font-weight: 700; letter-spacing: 0.5px;
+        color: var(--zl-accent); background: var(--zl-accent-dim);
+        border: 1px solid var(--zl-accent-border); border-radius: 3px;
+        padding: 1px 5px; text-transform: uppercase; cursor: default;
+        line-height: 1.2;
+      }
+      .zenleap-theme-group-desc {
+        font-size: 10px; color: var(--zl-text-muted); font-style: italic;
+        margin-bottom: 6px; opacity: 0.7; line-height: 1.4;
+      }
+      .zenleap-theme-group-browser-note {
+        color: var(--zl-accent); font-style: italic; opacity: 0.9;
       }
       .zenleap-theme-prop-row {
         display: flex; align-items: center; gap: 8px; padding: 4px 8px;
@@ -8515,7 +9077,22 @@
       .zenleap-theme-prop-row:hover { background: rgba(255,255,255,0.02); }
       .zenleap-theme-prop-row.overridden { background: var(--zl-accent-dim); }
       .zenleap-theme-prop-label {
-        font-size: 12px; font-weight: 500; color: var(--zl-text-primary); width: 120px; flex-shrink: 0;
+        width: 140px; flex-shrink: 0;
+      }
+      .zenleap-theme-prop-label-top {
+        display: flex; align-items: center; gap: 4px;
+        font-size: 12px; font-weight: 500; color: var(--zl-text-primary);
+      }
+      .zenleap-theme-prop-hint {
+        display: block; font-size: 9px; color: var(--zl-text-muted);
+        line-height: 1.3; margin-top: 1px; opacity: 0.7;
+      }
+      .zenleap-theme-prop-browser-badge {
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 8px; font-weight: 700; color: var(--zl-accent);
+        background: var(--zl-accent-dim); border: 1px solid var(--zl-accent-border);
+        border-radius: 3px; width: 14px; height: 14px; flex-shrink: 0;
+        cursor: default; line-height: 1;
       }
       .zenleap-theme-prop-inherited {
         display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--zl-text-muted);
@@ -8694,6 +9271,7 @@
         S[id] = cb.checked;
         saveSettings();
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
+        if (id === 'appearance.applyToBrowser') applyBrowserTheme();
       });
       control.appendChild(toggle);
     } else if (schema.type === 'select') {
@@ -9050,8 +9628,30 @@
       groupDiv.className = 'zenleap-theme-editor-group';
       const groupHeader = document.createElement('div');
       groupHeader.className = 'zenleap-theme-editor-group-header';
-      groupHeader.textContent = groupName;
+      const groupTitle = document.createElement('span');
+      groupTitle.textContent = groupName;
+      groupHeader.appendChild(groupTitle);
+      const groupInfo = THEME_GROUP_INFO[groupName];
+      if (groupInfo?.browserDesc) {
+        const browserBadge = document.createElement('span');
+        browserBadge.className = 'zenleap-theme-group-browser-badge';
+        browserBadge.textContent = 'Browser';
+        browserBadge.title = groupInfo.browserDesc;
+        groupHeader.appendChild(browserBadge);
+      }
       groupDiv.appendChild(groupHeader);
+      if (groupInfo?.desc) {
+        const groupDesc = document.createElement('div');
+        groupDesc.className = 'zenleap-theme-group-desc';
+        groupDesc.textContent = groupInfo.desc;
+        if (groupInfo.browserDesc) {
+          const browserNote = document.createElement('span');
+          browserNote.className = 'zenleap-theme-group-browser-note';
+          browserNote.textContent = ` \u00B7 ${groupInfo.browserDesc} when "Apply to Browser" is on`;
+          groupDesc.appendChild(browserNote);
+        }
+        groupDiv.appendChild(groupDesc);
+      }
 
       for (const [prop, schema] of commonProps) {
         groupDiv.appendChild(createThemePropertyRow(prop, schema));
@@ -9111,9 +9711,27 @@
     row.className = 'zenleap-theme-prop-row';
     if (hasOverride) row.classList.add('overridden');
 
+    const labelWrap = document.createElement('div');
+    labelWrap.className = 'zenleap-theme-prop-label';
+    const labelTop = document.createElement('div');
+    labelTop.className = 'zenleap-theme-prop-label-top';
     const label = document.createElement('span');
-    label.className = 'zenleap-theme-prop-label';
     label.textContent = schema.label;
+    labelTop.appendChild(label);
+    if (schema.browser) {
+      const badge = document.createElement('span');
+      badge.className = 'zenleap-theme-prop-browser-badge';
+      badge.textContent = 'B';
+      badge.title = 'Also applies to Zen Browser chrome';
+      labelTop.appendChild(badge);
+    }
+    labelWrap.appendChild(labelTop);
+    if (schema.hint) {
+      const hint = document.createElement('span');
+      hint.className = 'zenleap-theme-prop-hint';
+      hint.textContent = schema.hint;
+      labelWrap.appendChild(hint);
+    }
 
     const inherited = document.createElement('span');
     inherited.className = 'zenleap-theme-prop-inherited';
@@ -9199,7 +9817,7 @@
       renderSettingsContent();
     });
 
-    row.appendChild(label);
+    row.appendChild(labelWrap);
     row.appendChild(inherited);
     row.appendChild(control);
     row.appendChild(clearBtn);
@@ -9506,6 +10124,14 @@
     // Reset vim mode to insert for next time
     searchVimMode = 'insert';
 
+    // Restore theme if exiting while in theme live-preview
+    if (_themePreviewOriginal) {
+      S['appearance.theme'] = _themePreviewOriginal;
+      saveSettings();
+      applyTheme();
+      _themePreviewOriginal = null;
+    }
+
     // Reset command state
     commandMode = false;
     commandQuery = '';
@@ -9676,6 +10302,16 @@
     if (newIndex >= 0 && newIndex < items.length) {
       items[newIndex].classList.add('selected');
       items[newIndex].scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    }
+
+    // Live-preview theme when navigating the theme-picker
+    if (commandSubFlow?.type === 'theme-picker') {
+      const results = commandMode ? commandResults : searchResults;
+      const selectedResult = results[newIndex];
+      if (selectedResult?.themeId && themes[selectedResult.themeId]) {
+        S['appearance.theme'] = selectedResult.themeId;
+        applyTheme();
+      }
     }
 
     // Update preview debounce
@@ -13068,6 +13704,41 @@
     root.style.setProperty('--zl-highlight-selected-20', hexToRgba(blendHex, 0.25));
     root.style.setProperty('--zl-highlight-selected-15', hexToRgba(blendHex, 0.2));
 
+    // Apply theme to Zen Browser chrome if enabled
+    applyBrowserTheme(t);
+  }
+
+  // Zen Browser CSS properties managed by browser theme application
+  const _zenBrowserProps = [
+    '--zen-primary-color',
+    '--zen-main-browser-background',
+    '--zen-main-browser-background-toolbar',
+  ];
+
+  // Apply or revert Zen Browser chrome theme colors
+  function applyBrowserTheme(t) {
+    const root = document.documentElement;
+
+    if (!S['appearance.applyToBrowser']) {
+      // Revert: remove our overrides so Zen's own theme takes over
+      for (const prop of _zenBrowserProps) root.style.removeProperty(prop);
+      return;
+    }
+
+    // Use the theme object passed from applyTheme(), or resolve it
+    if (!t) {
+      const themeName = S['appearance.theme'] || 'meridian';
+      t = themes[themeName] || themes.meridian;
+    }
+
+    // Map ZenLeap theme colors to Zen Browser chrome properties
+    const accent = toHex6(t.accent);
+    const bgBase = toHex6(t.bgBase);
+    const bgDeep = toHex6(t.bgDeep);
+
+    root.style.setProperty('--zen-primary-color', accent);
+    root.style.setProperty('--zen-main-browser-background', `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`);
+    root.style.setProperty('--zen-main-browser-background-toolbar', `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`);
   }
 
   // Legacy compat wrapper
