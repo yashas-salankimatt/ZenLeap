@@ -939,7 +939,7 @@
     { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}', keys: ['go-first-tab','go-last-tab','browse-mode-down','browse-mode-up','open-tab-search'] },
     { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}', keys: ['toggle-fullscreen','toggle-sidebar','zoom-in','zoom-out','zoom-reset'] },
     { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
-    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace'] },
+    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace','reorganize-workspaces'] },
     { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
     { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','switch-theme','reload-themes','open-themes-file'] },
     { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
@@ -1535,6 +1535,15 @@
   // Help modal
   let helpMode = false;
   let helpModal = null;
+
+  // Reorganize workspaces modal
+  let reorgMode = false;
+  let reorgModal = null;
+  let reorgFocusIndex = 0;       // Currently focused workspace index
+  let reorgWorkspaces = [];      // Working copy of workspaces array [{uuid, name, icon}]
+  let reorgMovingIndex = -1;     // Index being moved (-1 = not moving)
+  let reorgDragState = null;     // Mouse drag state: { index, startY, currentY, clone }
+  let reorgOriginalOrder = [];   // Snapshot for detecting changes
 
   // Settings modal
   let settingsMode = false;
@@ -2877,6 +2886,11 @@
           try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
         },
         subFlow: 'rename-workspace-picker' },
+      { key: 'reorganize-workspaces', label: 'Reorganize Workspaces', icon: '↕', tags: ['workspace', 'reorder', 'reorganize', 'sort', 'move', 'arrange', 'order', 'ws'],
+        condition: () => {
+          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
+        },
+        command: () => { exitSearchMode(); setTimeout(() => enterReorgMode(), 50); } },
 
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
@@ -6427,6 +6441,7 @@
     if (searchMode) exitSearchMode();
     if (helpMode) exitHelpMode();
     if (settingsMode) exitSettingsMode();
+    if (reorgMode) exitReorgMode(false);
 
     createUpdateModal();
     updateMode = true;
@@ -7017,6 +7032,7 @@
     if (searchMode) exitSearchMode();
     if (helpMode) exitHelpMode();
     if (settingsMode) exitSettingsMode();
+    if (reorgMode) exitReorgMode(false);
 
     createGtileOverlay();
 
@@ -9154,10 +9170,9 @@
   function enterHelpMode() {
     if (helpMode) return;
 
-    // Exit leap mode if active
-    if (leapMode) {
-      exitLeapMode(false);
-    }
+    // Exit other modes if active
+    if (leapMode) exitLeapMode(false);
+    if (reorgMode) exitReorgMode(false);
 
     createHelpModal();
 
@@ -9174,6 +9189,569 @@
     helpModal.classList.remove('active');
 
     log('Exited help mode');
+  }
+
+  // ============================================
+  // REORGANIZE WORKSPACES MODAL
+  // ============================================
+
+  function createReorgModal() {
+    if (reorgModal) return;
+
+    const modal = document.createElement('div');
+    modal.id = 'zenleap-reorg-modal';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-reorg-backdrop';
+    backdrop.addEventListener('click', () => exitReorgMode());
+
+    const container = document.createElement('div');
+    container.id = 'zenleap-reorg-container';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'zenleap-reorg-header';
+    const headerContent = document.createElement('div');
+    const h1 = document.createElement('h1');
+    h1.textContent = 'Reorder Workspaces';
+    const subtitle = document.createElement('span');
+    subtitle.className = 'zenleap-reorg-subtitle';
+    subtitle.textContent = 'Drag or use keyboard to rearrange';
+    headerContent.appendChild(h1);
+    headerContent.appendChild(subtitle);
+    header.appendChild(headerContent);
+
+    // Workspace list
+    const list = document.createElement('div');
+    list.id = 'zenleap-reorg-list';
+
+    // Footer with keyboard hints
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-reorg-footer';
+    footer.innerHTML = [
+      '<span><kbd>j</kbd><kbd>k</kbd> navigate</span>',
+      '<span><kbd>J</kbd><kbd>K</kbd> move</span>',
+      '<span><kbd>\u21B5</kbd> confirm</span>',
+      '<span><kbd>esc</kbd> cancel</span>',
+    ].join('');
+
+    container.appendChild(header);
+    container.appendChild(list);
+    container.appendChild(footer);
+    modal.appendChild(backdrop);
+    modal.appendChild(container);
+
+    // Styles
+    const style = document.createElement('style');
+    style.id = 'zenleap-reorg-styles';
+    style.textContent = `
+      #zenleap-reorg-modal {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100001; display: none; justify-content: center; align-items: center; padding: 20px;
+      }
+      #zenleap-reorg-modal.active { display: flex; }
+      #zenleap-reorg-backdrop {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: var(--zl-backdrop); backdrop-filter: var(--zl-blur);
+      }
+      #zenleap-reorg-container {
+        position: relative; width: 95%; max-width: 440px;
+        background: var(--zl-bg-surface); border-radius: var(--zl-r-xl);
+        box-shadow: var(--zl-shadow-modal); border: 1px solid var(--zl-border-subtle);
+        overflow: hidden; display: flex; flex-direction: column;
+        animation: zenleap-modal-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+        font-family: var(--zl-font-ui);
+      }
+      .zenleap-reorg-header {
+        padding: 20px 24px 16px; border-bottom: 1px solid var(--zl-border-subtle);
+        text-align: center;
+      }
+      .zenleap-reorg-header h1 {
+        margin: 0; font-size: 18px; font-weight: 700; color: var(--zl-accent);
+        letter-spacing: -0.3px;
+      }
+      .zenleap-reorg-subtitle {
+        display: block; margin-top: 4px; font-size: 12px; color: var(--zl-text-muted); font-weight: 400;
+      }
+      #zenleap-reorg-list {
+        padding: 8px 0; max-height: 60vh; overflow-y: auto;
+      }
+      #zenleap-reorg-list::-webkit-scrollbar { width: 6px; }
+      #zenleap-reorg-list::-webkit-scrollbar-track { background: transparent; }
+      #zenleap-reorg-list::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+
+      .zenleap-reorg-item {
+        display: flex; align-items: center; padding: 10px 20px; gap: 12px;
+        cursor: grab; transition: background 0.1s, transform 0.18s cubic-bezier(0.2, 0, 0, 1),
+          box-shadow 0.18s ease, border-color 0.1s;
+        border-left: 2px solid transparent;
+        position: relative;
+        user-select: none;
+      }
+      .zenleap-reorg-item:hover { background: var(--zl-bg-raised); }
+      .zenleap-reorg-item.focused {
+        background: var(--zl-accent-dim);
+        border-left-color: var(--zl-accent);
+      }
+      .zenleap-reorg-item.moving {
+        background: var(--zl-accent-mid);
+        border-left-color: var(--zl-accent-bright);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        z-index: 2;
+      }
+      .zenleap-reorg-item.dragging {
+        opacity: 0.9;
+        box-shadow: var(--zl-shadow-elevated);
+        z-index: 10;
+        cursor: grabbing;
+        transition: box-shadow 0.15s ease;
+      }
+      .zenleap-reorg-item.swap-up {
+        animation: zenleap-reorg-swap-up 0.18s cubic-bezier(0.2, 0, 0, 1);
+      }
+      .zenleap-reorg-item.swap-down {
+        animation: zenleap-reorg-swap-down 0.18s cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      @keyframes zenleap-reorg-swap-up {
+        from { transform: translateY(100%); } to { transform: translateY(0); }
+      }
+      @keyframes zenleap-reorg-swap-down {
+        from { transform: translateY(-100%); } to { transform: translateY(0); }
+      }
+
+      .zenleap-reorg-grip {
+        color: var(--zl-text-muted); font-size: 14px; flex-shrink: 0;
+        opacity: 0.4; transition: opacity 0.15s;
+        cursor: grab; width: 16px; text-align: center;
+        line-height: 1;
+      }
+      .zenleap-reorg-item:hover .zenleap-reorg-grip,
+      .zenleap-reorg-item.focused .zenleap-reorg-grip { opacity: 0.8; }
+
+      .zenleap-reorg-pos {
+        font-family: var(--zl-font-mono); font-size: 11px; font-weight: 600;
+        color: var(--zl-text-muted); min-width: 18px; text-align: center;
+        flex-shrink: 0;
+      }
+      .zenleap-reorg-item.focused .zenleap-reorg-pos { color: var(--zl-accent); }
+
+      .zenleap-reorg-icon {
+        font-size: 18px; flex-shrink: 0; width: 24px; text-align: center;
+      }
+
+      .zenleap-reorg-name {
+        flex: 1; min-width: 0; font-size: 14px; font-weight: 500;
+        color: var(--zl-text-primary);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+
+      .zenleap-reorg-active-badge {
+        font-family: var(--zl-font-mono); font-size: 9px; font-weight: 700;
+        letter-spacing: 0.5px; text-transform: uppercase;
+        padding: 2px 8px; border-radius: 4px;
+        background: var(--zl-current-bg); color: var(--zl-current-color);
+        flex-shrink: 0;
+      }
+
+      .zenleap-reorg-footer {
+        display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;
+        padding: 10px 16px;
+        border-top: 1px solid var(--zl-border-subtle);
+        font-size: 11px; color: var(--zl-text-muted);
+        font-family: var(--zl-font-ui);
+      }
+      .zenleap-reorg-footer span {
+        display: inline-flex; align-items: center; gap: 4px;
+      }
+      .zenleap-reorg-footer kbd {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 18px; height: 18px; padding: 0 5px;
+        font-family: var(--zl-font-mono); font-size: 9px; font-weight: 600;
+        color: var(--zl-text-secondary);
+        background: var(--zl-bg-raised);
+        border: 1px solid var(--zl-border-strong);
+        border-radius: 4px;
+        box-shadow: var(--zl-shadow-kbd);
+      }
+
+    `;
+
+    document.head.appendChild(style);
+    document.documentElement.appendChild(modal);
+
+    reorgModal = modal;
+    log('Reorganize workspaces modal created');
+  }
+
+  function renderReorgList() {
+    const list = document.getElementById('zenleap-reorg-list');
+    if (!list) return;
+
+    const activeId = window.gZenWorkspaces?.activeWorkspace;
+
+    // Remove old children
+    while (list.firstChild) list.removeChild(list.firstChild);
+
+    reorgWorkspaces.forEach((ws, i) => {
+      const item = document.createElement('div');
+      item.className = 'zenleap-reorg-item';
+      item.dataset.index = i;
+      if (i === reorgFocusIndex) item.classList.add('focused');
+      if (i === reorgMovingIndex) item.classList.add('moving');
+
+      // Drag grip
+      const grip = document.createElement('span');
+      grip.className = 'zenleap-reorg-grip';
+      grip.textContent = '\u2807'; // vertical ellipsis (⠇)
+
+      // Position number
+      const pos = document.createElement('span');
+      pos.className = 'zenleap-reorg-pos';
+      pos.textContent = String(i + 1);
+
+      // Icon
+      const icon = document.createElement('span');
+      icon.className = 'zenleap-reorg-icon';
+      icon.textContent = ws.icon || '\uD83D\uDDC2';
+
+      // Name
+      const name = document.createElement('span');
+      name.className = 'zenleap-reorg-name';
+      name.textContent = ws.name || 'Unnamed';
+
+      item.appendChild(grip);
+      item.appendChild(pos);
+      item.appendChild(icon);
+      item.appendChild(name);
+
+      // Active badge
+      if (ws.uuid === activeId) {
+        const badge = document.createElement('span');
+        badge.className = 'zenleap-reorg-active-badge';
+        badge.textContent = 'active';
+        item.appendChild(badge);
+      }
+
+      // Mouse drag handlers
+      item.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        startReorgDrag(i, e.clientY);
+      });
+
+      // Click to focus
+      item.addEventListener('click', (e) => {
+        if (reorgDragState || reorgFocusIndex === i) return;
+        reorgFocusIndex = i;
+        renderReorgList();
+      });
+
+      list.appendChild(item);
+    });
+  }
+
+  function startReorgDrag(index, startY) {
+    reorgDragState = { index, startY, currentY: startY, moved: false };
+
+    const onMouseMove = (e) => {
+      if (!reorgDragState) return;
+      reorgDragState.currentY = e.clientY;
+
+      const list = document.getElementById('zenleap-reorg-list');
+      if (!list) return;
+
+      const items = list.querySelectorAll('.zenleap-reorg-item');
+      const dragItem = items[reorgDragState.index];
+      if (!dragItem) return;
+
+      // Activate drag visual after 5px movement
+      if (!reorgDragState.moved && Math.abs(e.clientY - reorgDragState.startY) > 5) {
+        reorgDragState.moved = true;
+        dragItem.classList.add('dragging');
+      }
+
+      if (!reorgDragState.moved) return;
+
+      // Calculate drag offset
+      const dy = e.clientY - reorgDragState.startY;
+      dragItem.style.transform = `translateY(${dy}px)`;
+
+      // Determine if we crossed a neighbor
+      const dragIdx = reorgDragState.index;
+      for (let i = 0; i < items.length; i++) {
+        if (i === dragIdx) continue;
+        const rect = items[i].getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+
+        if (i < dragIdx && e.clientY < mid) {
+          // Move up
+          reorgSwapDrag(dragIdx, i);
+          return;
+        }
+        if (i > dragIdx && e.clientY > mid) {
+          // Move down
+          reorgSwapDrag(dragIdx, i);
+          return;
+        }
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove, true);
+      window.removeEventListener('mouseup', onMouseUp, true);
+
+      if (reorgDragState) {
+        const list = document.getElementById('zenleap-reorg-list');
+        if (list) {
+          const items = list.querySelectorAll('.zenleap-reorg-item');
+          const dragItem = items[reorgDragState.index];
+          if (dragItem) {
+            dragItem.classList.remove('dragging');
+            dragItem.style.transform = '';
+          }
+        }
+        reorgFocusIndex = reorgDragState.index;
+        reorgDragState = null;
+        renderReorgList();
+      }
+    };
+
+    window.addEventListener('mousemove', onMouseMove, true);
+    window.addEventListener('mouseup', onMouseUp, true);
+  }
+
+  function reorgSwapDrag(fromIdx, toIdx) {
+    // Swap in data
+    const ws = reorgWorkspaces.splice(fromIdx, 1)[0];
+    reorgWorkspaces.splice(toIdx, 0, ws);
+
+    // Update drag state
+    reorgDragState.index = toIdx;
+    reorgDragState.startY = reorgDragState.currentY;
+
+    // Re-render
+    renderReorgList();
+
+    // Re-apply dragging state to the moved item
+    const list = document.getElementById('zenleap-reorg-list');
+    if (list) {
+      const items = list.querySelectorAll('.zenleap-reorg-item');
+      const dragItem = items[toIdx];
+      if (dragItem) {
+        dragItem.classList.add('dragging');
+        // Apply swap animation to displaced item
+        const displaced = items[fromIdx];
+        if (displaced) {
+          displaced.classList.add(toIdx < fromIdx ? 'swap-down' : 'swap-up');
+          displaced.addEventListener('animationend', () => {
+            displaced.classList.remove('swap-up', 'swap-down');
+          }, { once: true });
+        }
+      }
+    }
+  }
+
+  function reorgMoveItem(fromIdx, toIdx) {
+    if (toIdx < 0 || toIdx >= reorgWorkspaces.length) return;
+
+    const ws = reorgWorkspaces.splice(fromIdx, 1)[0];
+    reorgWorkspaces.splice(toIdx, 0, ws);
+
+    // Update focus & moving index
+    reorgFocusIndex = toIdx;
+    reorgMovingIndex = toIdx;
+
+    renderReorgList();
+
+    // Animate the displaced item
+    const list = document.getElementById('zenleap-reorg-list');
+    if (list) {
+      const displaced = list.querySelectorAll('.zenleap-reorg-item')[fromIdx];
+      if (displaced) {
+        displaced.classList.add(toIdx < fromIdx ? 'swap-down' : 'swap-up');
+        displaced.addEventListener('animationend', () => {
+          displaced.classList.remove('swap-up', 'swap-down');
+        }, { once: true });
+      }
+    }
+
+    // Scroll focused item into view
+    scrollReorgFocusIntoView();
+  }
+
+  function scrollReorgFocusIntoView() {
+    const list = document.getElementById('zenleap-reorg-list');
+    if (!list) return;
+    const items = list.querySelectorAll('.zenleap-reorg-item');
+    if (items[reorgFocusIndex]) {
+      items[reorgFocusIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  async function applyReorgChanges() {
+    if (!window.gZenWorkspaces) return;
+
+    // Capture local copies before any async work (exitReorgMode clears these synchronously)
+    const targetOrder = [...reorgWorkspaces];
+    const originalOrder = [...reorgOriginalOrder];
+
+    // Compare with original order and apply changes
+    let changed = false;
+    for (let i = 0; i < targetOrder.length; i++) {
+      if (targetOrder[i].uuid !== originalOrder[i].uuid) {
+        changed = true;
+        break;
+      }
+    }
+
+    if (!changed) {
+      log('Workspace order unchanged');
+      return;
+    }
+
+    // Apply the new order using reorderWorkspace API
+    // Iterate from first to last, placing each workspace at its target index
+    try {
+      for (let targetIdx = 0; targetIdx < targetOrder.length; targetIdx++) {
+        const ws = targetOrder[targetIdx];
+        const currentWorkspaces = gZenWorkspaces.getWorkspaces();
+        const currentIdx = currentWorkspaces.findIndex(w => w.uuid === ws.uuid);
+        if (currentIdx !== targetIdx) {
+          await gZenWorkspaces.reorderWorkspace(ws.uuid, targetIdx);
+        }
+      }
+      log(`Reorganized ${targetOrder.length} workspaces`);
+    } catch (e) {
+      log(`Reorganize workspaces failed: ${e}`);
+    }
+  }
+
+  function enterReorgMode() {
+    if (reorgMode) return;
+
+    // Exit other modes
+    if (leapMode) exitLeapMode(false);
+    if (searchMode) exitSearchMode();
+
+    // Load workspaces
+    if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); return; }
+    const workspaces = gZenWorkspaces.getWorkspaces();
+    if (!workspaces || workspaces.length < 2) { log('Not enough workspaces to reorganize'); return; }
+
+    reorgWorkspaces = workspaces.map(ws => ({ uuid: ws.uuid, name: ws.name || 'Unnamed', icon: ws.icon || '' }));
+    reorgOriginalOrder = reorgWorkspaces.map(ws => ({ ...ws }));
+    reorgFocusIndex = 0;
+    reorgMovingIndex = -1;
+
+    createReorgModal();
+    renderReorgList();
+
+    reorgMode = true;
+    reorgModal.classList.add('active');
+
+    log('Entered reorganize workspaces mode');
+  }
+
+  function exitReorgMode(apply = false) {
+    if (!reorgMode) return;
+
+    if (apply) {
+      applyReorgChanges();
+    }
+
+    reorgMode = false;
+    reorgModal.classList.remove('active');
+    reorgWorkspaces = [];
+    reorgOriginalOrder = [];
+    reorgFocusIndex = 0;
+    reorgMovingIndex = -1;
+    reorgDragState = null;
+
+    log('Exited reorganize workspaces mode');
+  }
+
+  function handleReorgKeyDown(event) {
+    if (!reorgMode) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    const key = event.key;
+    const count = reorgWorkspaces.length;
+
+    // Escape — cancel (discard changes)
+    if (key === 'Escape') {
+      exitReorgMode(false);
+      return true;
+    }
+
+    // Enter — confirm (apply changes)
+    if (key === 'Enter') {
+      exitReorgMode(true);
+      return true;
+    }
+
+    // Navigate: j / ArrowDown
+    if (key === 'j' || key === 'ArrowDown') {
+      if (!event.shiftKey) {
+        // Navigate down
+        reorgMovingIndex = -1;
+        reorgFocusIndex = Math.min(reorgFocusIndex + 1, count - 1);
+        renderReorgList();
+        scrollReorgFocusIntoView();
+        return true;
+      }
+    }
+
+    // Navigate: k / ArrowUp
+    if (key === 'k' || key === 'ArrowUp') {
+      if (!event.shiftKey) {
+        // Navigate up
+        reorgMovingIndex = -1;
+        reorgFocusIndex = Math.max(reorgFocusIndex - 1, 0);
+        renderReorgList();
+        scrollReorgFocusIntoView();
+        return true;
+      }
+    }
+
+    // Move down: J (shift+j) or Shift+ArrowDown
+    if ((key === 'J') || (key === 'ArrowDown' && event.shiftKey)) {
+      if (reorgFocusIndex < count - 1) {
+        reorgMoveItem(reorgFocusIndex, reorgFocusIndex + 1);
+      }
+      return true;
+    }
+
+    // Move up: K (shift+k) or Shift+ArrowUp
+    if ((key === 'K') || (key === 'ArrowUp' && event.shiftKey)) {
+      if (reorgFocusIndex > 0) {
+        reorgMoveItem(reorgFocusIndex, reorgFocusIndex - 1);
+      }
+      return true;
+    }
+
+    // g — jump to top
+    if (key === 'g') {
+      reorgMovingIndex = -1;
+      reorgFocusIndex = 0;
+      renderReorgList();
+      scrollReorgFocusIntoView();
+      return true;
+    }
+
+    // G — jump to bottom
+    if (key === 'G') {
+      reorgMovingIndex = -1;
+      reorgFocusIndex = count - 1;
+      renderReorgList();
+      scrollReorgFocusIntoView();
+      return true;
+    }
+
+    return true; // Swallow all keys in reorg mode
   }
 
   // ============================================
@@ -10330,6 +10908,7 @@
     if (helpMode) exitHelpMode();
     if (leapMode) exitLeapMode(false);
     if (searchMode) exitSearchMode();
+    if (reorgMode) exitReorgMode(false);
 
     createSettingsModal();
     settingsMode = true;
@@ -11168,10 +11747,9 @@
   function enterSearchMode(asCommand = false) {
     if (searchMode) return;
 
-    // Exit leap mode if active
-    if (leapMode) {
-      exitLeapMode(false);
-    }
+    // Exit other modes if active
+    if (leapMode) exitLeapMode(false);
+    if (reorgMode) exitReorgMode(false);
 
     createSearchModal();
 
@@ -13648,7 +14226,7 @@
     quickNavInterceptedUntil = Date.now() + 300;
     clearTimeout(quickNavRestoreTimer);
     quickNavRestoreTimer = setTimeout(() => {
-      if (!leapMode && !searchMode && !commandMode && !settingsMode && !helpMode) {
+      if (!leapMode && !searchMode && !commandMode && !settingsMode && !helpMode && !reorgMode) {
         restoreFocusToContent();
       }
     }, 200);
@@ -14590,7 +15168,7 @@
     }
 
     // Handle update toast - Enter to open update flow, Escape to dismiss
-    if (updateToast && !searchMode && !leapMode && !helpMode && !folderDeleteMode) {
+    if (updateToast && !searchMode && !leapMode && !helpMode && !reorgMode && !folderDeleteMode) {
       if (event.key === 'Enter') {
         event.preventDefault();
         event.stopPropagation();
@@ -14603,6 +15181,12 @@
         dismissUpdateToast(true);
         return;
       }
+    }
+
+    // Handle reorganize workspaces mode
+    if (reorgMode) {
+      handleReorgKeyDown(event);
+      return;
     }
 
     // Handle help mode - j/k scroll, Escape or help key to close
@@ -14658,7 +15242,7 @@
     // window-level preventDefault cannot stop moz-urlbar's internal editor.
     // This block only: (1) lazily attaches listeners, (2) blocks other ZenLeap
     // handlers from processing keys while the URL bar is focused.
-    if (!searchMode && !leapMode && !settingsMode && !helpMode && !gtileMode && !folderDeleteMode) {
+    if (!searchMode && !leapMode && !settingsMode && !helpMode && !reorgMode && !gtileMode && !folderDeleteMode) {
       try {
         const _gURLBarFocused = typeof gURLBar !== 'undefined' && gURLBar && gURLBar.focused;
         if (_gURLBarFocused) {
@@ -15266,7 +15850,7 @@
   //  or Alt/J/K keyup reaching content after Alt+HJKL navigation,
   //  or browse mode j/k reaching about:newtab search input)
   function handleKeyUp(event) {
-    if (leapMode || searchMode || commandMode || settingsMode || helpMode || gtileMode
+    if (leapMode || searchMode || commandMode || settingsMode || helpMode || reorgMode || gtileMode
         || folderDeleteMode || (urlbarVimActive && urlbarVimMode === 'normal')
         || Date.now() < quickNavInterceptedUntil) {
       event.preventDefault();
