@@ -1,0 +1,28 @@
+{
+  "id": "readwise-reader",
+  "name": "Readwise Reader",
+  "version": "1.0.0",
+  "description": "Save pages and selections to Readwise Reader. Requires a Readwise access token.",
+  "author": "ZenLeap",
+  "icon": "📖",
+  "commands": [
+    {
+      "key": "configure",
+      "label": "Configure Readwise Reader",
+      "icon": "🔑",
+      "tags": ["readwise", "reader", "configure", "token", "api", "key", "setup", "auth"]
+    },
+    {
+      "key": "save-page",
+      "label": "Save Page to Reader",
+      "icon": "📖",
+      "tags": ["readwise", "reader", "save", "page", "url", "bookmark", "read later"]
+    },
+    {
+      "key": "save-selection",
+      "label": "Save Selection to Reader",
+      "icon": "✂️",
+      "tags": ["readwise", "reader", "save", "selection", "highlight", "clip", "text"]
+    }
+  ]
+}
