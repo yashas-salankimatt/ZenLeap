@@ -1,0 +1,33 @@
+{
+  "id": "tab-timer",
+  "name": "Tab Timer",
+  "version": "1.0.0",
+  "description": "Track time spent on tabs by domain. See which sites consume the most browsing time.",
+  "author": "ZenLeap",
+  "icon": "⏱",
+  "settings": {
+    "maxDomains": {
+      "type": "number",
+      "label": "Max Tracked Domains",
+      "description": "Prune to this many domains (by time)",
+      "default": 200,
+      "min": 10,
+      "max": 1000,
+      "step": 10
+    }
+  },
+  "commands": [
+    {
+      "key": "show-time",
+      "label": "Show Time Spent by Domain",
+      "icon": "⏱",
+      "tags": ["time", "timer", "spent", "domain", "usage", "track"]
+    },
+    {
+      "key": "reset-time",
+      "label": "Reset Time Tracking Data",
+      "icon": "↺",
+      "tags": ["time", "timer", "reset", "clear"]
+    }
+  ]
+}

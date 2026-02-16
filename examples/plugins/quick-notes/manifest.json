@@ -1,0 +1,28 @@
+{
+  "id": "quick-notes",
+  "name": "Quick Notes",
+  "version": "1.0.0",
+  "description": "Attach quick notes to the current tab. Notes persist across sessions via ZenLeap storage.",
+  "author": "ZenLeap",
+  "icon": "📝",
+  "commands": [
+    {
+      "key": "add-note",
+      "label": "Add Note to Current Tab",
+      "icon": "📝",
+      "tags": ["note", "add", "write", "memo", "annotate"]
+    },
+    {
+      "key": "view-notes",
+      "label": "View All Notes",
+      "icon": "📋",
+      "tags": ["note", "view", "list", "all", "read"]
+    },
+    {
+      "key": "clear-note",
+      "label": "Clear Note for Current Tab",
+      "icon": "🗑",
+      "tags": ["note", "clear", "delete", "remove"]
+    }
+  ]
+}

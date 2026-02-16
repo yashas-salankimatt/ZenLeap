@@ -1690,6 +1690,7 @@
     // Check if this exact mark is already on this tab - if so, toggle it off
     if (marks.get(char) === tab) {
       marks.delete(char);
+      _pluginEventBus.emit('mark:cleared', { char });
       log(`Toggled off mark '${char}' from tab`);
       updateRelativeNumbers();
       return;
@@ -1706,6 +1707,7 @@
 
     // Set the new mark (overwrites if char already used on different tab)
     marks.set(char, tab);
+    _pluginEventBus.emit('mark:set', { char, tab });
     log(`Set mark '${char}' on tab`);
 
     // Update display to show the mark
@@ -1716,6 +1718,7 @@
   function clearAllMarks() {
     const count = marks.size;
     marks.clear();
+    _pluginEventBus.emit('marks:cleared', { count });
     log(`Cleared all marks (${count} marks removed)`);
     updateRelativeNumbers();
   }
@@ -1744,6 +1747,7 @@
     // Record the destination
     recordJump(tab);
 
+    _pluginEventBus.emit('mark:jumped', { char, tab });
     log(`Jumped to mark '${char}'`);
     return true;
   }
@@ -2576,6 +2580,1496 @@
       .replace(/'/g, '&#39;');
   }
 
+
+  // ============================================
+  // PLUGIN SYSTEM
+  // ============================================
+
+  // ── Plugin State ──
+  let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, instance }
+  let _pluginData = {};                  // Persisted state (enabled/disabled, settings, storage)
+  let _pluginManagerMode = false;
+  let _pluginManagerModal = null;
+  let _pluginManagerView = 'list';       // 'list' | 'detail'
+  let _pluginManagerDetailId = null;
+
+  // ── Plugin Event Bus ──
+  const _pluginEventBus = {
+    _listeners: new Map(),
+    on(event, callback, pluginId) {
+      if (!this._listeners.has(event)) this._listeners.set(event, new Set());
+      this._listeners.get(event).add({ callback, pluginId });
+    },
+    off(event, callback, pluginId) {
+      const set = this._listeners.get(event);
+      if (!set) return;
+      for (const entry of set) {
+        if (entry.callback === callback && (!pluginId || entry.pluginId === pluginId)) {
+          set.delete(entry);
+          break;
+        }
+      }
+    },
+    once(event, callback, pluginId) {
+      const wrapper = (data) => {
+        this.off(event, wrapper, pluginId);
+        callback(data);
+      };
+      this.on(event, wrapper, pluginId);
+    },
+    emit(event, data) {
+      const set = this._listeners.get(event);
+      if (!set || set.size === 0) return;
+      for (const { callback } of [...set]) {
+        try { callback(data); }
+        catch (e) { console.error(`[ZenLeap] Plugin event handler error (${event}):`, e); }
+      }
+    },
+    removeAllForPlugin(pluginId) {
+      for (const [, set] of this._listeners) {
+        const toRemove = [];
+        for (const entry of set) {
+          if (entry.pluginId === pluginId) toRemove.push(entry);
+        }
+        for (const entry of toRemove) set.delete(entry);
+      }
+    },
+  };
+
+  // ── Plugin Data Persistence ──
+  function loadPluginData() {
+    try {
+      if (Services?.prefs?.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
+        _pluginData = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
+      }
+    } catch (e) { _pluginData = {}; }
+  }
+
+  let _pluginSaveTimer = null;
+  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+
+  function savePluginData() {
+    if (_pluginSaveTimer) return;
+    _pluginSaveTimer = setTimeout(() => {
+      _pluginSaveTimer = null;
+      try {
+        const json = JSON.stringify(_pluginData);
+        Services.prefs.setStringPref('uc.zenleap.plugins', json);
+      } catch (e) {
+        console.error('[ZenLeap] Failed to save plugin data:', e);
+      }
+    }, 500);
+  }
+
+  function savePluginDataImmediate() {
+    if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
+    try {
+      Services.prefs.setStringPref('uc.zenleap.plugins', JSON.stringify(_pluginData));
+    } catch (e) {
+      console.error('[ZenLeap] Failed to save plugin data:', e);
+    }
+  }
+
+  function checkStorageQuota(pluginId) {
+    const data = _pluginData[pluginId]?.storage;
+    if (!data) return true;
+    try {
+      const size = JSON.stringify(data).length;
+      if (size > PLUGIN_STORAGE_QUOTA) {
+        console.warn(`[ZenLeap] Plugin "${pluginId}" storage exceeds quota (${Math.round(size / 1024)}KB / ${PLUGIN_STORAGE_QUOTA / 1024}KB)`);
+        return false;
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  // ── Scoped Plugin API Factory ──
+  // Each plugin gets its own API instance with storage/events scoped to its ID
+  function createScopedPluginAPI(pluginId) {
+    return {
+      // ─── Tab Operations ───
+      tabs: {
+        getCurrent: () => gBrowser.selectedTab,
+        getAll: () => Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing),
+        getVisible: () => getVisibleTabs(),
+        getByIndex: (i) => {
+          const tabs = getVisibleTabs();
+          return (i >= 0 && i < tabs.length) ? tabs[i] : null;
+        },
+        findByUrl: (pattern) => {
+          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+          if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.linkedBrowser?.currentURI?.spec || ''));
+          return tabs.filter(t => (t.linkedBrowser?.currentURI?.spec || '').includes(pattern));
+        },
+        findByTitle: (pattern) => {
+          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+          if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.label || ''));
+          return tabs.filter(t => (t.label || '').toLowerCase().includes(pattern.toLowerCase()));
+        },
+        select: (tab) => { if (tab) gBrowser.selectedTab = tab; },
+        close: (tab) => { if (tab) gBrowser.removeTab(tab); },
+        closeTabs: (tabs) => {
+          if (!tabs?.length) return;
+          try { gBrowser.removeTabs(tabs, { animate: true, suppressTabbedBrowserSessionStoreUpdate: false }); }
+          catch (e) { for (const t of tabs) { try { gBrowser.removeTab(t); } catch (_) {} } }
+        },
+        closeOthers: (keepTab) => {
+          const keep = keepTab || gBrowser.selectedTab;
+          const tabs = getVisibleTabs().filter(t => t !== keep && !t.pinned);
+          for (const t of tabs) gBrowser.removeTab(t);
+        },
+        closeToRight: (fromTab) => {
+          const tabs = getVisibleTabs();
+          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
+          if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+        },
+        closeToLeft: (fromTab) => {
+          const tabs = getVisibleTabs();
+          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
+          if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+        },
+        create: (url) => gBrowser.addTab(url || 'about:newtab', {
+          triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
+        }),
+        duplicate: (tab) => gBrowser.duplicateTab(tab || gBrowser.selectedTab),
+        move: (tab, toIndex) => {
+          const tabs = getVisibleTabs();
+          if (toIndex >= 0 && toIndex < tabs.length) {
+            const target = tabs[toIndex];
+            if (target) gBrowser.moveTabBefore(tab, target);
+          }
+        },
+        pin: (tab) => gBrowser.pinTab(tab || gBrowser.selectedTab),
+        unpin: (tab) => gBrowser.unpinTab(tab || gBrowser.selectedTab),
+        isPinned: (tab) => (tab || gBrowser.selectedTab).pinned,
+        mute: (tab) => { const t = tab || gBrowser.selectedTab; if (!t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        unmute: (tab) => { const t = tab || gBrowser.selectedTab; if (t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        toggleMute: (tab) => (tab || gBrowser.selectedTab).toggleMuteAudio(),
+        isMuted: (tab) => (tab || gBrowser.selectedTab).hasAttribute('muted'),
+        reload: (tab) => gBrowser.reloadTab(tab || gBrowser.selectedTab),
+        unload: (tab) => {
+          const t = tab || gBrowser.selectedTab;
+          if (t !== gBrowser.selectedTab) { gBrowser.discardBrowser(t); return; }
+          const others = Array.from(gBrowser.tabs).filter(x => x !== t && !x.hidden && !x.hasAttribute('pending'));
+          others.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
+          if (others[0]) gBrowser.selectedTab = others[0];
+          setTimeout(() => gBrowser.discardBrowser(t), 500);
+        },
+        getUrl: (tab) => (tab || gBrowser.selectedTab).linkedBrowser?.currentURI?.spec || '',
+        getTitle: (tab) => (tab || gBrowser.selectedTab).label || '',
+        getLastAccessed: (tab) => getTabLastAccessed(tab || gBrowser.selectedTab),
+        getFavicon: (tab) => (tab || gBrowser.selectedTab).image || '',
+        isLoading: (tab) => (tab || gBrowser.selectedTab).hasAttribute('busy'),
+        isPending: (tab) => (tab || gBrowser.selectedTab).hasAttribute('pending'),
+        isEssential: (tab) => (tab || gBrowser.selectedTab).hasAttribute('zen-essential'),
+        addToEssentials: (tab) => {
+          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.addToEssentials(tab || gBrowser.selectedTab); }
+          catch (e) {}
+        },
+        removeFromEssentials: (tab) => {
+          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.removeEssentials(tab || gBrowser.selectedTab); }
+          catch (e) {}
+        },
+        bookmark: (tab) => {
+          try { PlacesCommandHook.bookmarkPage(); } catch (e) {}
+        },
+      },
+
+      // ─── Workspace Operations ───
+      workspaces: {
+        getAll: () => {
+          try { return window.gZenWorkspaces?.getWorkspaces() || []; } catch (e) { return []; }
+        },
+        getCurrent: () => {
+          try { return window.gZenWorkspaces?.activeWorkspace || null; } catch (e) { return null; }
+        },
+        getById: (id) => {
+          try {
+            const all = window.gZenWorkspaces?.getWorkspaces() || [];
+            return all.find(ws => ws.uuid === id) || null;
+          } catch (e) { return null; }
+        },
+        getByName: (name) => {
+          try {
+            const all = window.gZenWorkspaces?.getWorkspaces() || [];
+            return all.find(ws => ws.name?.toLowerCase() === name.toLowerCase()) || null;
+          } catch (e) { return null; }
+        },
+        switchTo: (wsOrId) => {
+          try {
+            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+            if (id) window.gZenWorkspaces.changeWorkspaceWithID(id);
+          } catch (e) {}
+        },
+        create: async (name) => {
+          try {
+            if (!window.gZenWorkspaces) return null;
+            const ws = { name: name || 'New Workspace' };
+            await gZenWorkspaces.createAndSaveWorkspace(ws);
+            return ws;
+          } catch (e) { return null; }
+        },
+        delete: async (wsOrId) => {
+          try {
+            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+            if (id && window.gZenWorkspaces) {
+              if (typeof gZenWorkspaces.removeWorkspace === 'function') await gZenWorkspaces.removeWorkspace(id);
+              else if (typeof gZenWorkspaces.deleteWorkspace === 'function') await gZenWorkspaces.deleteWorkspace(id);
+            }
+          } catch (e) {}
+        },
+        rename: async (wsOrId, newName) => {
+          try {
+            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+            const all = window.gZenWorkspaces?.getWorkspaces() || [];
+            const ws = all.find(w => w.uuid === id);
+            if (ws) { ws.name = newName; await gZenWorkspaces.saveWorkspace(ws); }
+          } catch (e) {}
+        },
+        moveTabTo: (tab, wsOrId) => {
+          try {
+            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+            if (id && window.gZenWorkspaces) gZenWorkspaces.moveTabToWorkspace(tab || gBrowser.selectedTab, id);
+          } catch (e) {}
+        },
+      },
+
+      // ─── Folder Operations ───
+      folders: {
+        getAll: () => {
+          try {
+            return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder'));
+          } catch (e) { return []; }
+        },
+        getByName: (name) => {
+          try {
+            const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
+            for (const f of folders) {
+              if ((f.label || f.getAttribute('zen-folder-name') || '').toLowerCase() === name.toLowerCase()) return f;
+            }
+          } catch (e) {}
+          return null;
+        },
+        create: (tabs, name) => {
+          try {
+            if (!window.gZenFolders) return null;
+            const validTabs = (tabs || [gBrowser.selectedTab]).filter(t => t && !t.closing && t.parentNode);
+            if (validTabs.length === 0) return null;
+            gZenFolders.createFolder(validTabs, { label: name || 'New Folder', renameFolder: !name });
+            return true;
+          } catch (e) { return null; }
+        },
+        delete: (folder) => {
+          try {
+            if (typeof folder.delete === 'function') folder.delete();
+            else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
+          } catch (e) {}
+        },
+        rename: (folder, newName) => {
+          try {
+            if (folder && newName) {
+              folder.label = newName;
+              folder.setAttribute('zen-folder-name', newName);
+            }
+          } catch (e) {}
+        },
+        getTabs: (folder) => {
+          try { return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || []; }
+          catch (e) { return []; }
+        },
+        addTab: (folder, tab) => {
+          try {
+            if (folder && tab && window.gZenFolders) {
+              if (gZenFolders.canDropElement && !gZenFolders.canDropElement(folder, tab)) return false;
+              gBrowser.moveTabAfter(tab, folder.tabs?.[folder.tabs.length - 1] || tab);
+              return true;
+            }
+          } catch (e) {}
+          return false;
+        },
+        removeTab: (tab) => {
+          try {
+            if (tab && window.gZenFolders) gZenFolders.ungroupTabsFromActiveGroups([tab]);
+          } catch (e) {}
+        },
+        setIcon: (folder) => {
+          try { if (folder && window.gZenFolders) gZenFolders.changeFolderUserIcon(folder); }
+          catch (e) {}
+        },
+        createSubfolder: (folder) => {
+          try { if (folder && window.gZenFolders) gZenFolders.createSubfolder(folder); }
+          catch (e) {}
+        },
+      },
+
+      // ─── Split View Operations ───
+      splitView: {
+        isActive: () => {
+          try { return !!window.gZenViewSplitter?.splitViewActive; } catch (e) { return false; }
+        },
+        split: (tabs) => {
+          try {
+            if (window.gZenViewSplitter && tabs?.length >= 2) {
+              gZenViewSplitter.splitTabs(tabs.slice(0, 4));
+              return true;
+            }
+          } catch (e) {}
+          return false;
+        },
+        unsplit: () => {
+          try { if (window.gZenViewSplitter?.splitViewActive) gZenViewSplitter.unsplitCurrentView(); }
+          catch (e) {}
+        },
+        getLayout: () => {
+          try {
+            const s = window.gZenViewSplitter;
+            if (!s?.splitViewActive) return null;
+            return s._data?.[s.currentView]?.layoutTree || null;
+          } catch (e) { return null; }
+        },
+        rotate: () => {
+          try { rotateSplitLayout(); } catch (e) {}
+        },
+      },
+
+      // ─── Marks ───
+      marks: {
+        set: (char, tab) => setMark(char, tab),
+        get: (char) => marks.get(char) || null,
+        clear: (char) => { marks.delete(char); updateRelativeNumbers(); },
+        clearAll: () => clearAllMarks(),
+        getAll: () => {
+          const result = {};
+          for (const [char, tab] of marks) result[char] = tab;
+          return result;
+        },
+        jump: (char) => goToMark(char),
+      },
+
+      // ─── Navigation ───
+      navigation: {
+        jumpBack: () => {
+          filterJumpList();
+          if (jumpListIndex > 0) {
+            jumpListIndex--;
+            recordingJumps = false;
+            gBrowser.selectedTab = jumpList[jumpListIndex];
+            recordingJumps = true;
+          }
+        },
+        jumpForward: () => {
+          filterJumpList();
+          if (jumpListIndex < jumpList.length - 1) {
+            jumpListIndex++;
+            recordingJumps = false;
+            gBrowser.selectedTab = jumpList[jumpListIndex];
+            recordingJumps = true;
+          }
+        },
+      },
+
+      // ─── Commands ───
+      commands: {
+        register: (cmds) => {
+          // Register dynamic commands for this plugin
+          const entry = _pluginRegistry.get(pluginId);
+          if (!entry) return;
+          if (!entry._dynamicCommands) entry._dynamicCommands = [];
+          const toAdd = Array.isArray(cmds) ? cmds : [cmds];
+          for (const cmd of toAdd) {
+            entry._dynamicCommands.push(cmd);
+          }
+          invalidateCommandCache();
+        },
+        unregister: (cmdKey) => {
+          const entry = _pluginRegistry.get(pluginId);
+          if (!entry?._dynamicCommands) return;
+          entry._dynamicCommands = entry._dynamicCommands.filter(c => c.key !== cmdKey);
+          invalidateCommandCache();
+        },
+        execute: (cmdKey) => {
+          const all = getAllCommands();
+          const cmd = all.find(c => c.key === cmdKey);
+          if (cmd) executeCommand(cmd);
+        },
+        getAll: () => getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon })),
+      },
+
+      // ─── Browser ───
+      browser: {
+        openUrl: (url, options) => {
+          const principal = Services.scriptSecurityManager.createNullPrincipal({});
+          if (options?.newTab !== false) {
+            return gBrowser.addTab(url, { triggeringPrincipal: principal });
+          }
+          gBrowser.selectedBrowser.loadURI(Services.io.newURI(url), { triggeringPrincipal: principal });
+        },
+        getCurrentUrl: () => gBrowser.selectedBrowser?.currentURI?.spec || '',
+        goBack: () => { try { gBrowser.selectedBrowser.goBack(); } catch (e) {} },
+        goForward: () => { try { gBrowser.selectedBrowser.goForward(); } catch (e) {} },
+        reload: () => { try { gBrowser.reloadTab(gBrowser.selectedTab); } catch (e) {} },
+        forceReload: () => { try { gBrowser.selectedBrowser.reloadWithFlags(Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE); } catch (e) {} },
+        zoomIn: () => { try { ZoomManager.enlarge(); } catch (e) {} },
+        zoomOut: () => { try { ZoomManager.reduce(); } catch (e) {} },
+        zoomReset: () => { try { ZoomManager.reset(); } catch (e) {} },
+        getZoom: () => { try { return ZoomManager.zoom; } catch (e) { return 1; } },
+        copyToClipboard: (text) => {
+          try {
+            const cb = Cc['@mozilla.org/widget/clipboardhelper;1'].getService(Ci.nsIClipboardHelper);
+            cb.copyString(text);
+          } catch (e) {}
+        },
+        toggleFullscreen: () => { try { BrowserCommands.fullScreen(); } catch (e) {} },
+        getSelectedText: () => {
+          try {
+            const focusedWindow = document.commandDispatcher.focusedWindow;
+            const sel = focusedWindow?.getSelection();
+            return sel ? sel.toString() : '';
+          } catch (e) { return ''; }
+        },
+        getPageTitle: () => {
+          try { return gBrowser.selectedTab.label || gBrowser.selectedBrowser.contentTitle || ''; } catch (e) { return ''; }
+        },
+        fetch: (url, options = {}) => {
+          return new Promise((resolve, reject) => {
+            try {
+              const xhr = new XMLHttpRequest();
+              xhr.open(options.method || 'GET', url, true);
+              if (options.headers) {
+                for (const [k, v] of Object.entries(options.headers)) xhr.setRequestHeader(k, v);
+              }
+              xhr.onload = () => resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, statusText: xhr.statusText,
+                text: () => Promise.resolve(xhr.responseText), json: () => Promise.resolve().then(() => JSON.parse(xhr.responseText)),
+                headers: { get: (name) => xhr.getResponseHeader(name) },
+              });
+              xhr.onerror = () => reject(new Error('Network error'));
+              xhr.ontimeout = () => reject(new Error('Request timed out'));
+              if (options.timeout) xhr.timeout = options.timeout;
+              xhr.send(options.body || null);
+            } catch (e) { reject(e); }
+          });
+        },
+      },
+
+      // ─── UI ───
+      ui: {
+        showToast: (message, duration) => _pluginShowToast(message, duration),
+        showModal: (title, content) => _pluginShowStatsModal(title, content),
+        showConfirm: (title, message) => _pluginShowConfirm(title, message),
+        showPrompt: (title, placeholder, defaultValue) => _pluginShowPrompt(title, placeholder, defaultValue),
+        log: (msg) => { if (CONFIG.debug) console.log(`[ZenLeap:${pluginId}] ${msg}`); },
+        getAccentColor: () => S['appearance.accentColor'],
+        getThemeColors: () => ({
+          accent: S['appearance.accentColor'],
+          currentTabBg: S['appearance.currentTabBg'],
+          currentTabColor: S['appearance.currentTabColor'],
+          badgeBg: S['appearance.badgeBg'],
+          badgeColor: S['appearance.badgeColor'],
+          markColor: S['appearance.markColor'],
+          highlightBorder: S['appearance.highlightBorder'],
+          selectedBorder: S['appearance.selectedBorder'],
+        }),
+      },
+
+      // ─── Scoped Storage ───
+      storage: {
+        get: (key, defaultValue) => {
+          const pd = _pluginData[pluginId];
+          return pd?.storage?.[key] ?? defaultValue;
+        },
+        set: (key, value) => {
+          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
+          if (!_pluginData[pluginId].storage) _pluginData[pluginId].storage = {};
+          _pluginData[pluginId].storage[key] = value;
+          if (!checkStorageQuota(pluginId)) {
+            delete _pluginData[pluginId].storage[key];
+            log(`Plugin "${pluginId}" storage.set rejected: quota exceeded`);
+            return;
+          }
+          savePluginData();
+        },
+        remove: (key) => {
+          if (_pluginData[pluginId]?.storage) {
+            delete _pluginData[pluginId].storage[key];
+            savePluginData();
+          }
+        },
+        getAll: () => _pluginData[pluginId]?.storage ? { ..._pluginData[pluginId].storage } : {},
+        clear: () => {
+          if (_pluginData[pluginId]) _pluginData[pluginId].storage = {};
+          savePluginData();
+        },
+      },
+
+      // ─── Scoped Events ───
+      events: {
+        on: (event, callback) => _pluginEventBus.on(event, callback, pluginId),
+        off: (event, callback) => _pluginEventBus.off(event, callback, pluginId),
+        once: (event, callback) => _pluginEventBus.once(event, callback, pluginId),
+      },
+
+      // ─── Plugin Settings (plugin's own settings from manifest) ───
+      settings: {
+        get: (key) => S[key], // Read ZenLeap settings (read-only)
+        getOwn: (key, defaultValue) => {
+          const pd = _pluginData[pluginId];
+          if (pd?.settings?.[key] !== undefined) return pd.settings[key];
+          // Fall back to manifest default
+          const entry = _pluginRegistry.get(pluginId);
+          const schema = entry?.manifest?.settings?.[key];
+          return schema?.default ?? defaultValue;
+        },
+        setOwn: (key, value) => {
+          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
+          if (!_pluginData[pluginId].settings) _pluginData[pluginId].settings = {};
+          _pluginData[pluginId].settings[key] = value;
+          savePluginData();
+          _pluginEventBus.emit('plugin:settingChanged', { pluginId, key, value });
+        },
+        getOwnSchema: () => {
+          const entry = _pluginRegistry.get(pluginId);
+          return entry?.manifest?.settings || {};
+        },
+      },
+
+      // ─── File I/O (sandboxed to plugin data directory) ───
+      fs: (() => {
+        const pluginDataDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins', pluginId, 'data');
+        const resolvePath = (rel) => {
+          const resolved = PathUtils.join(pluginDataDir, rel);
+          // Prevent path traversal: resolved path must start with pluginDataDir
+          if (!resolved.startsWith(pluginDataDir)) {
+            throw new Error('Path traversal not allowed');
+          }
+          return resolved;
+        };
+        return {
+          readText: async (rel) => {
+            try { return await IOUtils.readUTF8(resolvePath(rel)); } catch (e) { return null; }
+          },
+          writeText: async (rel, content) => {
+            try {
+              const p = resolvePath(rel);
+              await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
+              await IOUtils.writeUTF8(p, content);
+              return true;
+            } catch (e) { return false; }
+          },
+          readJSON: async (rel) => {
+            try { return JSON.parse(await IOUtils.readUTF8(resolvePath(rel))); } catch (e) { return null; }
+          },
+          writeJSON: async (rel, data) => {
+            try {
+              const p = resolvePath(rel);
+              await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
+              await IOUtils.writeUTF8(p, JSON.stringify(data));
+              return true;
+            } catch (e) { return false; }
+          },
+          exists: async (rel) => {
+            try { await IOUtils.stat(resolvePath(rel)); return true; } catch (e) { return false; }
+          },
+          mkdir: async (rel) => {
+            try { await IOUtils.makeDirectory(resolvePath(rel), { ignoreExisting: true }); return true; } catch (e) { return false; }
+          },
+          listDir: async (rel) => {
+            try {
+              const abs = await IOUtils.getChildren(resolvePath(rel || '.'));
+              return abs.map(p => p.split('/').pop().split('\\').pop());
+            } catch (e) { return []; }
+          },
+          remove: async (rel) => {
+            try { await IOUtils.remove(resolvePath(rel)); return true; } catch (e) { return false; }
+          },
+          joinPath: (...parts) => PathUtils.join(...parts),
+        };
+      })(),
+
+      // ─── Version info ───
+      version: VERSION,
+      pluginId: pluginId,
+    };
+  }
+
+  // ── Plugin Toast ──
+  let _pluginToastTimer = null;
+  function _pluginShowToast(message, duration = 3000) {
+    let toast = document.getElementById('zenleap-plugin-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'zenleap-plugin-toast';
+      document.documentElement.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.style.cssText = `
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: rgba(30, 30, 35, 0.95); color: #e0e0e0; padding: 10px 20px;
+      border-radius: 8px; font-size: 13px; z-index: 100010;
+      border: 1px solid rgba(97, 175, 239, 0.3);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+      animation: zenleap-toast-in 0.2s ease-out;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+    toast.style.display = 'block';
+    clearTimeout(_pluginToastTimer);
+    _pluginToastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+  }
+
+  // ── Confirm Dialog ──
+  function _pluginShowConfirm(title, message) {
+    return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100010; display: flex; justify-content: center; align-items: center;
+      `;
+      const backdrop = document.createElement('div');
+      backdrop.style.cssText = `
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
+      `;
+      const card = document.createElement('div');
+      card.style.cssText = `
+        position: relative; width: 90%; max-width: 400px;
+        background: rgba(25,25,30,0.98); border-radius: 14px;
+        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      `;
+      const h = document.createElement('h3');
+      h.textContent = title;
+      h.style.cssText = 'margin: 0 0 12px; font-size: 16px; color: #61afef;';
+      const p = document.createElement('p');
+      p.textContent = message;
+      p.style.cssText = 'margin: 0 0 20px; font-size: 13px; color: #ccc; line-height: 1.5;';
+      const btns = document.createElement('div');
+      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
+      const confirm = document.createElement('button');
+      confirm.textContent = 'Confirm';
+      confirm.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
+      const close = (result) => { modal.remove(); window.removeEventListener('keydown', esc, true); resolve(result); };
+      const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } };
+      window.addEventListener('keydown', esc, true);
+      backdrop.addEventListener('click', () => close(false));
+      cancel.addEventListener('click', () => close(false));
+      confirm.addEventListener('click', () => close(true));
+      btns.appendChild(cancel);
+      btns.appendChild(confirm);
+      card.appendChild(h);
+      card.appendChild(p);
+      card.appendChild(btns);
+      modal.appendChild(backdrop);
+      modal.appendChild(card);
+      document.documentElement.appendChild(modal);
+    });
+  }
+
+  // ── Prompt Dialog ──
+  function _pluginShowPrompt(title, placeholder, defaultValue) {
+    return new Promise((resolve) => {
+      const modal = document.createElement('div');
+      modal.style.cssText = `
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100010; display: flex; justify-content: center; align-items: center;
+      `;
+      const backdrop = document.createElement('div');
+      backdrop.style.cssText = `
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
+      `;
+      const card = document.createElement('div');
+      card.style.cssText = `
+        position: relative; width: 90%; max-width: 420px;
+        background: rgba(25,25,30,0.98); border-radius: 14px;
+        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      `;
+      const h = document.createElement('h3');
+      h.textContent = title;
+      h.style.cssText = 'margin: 0 0 16px; font-size: 16px; color: #61afef;';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = defaultValue || '';
+      input.placeholder = placeholder || '';
+      input.style.cssText = `
+        width: 100%; box-sizing: border-box; padding: 10px 14px; margin-bottom: 20px;
+        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
+        font-family: inherit;
+      `;
+      input.addEventListener('focus', () => { input.style.borderColor = '#61afef'; });
+      input.addEventListener('blur', () => { input.style.borderColor = 'rgba(255,255,255,0.12)'; });
+      const btns = document.createElement('div');
+      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
+      const ok = document.createElement('button');
+      ok.textContent = 'OK';
+      ok.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
+      const close = (val) => { modal.remove(); window.removeEventListener('keydown', keyHandler, true); resolve(val); };
+      const keyHandler = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(input.value); }
+      };
+      window.addEventListener('keydown', keyHandler, true);
+      backdrop.addEventListener('click', () => close(null));
+      cancel.addEventListener('click', () => close(null));
+      ok.addEventListener('click', () => close(input.value));
+      btns.appendChild(cancel);
+      btns.appendChild(ok);
+      card.appendChild(h);
+      card.appendChild(input);
+      card.appendChild(btns);
+      modal.appendChild(backdrop);
+      modal.appendChild(card);
+      document.documentElement.appendChild(modal);
+      setTimeout(() => input.focus(), 50);
+    });
+  }
+
+  // ── Stats/Content Modal (shared) ──
+  function _pluginShowStatsModal(title, content) {
+    const existing = document.getElementById('zenleap-plugin-stats-modal');
+    if (existing) existing.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'zenleap-plugin-stats-modal';
+    modal.style.cssText = `
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      z-index: 100010; display: flex; justify-content: center; align-items: center; padding: 20px;
+    `;
+    const handler = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); } };
+    const closeModal = () => { modal.remove(); window.removeEventListener('keydown', handler, true); };
+
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = `position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);`;
+    backdrop.addEventListener('click', closeModal);
+
+    const card = document.createElement('div');
+    card.style.cssText = `
+      position: relative; width: 90%; max-width: 520px; max-height: 70vh;
+      background: rgba(25,25,30,0.98); border-radius: 14px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
+      overflow: hidden; display: flex; flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    `;
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'padding: 18px 22px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;';
+    const h2 = document.createElement('h2');
+    h2.textContent = title;
+    h2.style.cssText = 'margin: 0; font-size: 18px; font-weight: 700; color: #61afef;';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '\u2715';
+    closeBtn.style.cssText = 'background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 4px;';
+    closeBtn.addEventListener('click', closeModal);
+    hdr.appendChild(h2);
+    hdr.appendChild(closeBtn);
+    const body = document.createElement('div');
+    body.style.cssText = `padding: 18px 22px; overflow-y: auto; flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; line-height: 1.6;`;
+    body.textContent = content;
+    const ftr = document.createElement('div');
+    ftr.style.cssText = 'padding: 12px 22px; border-top: 1px solid rgba(255,255,255,0.08); text-align: center; font-size: 11px; color: #555;';
+    ftr.textContent = 'Press Escape or click outside to close';
+    card.appendChild(hdr);
+    card.appendChild(body);
+    card.appendChild(ftr);
+    modal.appendChild(backdrop);
+    modal.appendChild(card);
+    window.addEventListener('keydown', handler, true);
+    document.documentElement.appendChild(modal);
+  }
+
+  // ── Plugin Lifecycle ──
+  function registerPlugin(manifest) {
+    if (!manifest?.id || !manifest?.name) { log('Plugin registration failed: missing id or name'); return false; }
+    if (!/^[a-zA-Z0-9_-]+$/.test(manifest.id)) { log(`Plugin registration failed: invalid id "${manifest.id}"`); return false; }
+    if (_pluginRegistry.has(manifest.id)) { log(`Plugin "${manifest.id}" already registered`); return false; }
+
+    // Validate commands array if present
+    if (manifest.commands && Array.isArray(manifest.commands)) {
+      manifest.commands = manifest.commands.filter(cmd => {
+        if (!cmd.key || typeof cmd.key !== 'string') { log(`Plugin "${manifest.id}": skipping command with missing key`); return false; }
+        if (cmd.tags && !Array.isArray(cmd.tags)) cmd.tags = [];
+        return true;
+      });
+    } else if (manifest.commands) {
+      manifest.commands = [];
+    }
+
+    if (!_pluginData[manifest.id]) {
+      _pluginData[manifest.id] = { enabled: true, storage: {}, settings: {} };
+      savePluginData();
+    }
+
+    const entry = {
+      manifest,
+      enabled: _pluginData[manifest.id].enabled !== false,
+      instance: null,
+      _dynamicCommands: [],
+    };
+
+    _pluginRegistry.set(manifest.id, entry);
+
+    if (entry.enabled && manifest.init) {
+      try {
+        const api = createScopedPluginAPI(manifest.id);
+        entry.instance = manifest.init(api) || {};
+        log(`Plugin "${manifest.name}" initialized`);
+      } catch (e) {
+        console.error(`[ZenLeap] Plugin "${manifest.name}" init failed:`, e);
+        entry.instance = null;
+      }
+    }
+
+    invalidateCommandCache();
+    _pluginEventBus.emit('plugin:registered', { pluginId: manifest.id, name: manifest.name });
+    return true;
+  }
+
+  function unregisterPlugin(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry) return false;
+
+    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
+    if (entry.manifest.destroy) {
+      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
+    }
+
+    _pluginEventBus.emit('plugin:unregistered', { pluginId });
+    _pluginEventBus.removeAllForPlugin(pluginId);
+    _pluginRegistry.delete(pluginId);
+    delete _pluginData[pluginId];
+    savePluginDataImmediate();
+    invalidateCommandCache();
+    return true;
+  }
+
+  function enablePlugin(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry || entry.enabled) return;
+
+    entry.enabled = true;
+    _pluginData[pluginId] = _pluginData[pluginId] || {};
+    _pluginData[pluginId].enabled = true;
+    savePluginData();
+
+    if (entry.manifest.init) {
+      try {
+        const api = createScopedPluginAPI(pluginId);
+        entry.instance = entry.manifest.init(api) || {};
+      } catch (e) {
+        console.error(`[ZenLeap] Plugin "${entry.manifest.name}" init failed:`, e);
+        entry.instance = null;
+      }
+    }
+
+    invalidateCommandCache();
+    _pluginEventBus.emit('plugin:enabled', { pluginId });
+    log(`Plugin "${entry.manifest.name}" enabled`);
+  }
+
+  function disablePlugin(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry || !entry.enabled) return;
+
+    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
+    if (entry.manifest.destroy) {
+      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
+    }
+
+    _pluginEventBus.emit('plugin:disabled', { pluginId });
+    _pluginEventBus.removeAllForPlugin(pluginId);
+    entry.enabled = false;
+    entry.instance = null;
+    entry._dynamicCommands = [];
+    _pluginData[pluginId] = _pluginData[pluginId] || {};
+    _pluginData[pluginId].enabled = false;
+    savePluginDataImmediate();
+
+    invalidateCommandCache();
+    log(`Plugin "${entry.manifest.name}" disabled`);
+  }
+
+  // ── Get Plugin Commands ──
+  function getPluginCommands() {
+    const commands = [];
+    for (const [pluginId, entry] of _pluginRegistry) {
+      if (!entry.enabled) continue;
+
+      // Commands from manifest
+      if (entry.manifest.commands) {
+        for (const cmd of entry.manifest.commands) {
+          const cmdImpl = entry.instance?.commands?.[cmd.key];
+          commands.push({
+            key: `plugin:${pluginId}:${cmd.key}`,
+            label: cmd.label,
+            icon: cmd.icon || entry.manifest.icon || '🧩',
+            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
+            group: entry.manifest.name,
+            condition: cmd.condition,
+            command: cmdImpl || cmd.command,
+            subFlow: cmd.subFlow,
+          });
+        }
+      }
+
+      // Dynamic commands registered at runtime
+      if (entry._dynamicCommands) {
+        for (const cmd of entry._dynamicCommands) {
+          commands.push({
+            key: `plugin:${pluginId}:dyn:${cmd.key}`,
+            label: cmd.label,
+            icon: cmd.icon || entry.manifest.icon || '🧩',
+            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
+            group: entry.manifest.name,
+            condition: cmd.condition,
+            command: cmd.command,
+          });
+        }
+      }
+    }
+    return commands;
+  }
+
+  function getRegisteredPlugins() {
+    const plugins = [];
+    for (const [id, entry] of _pluginRegistry) {
+      plugins.push({
+        id,
+        name: entry.manifest.name,
+        version: entry.manifest.version || '1.0.0',
+        description: entry.manifest.description || '',
+        author: entry.manifest.author || 'Unknown',
+        icon: entry.manifest.icon || '🧩',
+        enabled: entry.enabled,
+        commandCount: (entry.manifest.commands?.length || 0) + (entry._dynamicCommands?.length || 0),
+        builtIn: !!entry.manifest.builtIn,
+        hasSettings: !!(entry.manifest.settings && Object.keys(entry.manifest.settings).length > 0),
+      });
+    }
+    return plugins;
+  }
+
+  // ── External Plugin Loader ──
+  async function getPluginsDirectory() {
+    const dir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins');
+    try { await IOUtils.makeDirectory(dir, { ignoreExisting: true }); }
+    catch (e) { log(`Failed to create plugins directory: ${e}`); }
+    return dir;
+  }
+
+  async function loadExternalPlugins() {
+    const dir = await getPluginsDirectory();
+    let children;
+    try { children = await IOUtils.getChildren(dir); }
+    catch (e) { log(`Failed to list plugins directory: ${e}`); return; }
+
+    for (const childPath of children) {
+      try {
+        const stat = await IOUtils.stat(childPath);
+        if (stat.type !== 'directory') continue;
+
+        const manifestPath = PathUtils.join(childPath, 'manifest.json');
+        let manifestText;
+        try { manifestText = await IOUtils.readUTF8(manifestPath); }
+        catch (e) { continue; } // No manifest, skip
+
+        const manifest = JSON.parse(manifestText);
+        if (!manifest.id || !manifest.name) { log(`Skipping plugin at ${childPath}: missing id or name`); continue; }
+
+        // Check version compatibility
+        if (manifest.minZenLeapVersion && !versionGte(VERSION, manifest.minZenLeapVersion)) {
+          log(`Skipping plugin "${manifest.name}": requires ZenLeap v${manifest.minZenLeapVersion}+`);
+          continue;
+        }
+
+        // Verify plugin script exists
+        const pluginPath = PathUtils.join(childPath, 'plugin.js');
+        try { await IOUtils.stat(pluginPath); }
+        catch (e) { log(`Skipping plugin "${manifest.name}": no plugin.js found`); continue; }
+
+        // Execute plugin in a controlled scope
+        const scope = {};
+        try {
+          const fileUri = PathUtils.toFileURI(pluginPath);
+          Services.scriptloader.loadSubScript(fileUri, scope);
+        } catch (e) {
+          console.error(`[ZenLeap] Failed to load plugin "${manifest.name}":`, e);
+          continue;
+        }
+
+        // Merge the manifest with plugin exports
+        const pluginExport = scope.ZenLeapPlugin || {};
+        const fullManifest = {
+          ...manifest,
+          init: pluginExport.init ? pluginExport.init.bind(pluginExport) : null,
+          destroy: pluginExport.destroy ? pluginExport.destroy.bind(pluginExport) : null,
+          _path: childPath,
+        };
+
+        // Commands from manifest get their implementations from plugin exports
+        if (fullManifest.commands && pluginExport.commands) {
+          for (const cmd of fullManifest.commands) {
+            if (pluginExport.commands[cmd.key]) {
+              cmd.command = pluginExport.commands[cmd.key];
+            }
+          }
+        }
+
+        registerPlugin(fullManifest);
+        log(`Loaded external plugin: ${manifest.name} v${manifest.version || '1.0.0'}`);
+      } catch (e) {
+        console.error(`[ZenLeap] Error loading plugin from ${childPath}:`, e);
+      }
+    }
+  }
+
+  // Uninstall an external plugin (remove files)
+  async function uninstallExternalPlugin(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry || entry.manifest.builtIn) return false;
+
+    const pluginPath = entry.manifest._path;
+    unregisterPlugin(pluginId);
+
+    if (pluginPath) {
+      try {
+        await IOUtils.remove(pluginPath, { recursive: true });
+        log(`Removed plugin files: ${pluginPath}`);
+      } catch (e) { log(`Failed to remove plugin files: ${e}`); }
+    }
+    return true;
+  }
+
+  // Install a plugin from a directory path (copy to plugins dir)
+  async function installPluginFromPath(sourcePath) {
+    try {
+      const manifestText = await IOUtils.readUTF8(PathUtils.join(sourcePath, 'manifest.json'));
+      const manifest = JSON.parse(manifestText);
+      if (!manifest.id || !manifest.name) return { success: false, error: 'Invalid manifest' };
+
+      const destDir = PathUtils.join(await getPluginsDirectory(), manifest.id);
+      await IOUtils.makeDirectory(destDir, { ignoreExisting: true });
+
+      // Copy all files recursively
+      async function copyDir(src, dest) {
+        await IOUtils.makeDirectory(dest, { ignoreExisting: true });
+        const children = await IOUtils.getChildren(src);
+        for (const child of children) {
+          const stat = await IOUtils.stat(child);
+          const name = child.split('/').pop().split('\\').pop();
+          if (stat.type === 'directory') {
+            await copyDir(child, PathUtils.join(dest, name));
+          } else {
+            const content = await IOUtils.read(child);
+            await IOUtils.write(PathUtils.join(dest, name), content);
+          }
+        }
+      }
+      await copyDir(sourcePath, destDir);
+
+      // Load the plugin
+      await loadExternalPlugins();
+      return { success: true, pluginId: manifest.id, name: manifest.name };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ============================================
+  // PLUGIN MANAGER UI
+  // ============================================
+
+  function createPluginManagerModal() {
+    if (_pluginManagerModal) return;
+
+    const modal = document.createElement('div');
+    modal.id = 'zenleap-plugin-manager-modal';
+    const backdrop = document.createElement('div');
+    backdrop.id = 'zenleap-plugin-manager-backdrop';
+    backdrop.addEventListener('click', () => exitPluginManagerMode());
+    const container = document.createElement('div');
+    container.id = 'zenleap-plugin-manager-container';
+    modal.appendChild(backdrop);
+    modal.appendChild(container);
+
+    const style = document.createElement('style');
+    style.id = 'zenleap-plugin-manager-styles';
+    style.textContent = `
+      #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; }
+      #zenleap-plugin-manager-modal.active { display: flex; }
+      #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); }
+      #zenleap-plugin-manager-container { position: relative; width: 95%; max-width: 680px; max-height: 80vh; background: rgba(25,25,30,0.98); border-radius: 16px; box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1); overflow: hidden; display: flex; flex-direction: column; animation: zenleap-settings-appear 0.2s ease-out; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+      .zenleap-pm-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }
+      .zenleap-pm-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: #61afef; }
+      .zenleap-pm-subtitle { display: block; margin-top: 3px; font-size: 11px; color: #666; }
+      .zenleap-pm-close { background: none; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: all 0.15s; }
+      .zenleap-pm-close:hover { color: #e0e0e0; background: rgba(255,255,255,0.1); }
+      .zenleap-pm-body { flex: 1; overflow-y: auto; padding: 8px 0; }
+      .zenleap-pm-body::-webkit-scrollbar { width: 8px; }
+      .zenleap-pm-body::-webkit-scrollbar-track { background: transparent; }
+      .zenleap-pm-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+      .zenleap-pm-plugin-card { display: flex; align-items: center; gap: 14px; padding: 14px 24px; transition: background 0.12s; cursor: pointer; }
+      .zenleap-pm-plugin-card:hover { background: rgba(255,255,255,0.04); }
+      .zenleap-pm-plugin-icon { font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 10px; flex-shrink: 0; }
+      .zenleap-pm-plugin-info { flex: 1; min-width: 0; }
+      .zenleap-pm-plugin-name { font-size: 14px; font-weight: 600; color: #e0e0e0; display: flex; align-items: center; gap: 8px; }
+      .zenleap-pm-badge { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+      .zenleap-pm-badge-builtin { background: rgba(97,175,239,0.15); color: #61afef; }
+      .zenleap-pm-badge-version { background: rgba(255,255,255,0.06); color: #888; }
+      .zenleap-pm-badge-external { background: rgba(152,195,121,0.15); color: #98c379; }
+      .zenleap-pm-plugin-desc { font-size: 12px; color: #888; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-pm-plugin-meta { font-size: 11px; color: #555; margin-top: 3px; }
+      .zenleap-pm-plugin-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .zenleap-pm-toggle-btn { padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid; font-family: inherit; }
+      .zenleap-pm-toggle-btn.enabled { background: rgba(97,175,239,0.15); border-color: rgba(97,175,239,0.3); color: #61afef; }
+      .zenleap-pm-toggle-btn.enabled:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.3); color: #e06c75; }
+      .zenleap-pm-toggle-btn.disabled { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #888; }
+      .zenleap-pm-toggle-btn.disabled:hover { background: rgba(152,195,121,0.15); border-color: rgba(152,195,121,0.3); color: #98c379; }
+      .zenleap-pm-uninstall-btn { background: none; border: 1px solid rgba(224,108,117,0.2); color: #e06c75; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+      .zenleap-pm-uninstall-btn:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.4); }
+      .zenleap-pm-empty { padding: 40px 20px; text-align: center; color: #555; font-size: 14px; }
+      .zenleap-pm-footer { padding: 12px 24px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #555; }
+      .zenleap-pm-footer-hint { font-style: italic; }
+      .zenleap-pm-detail-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+      .zenleap-pm-detail-back { background: none; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 8px; display: flex; align-items: center; gap: 4px; font-family: inherit; }
+      .zenleap-pm-detail-back:hover { color: #61afef; }
+      .zenleap-pm-detail-title { display: flex; align-items: center; gap: 12px; }
+      .zenleap-pm-detail-icon { font-size: 32px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 12px; }
+      .zenleap-pm-detail-name { font-size: 20px; font-weight: 700; color: #e0e0e0; margin: 0; }
+      .zenleap-pm-detail-author { font-size: 12px; color: #888; margin-top: 2px; }
+      .zenleap-pm-detail-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+      .zenleap-pm-detail-section { margin-bottom: 20px; }
+      .zenleap-pm-detail-section h3 { font-size: 11px; font-weight: 600; color: #61afef; text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 10px; }
+      .zenleap-pm-detail-desc { font-size: 13px; color: #ccc; line-height: 1.5; }
+      .zenleap-pm-cmd-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.02); margin-bottom: 4px; }
+      .zenleap-pm-cmd-icon { font-size: 16px; width: 24px; text-align: center; }
+      .zenleap-pm-cmd-label { font-size: 13px; color: #e0e0e0; }
+      .zenleap-pm-cmd-tags { font-size: 11px; color: #555; margin-left: auto; }
+      .zenleap-pm-setting-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; }
+      .zenleap-pm-setting-row:hover { background: rgba(255,255,255,0.03); }
+      .zenleap-pm-setting-label { flex: 1; }
+      .zenleap-pm-setting-name { font-size: 13px; font-weight: 500; color: #e0e0e0; }
+      .zenleap-pm-setting-desc { font-size: 11px; color: #666; margin-top: 2px; }
+      .zenleap-pm-path-info { font-size: 11px; color: #555; font-family: monospace; word-break: break-all; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; margin-top: 8px; }
+    `;
+    document.head.appendChild(style);
+    document.documentElement.appendChild(modal);
+    _pluginManagerModal = modal;
+  }
+
+  function renderPluginManagerContent() {
+    const container = document.getElementById('zenleap-plugin-manager-container');
+    if (!container) return;
+    while (container.firstChild) container.removeChild(container.firstChild);
+    if (_pluginManagerView === 'detail' && _pluginManagerDetailId) renderPluginDetail(container);
+    else renderPluginList(container);
+  }
+
+  function renderPluginList(container) {
+    const header = document.createElement('div');
+    header.className = 'zenleap-pm-header';
+    const headerLeft = document.createElement('div');
+    const h1 = document.createElement('h1');
+    h1.textContent = 'Plugins';
+    const sub = document.createElement('span');
+    sub.className = 'zenleap-pm-subtitle';
+    sub.textContent = 'Manage ZenLeap plugins';
+    headerLeft.appendChild(h1);
+    headerLeft.appendChild(sub);
+    header.appendChild(headerLeft);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'zenleap-pm-close';
+    closeBtn.textContent = '\u2715';
+    closeBtn.addEventListener('click', () => exitPluginManagerMode());
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.className = 'zenleap-pm-body';
+    const plugins = getRegisteredPlugins();
+    if (plugins.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'zenleap-pm-empty';
+      empty.textContent = 'No plugins installed';
+      body.appendChild(empty);
+    } else {
+      for (const plugin of plugins) {
+        const card = document.createElement('div');
+        card.className = 'zenleap-pm-plugin-card';
+        const icon = document.createElement('div');
+        icon.className = 'zenleap-pm-plugin-icon';
+        icon.textContent = plugin.icon;
+        const info = document.createElement('div');
+        info.className = 'zenleap-pm-plugin-info';
+        info.addEventListener('click', () => { _pluginManagerView = 'detail'; _pluginManagerDetailId = plugin.id; renderPluginManagerContent(); });
+        const nameRow = document.createElement('div');
+        nameRow.className = 'zenleap-pm-plugin-name';
+        nameRow.appendChild(document.createTextNode(plugin.name));
+        const vBadge = document.createElement('span');
+        vBadge.className = 'zenleap-pm-badge zenleap-pm-badge-version';
+        vBadge.textContent = `v${plugin.version}`;
+        nameRow.appendChild(vBadge);
+        if (plugin.builtIn) { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-builtin'; b.textContent = 'Built-in'; nameRow.appendChild(b); }
+        else { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-external'; b.textContent = 'External'; nameRow.appendChild(b); }
+        const desc = document.createElement('div');
+        desc.className = 'zenleap-pm-plugin-desc';
+        desc.textContent = plugin.description;
+        const meta = document.createElement('div');
+        meta.className = 'zenleap-pm-plugin-meta';
+        meta.textContent = `${plugin.commandCount} command${plugin.commandCount !== 1 ? 's' : ''} · by ${plugin.author}`;
+        info.appendChild(nameRow);
+        info.appendChild(desc);
+        info.appendChild(meta);
+        const actions = document.createElement('div');
+        actions.className = 'zenleap-pm-plugin-actions';
+        const toggleBtn = document.createElement('button');
+        toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
+        toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
+        toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+        actions.appendChild(toggleBtn);
+        if (!plugin.builtIn) {
+          const unBtn = document.createElement('button');
+          unBtn.className = 'zenleap-pm-uninstall-btn';
+          unBtn.textContent = 'Uninstall';
+          unBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
+            if (!confirmed) return;
+            await uninstallExternalPlugin(plugin.id);
+            renderPluginManagerContent();
+          });
+          actions.appendChild(unBtn);
+        }
+        card.appendChild(icon);
+        card.appendChild(info);
+        card.appendChild(actions);
+        body.appendChild(card);
+      }
+    }
+
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-pm-footer';
+    const fLeft = document.createElement('span');
+    fLeft.textContent = `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''} installed`;
+    footer.appendChild(fLeft);
+    const fRight = document.createElement('span');
+    fRight.className = 'zenleap-pm-footer-hint';
+    fRight.textContent = 'Loading...';
+    getPluginsDirectory().then(dir => { fRight.textContent = `Plugins dir: ${dir}`; });
+    footer.appendChild(fRight);
+
+    container.appendChild(header);
+    container.appendChild(body);
+    container.appendChild(footer);
+  }
+
+  function renderPluginDetail(container) {
+    const entry = _pluginRegistry.get(_pluginManagerDetailId);
+    if (!entry) { _pluginManagerView = 'list'; renderPluginManagerContent(); return; }
+    const { manifest } = entry;
+    const plugin = getRegisteredPlugins().find(p => p.id === _pluginManagerDetailId);
+
+    const header = document.createElement('div');
+    header.className = 'zenleap-pm-detail-header';
+    const backBtn = document.createElement('button');
+    backBtn.className = 'zenleap-pm-detail-back';
+    backBtn.textContent = '\u2190 Back to plugins';
+    backBtn.addEventListener('click', () => { _pluginManagerView = 'list'; _pluginManagerDetailId = null; renderPluginManagerContent(); });
+    const titleRow = document.createElement('div');
+    titleRow.className = 'zenleap-pm-detail-title';
+    const iconEl = document.createElement('div');
+    iconEl.className = 'zenleap-pm-detail-icon';
+    iconEl.textContent = manifest.icon || '🧩';
+    const titleInfo = document.createElement('div');
+    const nameEl = document.createElement('h2');
+    nameEl.className = 'zenleap-pm-detail-name';
+    nameEl.textContent = manifest.name;
+    const authorEl = document.createElement('div');
+    authorEl.className = 'zenleap-pm-detail-author';
+    authorEl.textContent = `v${manifest.version || '1.0.0'} · by ${manifest.author || 'Unknown'}`;
+    titleInfo.appendChild(nameEl);
+    titleInfo.appendChild(authorEl);
+    titleRow.appendChild(iconEl);
+    titleRow.appendChild(titleInfo);
+    header.appendChild(backBtn);
+    header.appendChild(titleRow);
+
+    const body = document.createElement('div');
+    body.className = 'zenleap-pm-detail-body';
+
+    // Description
+    if (manifest.description) {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Description';
+      const p = document.createElement('p');
+      p.className = 'zenleap-pm-detail-desc';
+      p.textContent = manifest.description;
+      sec.appendChild(h3);
+      sec.appendChild(p);
+      body.appendChild(sec);
+    }
+
+    // Commands
+    if (manifest.commands?.length > 0) {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = `Commands (${manifest.commands.length})`;
+      sec.appendChild(h3);
+      for (const cmd of manifest.commands) {
+        const row = document.createElement('div');
+        row.className = 'zenleap-pm-cmd-row';
+        const ci = document.createElement('span'); ci.className = 'zenleap-pm-cmd-icon'; ci.textContent = cmd.icon || manifest.icon || '🧩';
+        const cl = document.createElement('span'); cl.className = 'zenleap-pm-cmd-label'; cl.textContent = cmd.label;
+        const ct = document.createElement('span'); ct.className = 'zenleap-pm-cmd-tags'; ct.textContent = (cmd.tags || []).join(', ');
+        row.appendChild(ci); row.appendChild(cl); row.appendChild(ct);
+        sec.appendChild(row);
+      }
+      body.appendChild(sec);
+    }
+
+    // Plugin settings
+    if (manifest.settings && Object.keys(manifest.settings).length > 0) {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Settings';
+      sec.appendChild(h3);
+      const api = createScopedPluginAPI(_pluginManagerDetailId);
+      for (const [key, schema] of Object.entries(manifest.settings)) {
+        const row = document.createElement('div');
+        row.className = 'zenleap-pm-setting-row';
+        const label = document.createElement('div');
+        label.className = 'zenleap-pm-setting-label';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'zenleap-pm-setting-name';
+        nameSpan.textContent = schema.label || key;
+        label.appendChild(nameSpan);
+        if (schema.description) { const d = document.createElement('div'); d.className = 'zenleap-pm-setting-desc'; d.textContent = schema.description; label.appendChild(d); }
+        row.appendChild(label);
+
+        const control = document.createElement('div');
+        const currentVal = api.settings.getOwn(key);
+        if (schema.type === 'toggle') {
+          const toggle = document.createElement('label');
+          toggle.className = 'zenleap-toggle';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!currentVal;
+          const slider = document.createElement('span');
+          slider.className = 'zenleap-toggle-slider';
+          toggle.appendChild(cb);
+          toggle.appendChild(slider);
+          cb.addEventListener('change', () => { api.settings.setOwn(key, cb.checked); });
+          control.appendChild(toggle);
+        } else if (schema.type === 'number') {
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.value = currentVal;
+          if (schema.min !== undefined) input.min = schema.min;
+          if (schema.max !== undefined) input.max = schema.max;
+          if (schema.step !== undefined) input.step = schema.step;
+          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 80px; outline: none; font-family: inherit;';
+          input.addEventListener('change', () => { api.settings.setOwn(key, parseFloat(input.value) || schema.default); });
+          control.appendChild(input);
+        } else if (schema.type === 'text') {
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.value = currentVal || '';
+          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 120px; outline: none; font-family: inherit;';
+          input.addEventListener('change', () => { api.settings.setOwn(key, input.value); });
+          control.appendChild(input);
+        }
+        row.appendChild(control);
+        sec.appendChild(row);
+      }
+      body.appendChild(sec);
+    }
+
+    // Path info for external plugins
+    if (manifest._path) {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = 'Location';
+      sec.appendChild(h3);
+      const pathInfo = document.createElement('div');
+      pathInfo.className = 'zenleap-pm-path-info';
+      pathInfo.textContent = manifest._path;
+      sec.appendChild(pathInfo);
+      body.appendChild(sec);
+    }
+
+    // Actions
+    const actSec = document.createElement('div');
+    actSec.className = 'zenleap-pm-detail-section';
+    const actH3 = document.createElement('h3');
+    actH3.textContent = 'Actions';
+    actSec.appendChild(actH3);
+    const actRow = document.createElement('div');
+    actRow.style.cssText = 'display: flex; gap: 8px;';
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
+    toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
+    toggleBtn.addEventListener('click', () => { if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+    actRow.appendChild(toggleBtn);
+    if (!plugin.builtIn) {
+      const unBtn = document.createElement('button');
+      unBtn.className = 'zenleap-pm-uninstall-btn';
+      unBtn.textContent = 'Uninstall';
+      unBtn.addEventListener('click', async () => {
+        const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
+        if (!confirmed) return;
+        await uninstallExternalPlugin(plugin.id);
+        _pluginManagerView = 'list';
+        _pluginManagerDetailId = null;
+        renderPluginManagerContent();
+      });
+      actRow.appendChild(unBtn);
+    }
+    actSec.appendChild(actRow);
+    body.appendChild(actSec);
+
+    container.appendChild(header);
+    container.appendChild(body);
+  }
+
+  function enterPluginManagerMode() {
+    if (_pluginManagerMode) return;
+    if (settingsMode) exitSettingsMode();
+    if (helpMode) exitHelpMode();
+    if (leapMode) exitLeapMode(false);
+    if (searchMode) exitSearchMode();
+    createPluginManagerModal();
+    _pluginManagerMode = true;
+    _pluginManagerView = 'list';
+    _pluginManagerDetailId = null;
+    renderPluginManagerContent();
+    _pluginManagerModal.classList.add('active');
+    log('Entered plugin manager mode');
+  }
+
+  function exitPluginManagerMode() {
+    if (!_pluginManagerMode) return;
+    _pluginManagerMode = false;
+    if (_pluginManagerModal) _pluginManagerModal.classList.remove('active');
+    log('Exited plugin manager mode');
+  }
+
+  // ── Initialize Plugin System ──
+  async function initPluginSystem() {
+    loadPluginData();
+    await loadExternalPlugins();
+    log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) loaded`);
+  }
+
+
+
   // ============================================
   // COMMAND PALETTE
   // ============================================
@@ -2974,6 +4468,12 @@
         try { file.launch(); } catch (e) { console.warn('[ZenLeap] Could not open themes file:', e); }
       }},
 
+      // --- Plugin Management ---
+      { key: 'plugin-manager', label: 'Manage Plugins', icon: '🧩', tags: ['plugin', 'plugins', 'manage', 'extensions', 'addons', 'install', 'uninstall', 'enable', 'disable'], command: () => {
+        exitSearchMode();
+        setTimeout(() => enterPluginManagerMode(), 100);
+      }},
+
       // --- Session Management ---
       { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'], subFlow: 'save-session-scope' },
       { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'], subFlow: 'restore-session-picker' },
@@ -3038,7 +4538,8 @@
     }
     const statics = getStaticCommands();
     const dynamics = getDynamicCommands();
-    const all = [...statics, ...dynamics];
+    const plugins = getPluginCommands();
+    const all = [...statics, ...dynamics, ...plugins];
     // Filter by condition
     _commandListCache = all.filter(cmd => !cmd.condition || cmd.condition());
     _commandListCacheTime = now;
@@ -3137,9 +4638,21 @@
       exitSearchMode();
       if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
       try {
-        cmd.command();
-        log(`Executed command: ${cmd.key}`);
+        const result = cmd.command();
+        if (result && typeof result.then === 'function') {
+          result.then(() => {
+            _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+            log(`Executed async command: ${cmd.key}`);
+          }).catch(e => {
+            _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
+            log(`Async command failed: ${cmd.key}: ${e}`);
+          });
+        } else {
+          _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+          log(`Executed command: ${cmd.key}`);
+        }
       } catch (e) {
+        _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
         log(`Command failed: ${cmd.key}: ${e}`);
       }
       browseCommandTabs = [];
@@ -9136,12 +10649,18 @@
     const tabs = document.createElement('div');
     tabs.className = 'zenleap-settings-tabs';
     tabs.id = 'zenleap-settings-tabs';
-    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced', 'About'].forEach(cat => {
+    ['Keybindings', 'Timing', 'Appearance', 'Display', 'Advanced', 'Plugins', 'About'].forEach(cat => {
       const btn = document.createElement('button');
       btn.textContent = cat;
       btn.dataset.tab = cat;
       if (cat === settingsActiveTab) btn.classList.add('active');
       btn.addEventListener('click', () => {
+        if (cat === 'Plugins') {
+          // Open plugin manager instead of settings tab
+          exitSettingsMode();
+          setTimeout(() => enterPluginManagerMode(), 100);
+          return;
+        }
         if (themeEditorActive && cat !== 'Appearance') {
           themeEditorActive = false;
           applyTheme();
@@ -11115,6 +12634,7 @@
     updateSearchVimIndicator();
     updateWsToggleVisibility();
 
+    _pluginEventBus.emit('searchMode:enter', { asCommand });
     log(`Entered search mode${asCommand ? ' (command)' : ''}`);
   }
 
@@ -11186,6 +12706,7 @@
     browseCommandTabs = [];
     savedBrowseState = null;
 
+    _pluginEventBus.emit('searchMode:exit', {});
     log('Exited search mode');
   }
 
@@ -13599,6 +15120,7 @@
       }
     }, CONFIG.leapModeTimeout);
 
+    _pluginEventBus.emit('leapMode:enter', {});
     log('Entered leap mode');
   }
 
@@ -13646,6 +15168,7 @@
 
     updateHighlight();
     updateLeapOverlayState();
+    _pluginEventBus.emit('browseMode:enter', { direction });
     log(`Entered browse mode, direction=${direction}, highlight=${highlightedTabIndex}`);
   }
 
@@ -14337,6 +15860,7 @@
     // Restore focus to content area so keyboard input resumes going to the web page
     restoreFocusToContent();
 
+    _pluginEventBus.emit('leapMode:exit', {});
     log('Exited leap mode');
   }
 
@@ -14451,6 +15975,22 @@
   function handleKeyDown(event) {
     // Ignore modifier keys pressed alone
     if (MODIFIER_KEYS.includes(event.key)) {
+      return;
+    }
+
+    // Handle plugin manager mode - Escape to close
+    if (_pluginManagerMode) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (_pluginManagerView === 'detail') {
+          _pluginManagerView = 'list';
+          _pluginManagerDetailId = null;
+          renderPluginManagerContent();
+        } else {
+          exitPluginManagerMode();
+        }
+      }
       return;
     }
 
@@ -15137,26 +16677,30 @@
   function setupTabListeners() {
     gBrowser.tabContainer.addEventListener('TabSelect', (event) => {
       updateRelativeNumbers();
-      // Record tab change to jump list
       if (recordingJumps && event.target) {
         recordJump(event.target);
       }
+      _pluginEventBus.emit('tab:activated', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabOpen', () => {
+    gBrowser.tabContainer.addEventListener('TabOpen', (event) => {
       scheduleRelativeNumberUpdate();
+      _pluginEventBus.emit('tab:created', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabClose', () => {
+    gBrowser.tabContainer.addEventListener('TabClose', (event) => {
       scheduleRelativeNumberUpdate();
+      _pluginEventBus.emit('tab:closed', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabMove', () => {
+    gBrowser.tabContainer.addEventListener('TabMove', (event) => {
       scheduleRelativeNumberUpdate();
+      _pluginEventBus.emit('tab:moved', { tab: event.target });
     });
 
-    document.addEventListener('ZenWorkspaceChanged', () => {
+    document.addEventListener('ZenWorkspaceChanged', (event) => {
       scheduleRelativeNumberUpdate();
+      _pluginEventBus.emit('workspace:changed', { event });
     });
 
     log('Tab listeners set up');
@@ -16303,6 +17847,7 @@
     // Load user themes async; re-apply theme once loaded (built-in applies immediately via injectStyles)
     loadUserThemes().then(() => applyTheme());
     ensureThemesFile();
+    initPluginSystem(); // Async — built-in plugins load synchronously, external plugins load in background
     setupTabListeners();
     setupKeyboardListener();
     setupUrlbarVimMode();

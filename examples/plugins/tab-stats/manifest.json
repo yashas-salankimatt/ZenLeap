@@ -1,0 +1,22 @@
+{
+  "id": "tab-stats",
+  "name": "Tab Stats",
+  "version": "1.0.0",
+  "description": "View statistics about your open tabs — count by domain, memory usage overview, and tab age.",
+  "author": "ZenLeap",
+  "icon": "📊",
+  "commands": [
+    {
+      "key": "show-stats",
+      "label": "Show Tab Statistics",
+      "icon": "📊",
+      "tags": ["stats", "statistics", "count", "tabs", "domain", "overview", "info"]
+    },
+    {
+      "key": "domain-breakdown",
+      "label": "Tab Domain Breakdown",
+      "icon": "🌐",
+      "tags": ["domain", "breakdown", "group", "count", "website"]
+    }
+  ]
+}
