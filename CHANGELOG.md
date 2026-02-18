@@ -5,6 +5,22 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-02-18
+
+### Added
+- **Essential Tab Search Scope Toggle** — New setting in Settings > Display > Search: "Search Includes Essential Tabs"
+  - Default is enabled
+  - Applies to both current-workspace and all-workspaces tab search
+- **Essential Result Badge** — Essential tabs now show an "Essential" pill badge in tab search results and tab-based command sub-flows
+
+### Changed
+- Search result badges now use a shared pill styling system for workspace and essential metadata
+- Essential tabs now suppress workspace badges in search results and show only the "Essential" badge
+
+### Fixed
+- Cross-workspace tab search no longer omits essential tabs when essential-tab search inclusion is enabled
+- Search scope behavior is now consistent across main tab search, split tab picker, and select-matching tab sub-flows
+
 ## [3.2.0] - 2026-02-11
 
 ### Added
@@ -407,6 +423,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.3.0 | 2026-02-18 | Essential-tab search inclusion toggle, essential badge in search results, consistent WS/All search scope handling |
 | 3.2.0 | 2026-02-11 | Apply theme to browser chrome, Switch Theme command with live preview, 14 new built-in themes, theme editor annotations |
 | 3.1.0 | 2026-02-10 | Meridian design system, 7 built-in themes, user theme JSON + visual editor, badge contrast fix, input interception hardening |
 | 3.0.0 | 2026-02-10 | gTile split overlay, command bar parity, Alt+HJKL navigation, folder yank/paste, multi-digit numbers, jj escape |

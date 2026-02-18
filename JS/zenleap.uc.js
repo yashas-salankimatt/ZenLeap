@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.2.0  // Keep in sync with VERSION constant below
+// @version        3.3.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.2.0';
+  const VERSION = '3.3.0';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -94,6 +94,7 @@
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
+    'display.searchIncludeEssentialTabs': { default: true, type: 'toggle', label: 'Search Includes Essential Tabs', description: 'Include essential tabs in tab search results', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
     'display.tabAsEnter':           { default: false, type: 'toggle', label: 'Tab Acts as Enter', description: 'When enabled, Tab executes commands like Enter in the command palette. When off, Tab only performs its explicit bindings (e.g. toggle workspace search).', category: 'Display', group: 'Search' },
     'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
@@ -2059,7 +2060,8 @@
         score: 100 - idx,
         titleIndices: [],
         urlIndices: [],
-        workspaceName: getTabWorkspaceName(tab)
+        workspaceName: getTabWorkspaceName(tab),
+        isEssential: tab.hasAttribute('zen-essential')
       }));
     }
 
@@ -2085,7 +2087,8 @@
           recencyMultiplier,
           titleIndices: match.titleIndices,
           urlIndices: match.urlIndices,
-          workspaceName: getTabWorkspaceName(tab)
+          workspaceName: getTabWorkspaceName(tab),
+          isEssential: tab.hasAttribute('zen-essential')
         });
       }
     });
@@ -2341,11 +2344,25 @@
         color: var(--zl-accent-bright); font-weight: 600;
       }
 
+      .zenleap-search-result-badges {
+        display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+      }
+      .zenleap-search-result-badge {
+        display: inline-flex; align-items: center;
+        font-size: 10px; font-weight: 600;
+        padding: 1px 7px; border-radius: 999px;
+        white-space: nowrap;
+        border: 1px solid transparent;
+        letter-spacing: 0.02em;
+      }
       .zenleap-search-result-ws {
-        display: inline-block; font-size: 10px; font-weight: 500;
-        padding: 1px 6px; border-radius: 3px;
         background: rgba(167,139,219,0.12); color: var(--zl-purple);
-        white-space: nowrap; flex-shrink: 0;
+        border-color: rgba(167,139,219,0.22);
+      }
+      .zenleap-search-result-essential {
+        background: color-mix(in srgb, var(--zl-gold) 14%, transparent);
+        color: var(--zl-gold);
+        border-color: color-mix(in srgb, var(--zl-gold) 32%, transparent);
       }
 
       .zenleap-search-result-label {
@@ -2420,7 +2437,7 @@
         font-size: 13px; font-weight: 500; color: var(--zl-text-primary);
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      .zenleap-command-label:has(.zenleap-search-result-ws) {
+      .zenleap-command-label:has(.zenleap-search-result-badges) {
         display: flex; align-items: center; gap: 8px; min-width: 0; text-overflow: clip;
       }
       .zenleap-command-label .match { color: var(--zl-accent-bright); font-weight: 600; }
@@ -5221,6 +5238,7 @@
       titleIndices: r.titleIndices,
       urlIndices: r.urlIndices,
       workspaceName: r.workspaceName,
+      isEssential: r.isEssential,
     }));
   }
 
@@ -5304,6 +5322,7 @@
       tab: r.tab,
       titleIndices: r.titleIndices,
       workspaceName: r.workspaceName,
+      isEssential: r.isEssential,
       urlIndices: r.urlIndices,
     }));
   }
@@ -10009,6 +10028,19 @@
     return null;
   }
 
+  function getSearchResultBadgesHtml({ workspaceName = null, isEssential = false } = {}) {
+    const badges = [];
+
+    if (isEssential) {
+      badges.push('<span class="zenleap-search-result-badge zenleap-search-result-essential">Essential</span>');
+    } else if (workspaceName) {
+      badges.push(`<span class="zenleap-search-result-badge zenleap-search-result-ws">${escapeHtml(workspaceName)}</span>`);
+    }
+
+    if (badges.length === 0) return '';
+    return `<span class="zenleap-search-result-badges">${badges.join('')}</span>`;
+  }
+
   // Render search results
   function renderSearchResults() {
     if (!searchResultsList) return;
@@ -10045,13 +10077,16 @@
       const highlightedTitle = highlightMatches(title, result.titleIndices);
       const highlightedUrl = highlightMatches(url, result.urlIndices);
 
-      const wsBadge = result.workspaceName ? `<span class="zenleap-search-result-ws">${escapeHtml(result.workspaceName)}</span>` : '';
+      const badges = getSearchResultBadgesHtml({
+        workspaceName: result.workspaceName,
+        isEssential: result.isEssential
+      });
 
       html += `
         <div class="zenleap-search-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
           <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
           <div class="zenleap-search-result-info">
-            <div class="zenleap-search-result-title"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${wsBadge}</div>
+            <div class="zenleap-search-result-title"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${badges}</div>
             <div class="zenleap-search-result-url">${highlightedUrl}</div>
           </div>
           ${label ? `<span class="zenleap-search-result-label">${label}</span>` : ''}
@@ -10160,13 +10195,16 @@
         }
         const highlightedTitle = highlightMatches(title, cmd.titleIndices);
         const highlightedUrl = highlightMatches(url, cmd.urlIndices);
-        const cmdWsBadge = cmd.workspaceName ? `<span class="zenleap-search-result-ws">${escapeHtml(cmd.workspaceName)}</span>` : '';
+        const cmdBadges = getSearchResultBadgesHtml({
+          workspaceName: cmd.workspaceName,
+          isEssential: cmd.isEssential
+        });
 
         html += `
           <div class="zenleap-command-result ${isSelected ? 'selected' : ''}" data-index="${idx}">
             <img class="zenleap-search-result-favicon" src="${escapeHtml(favicon)}" />
             <div class="zenleap-command-info">
-              <div class="zenleap-command-label"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${cmdWsBadge}</div>
+              <div class="zenleap-command-label"><span class="zenleap-search-result-title-text">${highlightedTitle}</span>${cmdBadges}</div>
               <div class="zenleap-command-sublabel">${highlightedUrl}</div>
             </div>
             ${label ? `<span class="zenleap-command-result-label">${label}</span>` : ''}
@@ -14890,20 +14928,25 @@
 
   // Get tabs for search — respects cross-workspace setting
   function getSearchableTabs() {
+    const includeEssentialTabs = S['display.searchIncludeEssentialTabs'];
+    const isSearchableTab = (tab) =>
+      tab &&
+      !tab.hasAttribute('zen-glance-tab') &&
+      !tab.hasAttribute('zen-empty-tab') &&
+      (includeEssentialTabs || !tab.hasAttribute('zen-essential'));
+
     if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
       // Use Zen's allStoredTabs which traverses all workspace DOM containers
       try {
         const allTabs = gZenWorkspaces.allStoredTabs;
         if (allTabs && allTabs.length > 0) {
-          return Array.from(allTabs).filter(tab =>
-            !tab.hasAttribute('zen-glance-tab') && !tab.hasAttribute('zen-essential') && !tab.hasAttribute('zen-empty-tab')
-          );
+          return Array.from(allTabs).filter(isSearchableTab);
         }
       } catch (e) {
         log(`allStoredTabs failed, falling back: ${e}`);
       }
     }
-    return getVisibleTabs();
+    return getVisibleTabs().filter(isSearchableTab);
   }
 
   // Build a workspace ID -> name map once, then reuse for all tabs in a search render.

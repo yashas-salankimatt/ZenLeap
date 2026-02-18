@@ -90,6 +90,9 @@ Quickly find and switch to any tab with fuzzy search:
 - **Cross-workspace search**: Click `WS`/`All` toggle in search bar to search all workspaces
   - Tabs from other workspaces show a purple workspace badge
   - Toggle default in Settings > Display
+- **Essential tab support**:
+  - Essential tabs can be included/excluded via Settings > Display > Search > Search Includes Essential Tabs
+  - Essential tabs show an `Essential` badge in results (and suppress workspace badge when both apply)
 - Recency-weighted ranking: recently accessed tabs rank higher
 - Real-time results with match highlighting
 - Navigate with `↑`/`↓` or `Ctrl+j`/`Ctrl+k`
@@ -169,7 +172,7 @@ Customize every keybinding, delay, and display option:
 - **Keybindings** — Rebind all keys with an intuitive key recorder (leap mode, browse mode, global triggers including Alt+HJKL and gTile overlay)
 - **Timing** — Adjust timeouts and delays (leap timeout, gg timeout, browse number timeout, jj escape threshold, preview delay, sidebar peek duration)
 - **Appearance** — Color pickers for all tab badge, highlight, mark, and selection colors
-- **Display** — Customize indicators, limits, cross-workspace search, vim mode toggle, tab-as-enter
+- **Display** — Customize indicators, limits, cross-workspace search, essential-tab search scope, vim mode toggle, tab-as-enter
 - **Advanced** — Debug mode, recency tuning
 - Search bar to filter settings
 - Per-setting reset buttons
