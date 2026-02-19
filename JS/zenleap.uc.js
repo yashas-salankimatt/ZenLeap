@@ -936,7 +936,7 @@
 
   // Command palette group definitions (for section headers when input is empty)
   const COMMAND_GROUPS = [
-    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}', keys: ['new-tab','close-tab','close-other-tabs','close-tabs-right','close-tabs-left','duplicate-tab','pin-unpin-tab','add-to-essentials','remove-from-essentials','rename-tab','edit-tab-icon','reset-pinned-tab','replace-pinned-url','mute-unmute-tab','unload-tab','reload-tab','bookmark-tab','reopen-closed-tab','select-all-tabs','select-matching-tabs','deduplicate-tabs','move-tab-to-top','move-tab-to-bottom','sort-tabs','group-by-domain'] },
+    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}', keys: ['new-tab','close-tab','close-other-tabs','close-tabs-right','close-tabs-left','duplicate-tab','pin-unpin-tab','add-to-essentials','remove-from-essentials','rename-tab','edit-tab-icon','reset-pinned-tab','replace-pinned-url','mute-unmute-tab','find-playing-tab','unload-tab','reload-tab','bookmark-tab','reopen-closed-tab','select-all-tabs','select-matching-tabs','deduplicate-tabs','move-tab-to-top','move-tab-to-bottom','sort-tabs','group-by-domain'] },
     { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}', keys: ['go-first-tab','go-last-tab','browse-mode-down','browse-mode-up','open-tab-search'] },
     { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}', keys: ['toggle-fullscreen','toggle-sidebar','zoom-in','zoom-out','zoom-reset'] },
     { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
@@ -4189,6 +4189,52 @@
           catch(e) { log(`Replace pinned URL failed: ${e}`); }
       }},
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
+      { key: 'find-playing-tab', label: 'Find Playing Tab', icon: '🔊', tags: ['tab', 'audio', 'media', 'sound', 'playing', 'music', 'video', 'find', 'go'],
+        command: async () => {
+          // Always search ALL workspaces for the initial check
+          let allTabs;
+          try {
+            if (window.gZenWorkspaces) {
+              const stored = gZenWorkspaces.allStoredTabs;
+              allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
+            } else {
+              allTabs = Array.from(gBrowser.tabs);
+            }
+          } catch (e) { allTabs = Array.from(gBrowser.tabs); }
+
+          const playingTabs = allTabs.filter(tab =>
+            tab && !tab.closing && tab.parentNode &&
+            !tab.hasAttribute('zen-empty-tab') &&
+            tab.hasAttribute('soundplaying')
+          );
+
+          if (playingTabs.length === 0) {
+            log('No tabs currently playing audio');
+            return;
+          }
+
+          if (playingTabs.length === 1) {
+            const tab = playingTabs[0];
+            recordJump(gBrowser.selectedTab);
+            const tabWsId = tab.getAttribute('zen-workspace-id');
+            if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace) {
+              await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
+            }
+            gBrowser.selectedTab = tab;
+            recordJump(tab);
+            return;
+          }
+
+          // Multiple playing tabs — re-enter search to show sub-flow
+          // Ensure cross-workspace search is on so all playing tabs are visible
+          if (!S['display.searchAllWorkspaces']) {
+            S['display.searchAllWorkspaces'] = true;
+            saveSettings();
+          }
+          enterSearchMode(true);
+          enterSubFlow('playing-tabs', 'Find Playing Tab');
+        }
+      },
       { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'], command: () => {
         const current = gBrowser.selectedTab;
         // Find the most recently accessed tab to switch to
@@ -4698,7 +4744,7 @@
     commandSubFlow = { type, label, data: null };
     commandQuery = '';
     // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
-    if (type === 'tab-search' || type === 'split-tab-picker') {
+    if (type === 'tab-search' || type === 'split-tab-picker' || type === 'playing-tabs') {
       commandMatchedTabs = [];
     }
     // Save current theme for live-preview restore on Escape
@@ -4795,6 +4841,7 @@
       case 'workspace-picker': return 'Choose a workspace...';
       case 'folder-picker': return 'Choose a folder...';
       case 'split-tab-picker': return 'Search for a tab to split with...';
+      case 'playing-tabs': return 'Search playing tabs...';
       case 'dedup-preview': return 'Duplicates to close — Enter to confirm';
       case 'folder-name-input': return 'Enter folder name...';
       case 'delete-folder-picker': return 'Select a folder to delete...';
@@ -4868,6 +4915,8 @@
         return getFolderPickerResults(query);
       case 'split-tab-picker':
         return getSplitTabPickerResults(query);
+      case 'playing-tabs':
+        return getPlayingTabsResults(query);
       case 'dedup-preview':
         return getDedupPreviewResults();
       case 'folder-name-input':
@@ -5327,6 +5376,52 @@
     }));
   }
 
+  function getPlayingTabsResults(query) {
+    // Get tabs based on current cross-workspace setting
+    let allTabs;
+    if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
+      try {
+        const stored = gZenWorkspaces.allStoredTabs;
+        allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
+      } catch (e) { allTabs = Array.from(gBrowser.tabs); }
+    } else {
+      allTabs = getVisibleTabs();
+    }
+
+    // Filter to tabs currently playing audio
+    const playingTabs = allTabs.filter(tab =>
+      tab && !tab.closing && tab.parentNode &&
+      !tab.hasAttribute('zen-empty-tab') &&
+      tab.hasAttribute('soundplaying')
+    );
+
+    let results = playingTabs.map(tab => ({
+      key: `playing-tab:${tab._tPos}`,
+      label: tab.label || 'Untitled',
+      sublabel: tab.linkedBrowser?.currentURI?.spec || '',
+      icon: tab.hasAttribute('muted') ? '🔇' : '🔊',
+      isTab: true,
+      tab: tab,
+      titleIndices: [],
+      urlIndices: [],
+      workspaceName: getTabWorkspaceName(tab),
+      isEssential: tab.hasAttribute('zen-essential'),
+    }));
+
+    // Apply fuzzy filter if query is provided
+    if (query) {
+      results = results.filter(r => {
+        const match = fuzzyMatch(query, r.label, r.sublabel);
+        if (!match) return false;
+        r.titleIndices = match.titleIndices;
+        r.urlIndices = match.urlIndices;
+        return true;
+      });
+    }
+
+    return results;
+  }
+
   function getDedupPreviewResults() {
     // Get tabs based on current cross-workspace setting
     let allTabs;
@@ -5438,6 +5533,24 @@
 
       case 'split-tab-picker':
         splitWithTab(result.tab);
+        break;
+
+      case 'playing-tabs':
+        if (result.tab) {
+          recordJump(gBrowser.selectedTab);
+          const ptTab = result.tab;
+          const ptWsId = ptTab.getAttribute('zen-workspace-id');
+          if (ptWsId && window.gZenWorkspaces && ptWsId !== gZenWorkspaces.activeWorkspace) {
+            gZenWorkspaces.changeWorkspaceWithID(ptWsId).then(() => {
+              gBrowser.selectedTab = ptTab;
+              recordJump(ptTab);
+            });
+          } else {
+            gBrowser.selectedTab = ptTab;
+            recordJump(ptTab);
+          }
+        }
+        exitSearchMode();
         break;
 
       case 'dedup-preview':
@@ -13457,7 +13570,7 @@
     const wsBtn = document.getElementById('zenleap-search-ws-toggle');
     if (!wsBtn) return;
     // Show only in tab search (not command mode) or tab-search/split-tab-picker sub-flows
-    const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview');
+    const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview' || commandSubFlow.type === 'playing-tabs');
     const shouldShow = !commandMode || isTabSearchSubFlow;
     wsBtn.style.display = shouldShow ? '' : 'none';
   }
@@ -13743,7 +13856,7 @@
       if (key === 'Tab') {
         event.preventDefault();
         event.stopPropagation();
-        if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview')) {
+        if (commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview' || commandSubFlow.type === 'playing-tabs')) {
           toggleCrossWorkspaceSearch();
         } else if (S['display.tabAsEnter']) {
           handleCommandSelect();
