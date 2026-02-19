@@ -17749,11 +17749,11 @@
   let _workspaceHookRetries = 0;
   function setupWorkspaceThemeHook() {
     if (!window.gZenThemePicker || !window.gZenWorkspaces) {
-      if (++_workspaceHookRetries > 10) {
-        log('Workspace theme hook: globals not found after 10 retries, skipping');
+      if (++_workspaceHookRetries > 50) {
+        log('Workspace theme hook: globals not found after 50 retries, skipping');
         return;
       }
-      setTimeout(setupWorkspaceThemeHook, 500);
+      setTimeout(setupWorkspaceThemeHook, 100);
       return;
     }
 
@@ -17771,25 +17771,55 @@
     try {
       const _origOnWorkspaceChange = gZenThemePicker.onWorkspaceChange.bind(gZenThemePicker);
       gZenThemePicker.onWorkspaceChange = (...args) => {
-        _origOnWorkspaceChange(...args);
+        const result = _origOnWorkspaceChange(...args);
         if (S['appearance.applyToBrowser']) {
-          applyBrowserTheme();
+          try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
         }
+        return result;
       };
       gZenThemePicker._zenleapWrapped = true;
     } catch (e) {
       log(`Warning: Could not wrap onWorkspaceChange: ${e}`);
     }
 
-    // Safety net: also use the official change listener API so any other code
-    // path that resets CSS properties gets caught after animations complete.
-    gZenWorkspaces.addChangeListeners(() => {
-      if (S['appearance.applyToBrowser']) {
-        applyBrowserTheme();
-      }
-    });
+    // Fallback: also use the official change listener API. During animated
+    // switches this fires AFTER the rAF (since _animateTabs takes ~200ms),
+    // so the onWorkspaceChange wrapper is the primary defense. This listener
+    // covers any future code paths that reset CSS properties without going
+    // through onWorkspaceChange.
+    try {
+      gZenWorkspaces.addChangeListeners(() => {
+        if (S['appearance.applyToBrowser']) {
+          try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+        }
+      });
+    } catch (e) {
+      log(`Warning: Could not add workspace change listener: ${e}`);
+    }
 
     log('Workspace theme hook installed');
+
+    // Re-apply browser theme now: gZenThemePicker.onWorkspaceChange() was likely
+    // already called (unwrapped) during SessionStore restoration before we could
+    // install the hook, overwriting our --zen-* CSS properties.
+    if (S['appearance.applyToBrowser']) {
+      try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+    }
+
+    // Safety net: re-apply after Zen's workspace initialization fully completes.
+    // The rAF in _updateWorkspaceState likely already fired by the time
+    // promiseInitialized resolves, but we double-rAF to handle any edge cases
+    // where additional CSS property resets happen near initialization.
+    // If the onWorkspaceChange wrapper is working, this is redundant but harmless.
+    if (gZenWorkspaces.promiseInitialized?.then) {
+      gZenWorkspaces.promiseInitialized.then(() => {
+        if (S['appearance.applyToBrowser']) {
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+          }));
+        }
+      });
+    }
   }
 
   // Legacy compat wrapper
