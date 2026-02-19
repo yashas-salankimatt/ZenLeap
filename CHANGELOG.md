@@ -5,6 +5,19 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-02-19
+
+### Added
+- **Find Playing Tab Command** — New command in the command palette to locate tabs currently playing audio/media
+  - With one playing tab: directly navigates to it, switching workspaces if needed
+  - With multiple playing tabs: opens a searchable sub-flow with workspace badges, fuzzy filtering, and j/k navigation
+  - Supports Tab key to toggle cross-workspace scope, muted/playing icons
+
+### Fixed
+- **Browser theme not auto-applying on launch** — Fixed race condition where the browser chrome theme (`--zen-*` variables) would not persist across restarts, requiring manual re-toggle in settings
+  - Reduced retry interval and increased max retries for `gZenThemePicker` hook installation
+  - Added immediate re-apply when hook installs and safety net via `promiseInitialized`
+
 ## [3.3.0] - 2026-02-18
 
 ### Added
@@ -423,6 +436,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.3.1 | 2026-02-19 | Find Playing Tab command, fix browser theme not auto-applying on launch |
 | 3.3.0 | 2026-02-18 | Essential-tab search inclusion toggle, essential badge in search results, consistent WS/All search scope handling |
 | 3.2.0 | 2026-02-11 | Apply theme to browser chrome, Switch Theme command with live preview, 14 new built-in themes, theme editor annotations |
 | 3.1.0 | 2026-02-10 | Meridian design system, 7 built-in themes, user theme JSON + visual editor, badge contrast fix, input interception hardening |
