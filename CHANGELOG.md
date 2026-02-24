@@ -5,6 +5,27 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] - 2026-02-24
+
+### Added
+- **Split View Session Save/Restore** — Workspace session save and restore now preserves split view arrangements
+  - Saves split group membership and grid type (vertical, horizontal, grid) per tab
+  - Restores split views automatically after tabs are created, including essential tabs in split groups
+  - Backwards compatible with sessions saved before this version
+
+### Fixed
+- **Browse mode scroll on pinned/folder tabs** — Starting browse mode on a pinned tab or tab inside a folder and navigating down now properly scrolls the sidebar
+  - Fixed scroll container resolution to try the target tab's parent chain first, with correct unwrapping of Zen's arrowscrollbox internal structure
+- **Cross-workspace mark jumps** — Jumping to a marked tab in another workspace now switches to that workspace first
+  - Essential tabs are exempt from workspace switching since they're globally visible
+  - Jump list state is properly reverted on workspace switch failure
+- **Cross-workspace jump list navigation** — `jumpBack` and `jumpForward` now switch workspaces when navigating to tabs in other workspaces
+  - Includes re-entrancy guard, target tab validity checks after async workspace switch, and proper state recovery on failure
+- **Split view tabs missing from session save** — Tabs in split views were silently dropped during session save because the DOM walk did not descend into split-view tab group elements
+
+### Changed
+- **Delete Workspace command** — Current workspace now appears first in the picker, so pressing Enter defaults to deleting the current workspace
+
 ## [3.3.1] - 2026-02-19
 
 ### Added
@@ -436,6 +457,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.3.2 | 2026-02-24 | Split view session save/restore, browse mode scroll fix, cross-workspace marks & jumps, delete workspace defaults to current |
 | 3.3.1 | 2026-02-19 | Find Playing Tab command, fix browser theme not auto-applying on launch |
 | 3.3.0 | 2026-02-18 | Essential-tab search inclusion toggle, essential badge in search results, consistent WS/All search scope handling |
 | 3.2.0 | 2026-02-11 | Apply theme to browser chrome, Switch Theme command with live preview, 14 new built-in themes, theme editor annotations |

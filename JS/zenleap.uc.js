@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.1  // Keep in sync with VERSION constant below
+// @version        3.3.2  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.1';
+  const VERSION = '3.3.2';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -1644,7 +1644,9 @@
   }
 
   // Jump backward in the jump list (like vim Ctrl+O)
+  let _jumpSwitchInProgress = false;
   function jumpBack() {
+    if (_jumpSwitchInProgress) return false;
     // Clean up closed tabs
     filterJumpList();
 
@@ -1659,11 +1661,36 @@
     }
 
     if (jumpListIndex > 0) {
+      const prevIndex = jumpListIndex;
       jumpListIndex--;
       recordingJumps = false;  // Don't record this navigation
-      gBrowser.selectedTab = jumpList[jumpListIndex];
-      recordingJumps = true;
-      log(`Jumped back to index ${jumpListIndex}`);
+      const backTab = jumpList[jumpListIndex];
+      const backWsId = backTab.getAttribute('zen-workspace-id');
+      if (backWsId && window.gZenWorkspaces && backWsId !== gZenWorkspaces.activeWorkspace && !backTab.hasAttribute('zen-essential')) {
+        _jumpSwitchInProgress = true;
+        gZenWorkspaces.changeWorkspaceWithID(backWsId).then(() => {
+          if (backTab.closing || !backTab.parentNode) {
+            jumpListIndex = prevIndex;
+            log('Target tab closed during workspace switch in jumpBack');
+            return;
+          }
+          gBrowser.selectedTab = backTab;
+          log(`Jumped back to index ${jumpListIndex}`);
+        }).catch((e) => {
+          jumpListIndex = prevIndex;
+          log(`Workspace switch failed during jumpBack: ${e}`);
+        }).finally(() => {
+          recordingJumps = true;
+          _jumpSwitchInProgress = false;
+        });
+      } else {
+        try {
+          gBrowser.selectedTab = backTab;
+        } finally {
+          recordingJumps = true;
+        }
+        log(`Jumped back to index ${jumpListIndex}`);
+      }
       return true;
     }
 
@@ -1673,15 +1700,41 @@
 
   // Jump forward in the jump list (like vim Ctrl+I)
   function jumpForward() {
+    if (_jumpSwitchInProgress) return false;
     // Clean up closed tabs
     filterJumpList();
 
     if (jumpListIndex < jumpList.length - 1) {
+      const prevIndex = jumpListIndex;
       jumpListIndex++;
       recordingJumps = false;  // Don't record this navigation
-      gBrowser.selectedTab = jumpList[jumpListIndex];
-      recordingJumps = true;
-      log(`Jumped forward to index ${jumpListIndex}`);
+      const fwdTab = jumpList[jumpListIndex];
+      const fwdWsId = fwdTab.getAttribute('zen-workspace-id');
+      if (fwdWsId && window.gZenWorkspaces && fwdWsId !== gZenWorkspaces.activeWorkspace && !fwdTab.hasAttribute('zen-essential')) {
+        _jumpSwitchInProgress = true;
+        gZenWorkspaces.changeWorkspaceWithID(fwdWsId).then(() => {
+          if (fwdTab.closing || !fwdTab.parentNode) {
+            jumpListIndex = prevIndex;
+            log('Target tab closed during workspace switch in jumpForward');
+            return;
+          }
+          gBrowser.selectedTab = fwdTab;
+          log(`Jumped forward to index ${jumpListIndex}`);
+        }).catch((e) => {
+          jumpListIndex = prevIndex;
+          log(`Workspace switch failed during jumpForward: ${e}`);
+        }).finally(() => {
+          recordingJumps = true;
+          _jumpSwitchInProgress = false;
+        });
+      } else {
+        try {
+          gBrowser.selectedTab = fwdTab;
+        } finally {
+          recordingJumps = true;
+        }
+        log(`Jumped forward to index ${jumpListIndex}`);
+      }
       return true;
     }
 
@@ -1748,17 +1801,37 @@
       return false;
     }
 
-    // Record current position before jumping
-    recordJump(gBrowser.selectedTab);
-
-    // Jump to marked tab
-    gBrowser.selectedTab = tab;
-
-    // Record the destination
-    recordJump(tab);
-
-    _pluginEventBus.emit('mark:jumped', { char, tab });
-    log(`Jumped to mark '${char}'`);
+    // Switch workspace if needed (essential tabs are global, no switch needed)
+    const tabWsId = tab.getAttribute('zen-workspace-id');
+    if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace && !tab.hasAttribute('zen-essential')) {
+      // Save jump list state so we can revert on failure
+      const savedJumpList = [...jumpList];
+      const savedJumpIndex = jumpListIndex;
+      recordJump(gBrowser.selectedTab);
+      gZenWorkspaces.changeWorkspaceWithID(tabWsId).then(() => {
+        if (tab.closing || !tab.parentNode) {
+          jumpList = savedJumpList;
+          jumpListIndex = savedJumpIndex;
+          log(`Mark '${char}' tab closed during workspace switch`);
+          return;
+        }
+        gBrowser.selectedTab = tab;
+        recordJump(tab);
+        _pluginEventBus.emit('mark:jumped', { char, tab });
+        log(`Jumped to mark '${char}'`);
+      }).catch((e) => {
+        // Revert the jump list since we never actually navigated
+        jumpList = savedJumpList;
+        jumpListIndex = savedJumpIndex;
+        log(`Workspace switch failed during goToMark: ${e}`);
+      });
+    } else {
+      recordJump(gBrowser.selectedTab);
+      gBrowser.selectedTab = tab;
+      recordJump(tab);
+      _pluginEventBus.emit('mark:jumped', { char, tab });
+      log(`Jumped to mark '${char}'`);
+    }
     return true;
   }
 
@@ -2974,24 +3047,8 @@
 
       // ─── Navigation ───
       navigation: {
-        jumpBack: () => {
-          filterJumpList();
-          if (jumpListIndex > 0) {
-            jumpListIndex--;
-            recordingJumps = false;
-            gBrowser.selectedTab = jumpList[jumpListIndex];
-            recordingJumps = true;
-          }
-        },
-        jumpForward: () => {
-          filterJumpList();
-          if (jumpListIndex < jumpList.length - 1) {
-            jumpListIndex++;
-            recordingJumps = false;
-            gBrowser.selectedTab = jumpList[jumpListIndex];
-            recordingJumps = true;
-          }
-        },
+        jumpBack: () => jumpBack(),
+        jumpForward: () => jumpForward(),
       },
 
       // ─── Commands ───
@@ -5111,6 +5168,12 @@
     if (results.length === 0) {
       return [{ key: 'delete-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
     }
+    // Put current workspace first so it's the default selection
+    results.sort((a, b) => {
+      const aActive = a.label.endsWith('(current)') ? 0 : 1;
+      const bActive = b.label.endsWith('(current)') ? 0 : 1;
+      return aActive - bActive;
+    });
     return fuzzyFilterAndSort(results, query);
   }
 
@@ -6588,7 +6651,7 @@
 
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
 
-  function collectTabItem(tab) {
+  function collectTabItem(tab, splitGroupMap) {
     return {
       type: 'tab',
       url: tab.linkedBrowser?.currentURI?.spec || 'about:blank',
@@ -6597,10 +6660,11 @@
       pinned: !!tab.pinned,
       essential: tab.hasAttribute('zen-essential'),
       customLabel: (typeof tab.zenStaticLabel === 'string' && tab.zenStaticLabel) ? tab.zenStaticLabel : null,
+      splitGroupIndex: splitGroupMap?.get(tab) ?? null,
     };
   }
 
-  function collectFolderTree(folder) {
+  function collectFolderTree(folder, splitGroupMap) {
     const children = [];
     try {
       // allItems returns immediate children (tabs + nested folders), excluding
@@ -6608,9 +6672,9 @@
       const items = folder.allItems || [];
       for (const item of items) {
         if (item.isZenFolder) {
-          children.push(collectFolderTree(item));
+          children.push(collectFolderTree(item, splitGroupMap));
         } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab')) {
-          children.push(collectTabItem(item));
+          children.push(collectTabItem(item, splitGroupMap));
         }
       }
     } catch (e) { log(`Error collecting folder tree: ${e}`); }
@@ -6626,13 +6690,32 @@
     const wsId = wsData?.uuid;
     const layout = [];
 
+    // Build split group map: tab -> groupIndex
+    const splitGroupMap = new Map();
+    const splitGroups = [];
+    try {
+      if (window.gZenViewSplitter?._data) {
+        for (const group of gZenViewSplitter._data) {
+          const groupTabs = (group.tabs || []).filter(t =>
+            t && !t.closing && t.parentNode &&
+            (t.getAttribute('zen-workspace-id') === wsId || t.hasAttribute('zen-essential'))
+          );
+          if (groupTabs.length >= 2) {
+            const idx = splitGroups.length;
+            splitGroups.push({ gridType: group.gridType || 'grid' });
+            for (const t of groupTabs) splitGroupMap.set(t, idx);
+          }
+        }
+      }
+    } catch (e) { log(`Error collecting split view data: ${e}`); }
+
     // Essential tabs are shared across workspaces (separate DOM section).
     // Collect them first so they appear at the top of the layout.
     const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
       t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
     );
     for (const tab of essentialTabs) {
-      layout.push(collectTabItem(tab));
+      layout.push(collectTabItem(tab, splitGroupMap));
     }
 
     // Walk workspace-specific DOM containers for folders, pinned tabs, and normal tabs
@@ -6648,11 +6731,19 @@
           if (child.classList?.contains('space-fake-collapsible-start')) continue;
           if (child.id === 'tabbrowser-arrowscrollbox-periphery') continue;
           if (child.isZenFolder) {
-            layout.push(collectFolderTree(child));
+            layout.push(collectFolderTree(child, splitGroupMap));
           } else if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             if (child.hasAttribute('zen-essential')) continue; // already collected above
-            layout.push(collectTabItem(child));
+            layout.push(collectTabItem(child, splitGroupMap));
+          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+            // Split view groups are tab-group elements (not folders) — flatten their tabs
+            for (const groupChild of (child.tabs || child.children || [])) {
+              if (!gBrowser.isTab(groupChild)) continue;
+              if (groupChild.hasAttribute('zen-empty-tab') || groupChild.hasAttribute('zen-glance-tab')) continue;
+              if (groupChild.hasAttribute('zen-essential')) continue;
+              layout.push(collectTabItem(groupChild, splitGroupMap));
+            }
           }
         }
       }
@@ -6661,9 +6752,17 @@
       const normalContainer = wsElement.tabsContainer;
       if (normalContainer) {
         for (const child of normalContainer.children) {
-          if (!gBrowser.isTab(child)) continue;
-          if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
-          layout.push(collectTabItem(child));
+          if (gBrowser.isTab(child)) {
+            if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
+            layout.push(collectTabItem(child, splitGroupMap));
+          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+            // Split view groups are tab-group elements (not folders) — flatten their tabs
+            for (const groupChild of (child.tabs || child.children || [])) {
+              if (!gBrowser.isTab(groupChild)) continue;
+              if (groupChild.hasAttribute('zen-empty-tab') || groupChild.hasAttribute('zen-glance-tab')) continue;
+              layout.push(collectTabItem(groupChild, splitGroupMap));
+            }
+          }
         }
       }
     } else {
@@ -6673,7 +6772,7 @@
         ? allTabs.filter(t => t.getAttribute('zen-workspace-id') === wsId && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab') && !t.hasAttribute('zen-essential'))
         : getVisibleTabs().filter(t => !t.hasAttribute('zen-essential'));
       for (const tab of wsTabs) {
-        layout.push(collectTabItem(tab));
+        layout.push(collectTabItem(tab, splitGroupMap));
       }
     }
 
@@ -6681,13 +6780,15 @@
     const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId)
       ? (activeTab.linkedBrowser?.currentURI?.spec || '') : '';
 
-    return {
+    const result = {
       name: wsData?.name || 'Unnamed Workspace',
       icon: wsData?.icon || '',
       theme: wsData?.theme || null,
       activeTabUrl: activeTabUrl || getFirstTabUrl(layout),
       layout,
     };
+    if (splitGroups.length > 0) result.splitGroups = splitGroups;
+    return result;
   }
 
   function getFirstTabUrl(items) {
@@ -7040,6 +7141,22 @@
     // Loop until order is confirmed correct (Zen may async-reorder after our moves).
     await verifyRestoredLayout(layout, openedTabs);
 
+    // Restore split views: recreate split groups from saved data
+    if (wsData.splitGroups?.length > 0 && window.gZenViewSplitter) {
+      for (let i = 0; i < wsData.splitGroups.length; i++) {
+        const groupInfo = wsData.splitGroups[i];
+        const groupTabs = openedTabs
+          .filter(o => o.item.splitGroupIndex === i)
+          .map(o => o.tab)
+          .filter(t => t && !t.closing && t.parentNode);
+        if (groupTabs.length >= 2) {
+          try {
+            gZenViewSplitter.splitTabs(groupTabs, groupInfo.gridType);
+          } catch (e) { log(`Failed to restore split group ${i}: ${e}`); }
+        }
+      }
+    }
+
     // Select the tab matching activeTabUrl
     if (wsData.activeTabUrl) {
       const target = openedTabs.find(o => o.item.url === wsData.activeTabUrl)?.tab
@@ -7062,7 +7179,10 @@
       const existing = Array.from(gBrowser.tabs).find(t =>
         t.hasAttribute('zen-essential') && t.linkedBrowser?.currentURI?.spec === item.url
       );
-      if (existing) return;
+      if (existing) {
+        openedTabs.push({ item, tab: existing });
+        return;
+      }
       const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
       tab.setAttribute('zen-essential', 'true');
       gBrowser.pinTab(tab);
@@ -16708,41 +16828,52 @@
     exitLeapMode(true);
   }
 
-  // Find scrollable tab container
-  function findScrollableTabContainer() {
-    const currentTab = gBrowser.selectedTab;
-    if (!currentTab) return null;
+  // Find scrollable tab container by walking up from a starting element.
+  // Tries the target tab first (so scroll math matches the element being scrolled to),
+  // then falls back to gBrowser.selectedTab (for targets outside the scroll container,
+  // e.g. essential tabs in the fixed #zen-essentials area).
+  function findScrollableTabContainer(tab) {
+    const candidates = [];
+    if (tab) candidates.push(tab);
+    const selectedTab = gBrowser.selectedTab;
+    if (selectedTab && selectedTab !== tab) candidates.push(selectedTab);
 
-    let element = currentTab.parentElement;
-    let depth = 0;
-    const maxDepth = 15;
+    for (const startTab of candidates) {
+      let element = startTab.parentElement;
+      let depth = 0;
+      const maxDepth = 15;
 
-    while (element && depth < maxDepth) {
-      if (element.scrollbox && element.scrollbox.scrollHeight > element.scrollbox.clientHeight) {
-        return element.scrollbox;
-      }
-
-      const hasOverflowContent = element.scrollHeight > element.clientHeight;
-      if (hasOverflowContent) {
-        const style = window.getComputedStyle(element);
-        const canScroll = style.overflowY === 'auto' || style.overflowY === 'scroll';
-        const isScrollbox = element.tagName?.toLowerCase() === 'scrollbox' ||
-                            element.tagName?.toLowerCase() === 'arrowscrollbox';
-
-        if (canScroll || isScrollbox) {
-          return element;
+      while (element && depth < maxDepth) {
+        if (element.scrollbox && element.scrollbox.scrollHeight > element.scrollbox.clientHeight) {
+          // Unwrap: if .scrollbox is an arrowscrollbox (e.g. pinned section's .scrollbox
+          // points to the arrowscrollbox element), get its inner scrollbox part instead
+          const target = element.scrollbox;
+          return target.scrollbox || target;
         }
-      }
 
-      element = element.parentElement;
-      depth++;
+        const hasOverflowContent = element.scrollHeight > element.clientHeight;
+        if (hasOverflowContent) {
+          const style = window.getComputedStyle(element);
+          const canScroll = style.overflowY === 'auto' || style.overflowY === 'scroll';
+          const isScrollbox = element.tagName?.toLowerCase() === 'scrollbox' ||
+                              element.tagName?.toLowerCase() === 'arrowscrollbox';
+
+          if (canScroll || isScrollbox) {
+            return element;
+          }
+        }
+
+        element = element.parentElement;
+        depth++;
+      }
     }
 
     const selectors = ['#tabbrowser-arrowscrollbox', 'arrowscrollbox', '#tabbrowser-tabs'];
     for (const selector of selectors) {
       const el = document.querySelector(selector);
       if (el?.scrollbox?.scrollHeight > el?.scrollbox?.clientHeight) {
-        return el.scrollbox;
+        const target = el.scrollbox;
+        return target.scrollbox || target;
       }
       if (el?.scrollHeight > el?.clientHeight) {
         return el;
@@ -16756,7 +16887,7 @@
   function scrollTabToView(tab, position) {
     if (!tab) return;
 
-    const scrollContainer = findScrollableTabContainer();
+    const scrollContainer = findScrollableTabContainer(tab);
     if (!scrollContainer) {
       const block = position === 'center' ? 'center' : (position === 'top' ? 'start' : 'end');
       tab.scrollIntoView({ behavior: 'smooth', block: block });
