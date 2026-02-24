@@ -1,6 +1,6 @@
-# ZenLeap - Relative Tab Navigation for Zen Browser
+# ZenLeap - Vim-Powered Productivity for Zen Browser
 
-A vim-style relative tab numbering and keyboard navigation mod for [Zen Browser](https://zen-browser.app/).
+A comprehensive vim-style navigation, command palette, and session management mod for [Zen Browser](https://zen-browser.app/).
 
 ## Features
 
