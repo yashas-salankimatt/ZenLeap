@@ -142,6 +142,16 @@ show_banner() {
     echo -e "${NC}"
 }
 
+# Backup userChrome.css before modification
+backup_user_chrome() {
+    local css_file="$CHROME_DIR/userChrome.css"
+    if [ -f "$css_file" ]; then
+        local backup_file="$CHROME_DIR/userChrome.css.zenleap-backup"
+        cp "$css_file" "$backup_file"
+        echo -e "${GREEN}✓${NC} Backed up userChrome.css → userChrome.css.zenleap-backup"
+    fi
+}
+
 # Prompt user for Zen Browser installation path
 prompt_zen_path() {
     echo ""
@@ -481,10 +491,12 @@ install_fxautoconfig() {
         fi
     fi
 
-    # Install to profile
-    echo "  Installing to profile..."
+    # Install to profile (skip if fx-autoconfig profile files already exist to avoid overwriting customizations)
     mkdir -p "$CHROME_DIR"
-    if [ -d "$extracted_dir/profile/chrome" ] && ls "$extracted_dir/profile/chrome/"* &>/dev/null; then
+    if [ -f "$CHROME_DIR/utils/boot.sys.mjs" ] || [ -f "$CHROME_DIR/utils/chrome.manifest" ]; then
+        echo "  fx-autoconfig profile files already present, skipping profile copy"
+    elif [ -d "$extracted_dir/profile/chrome" ] && ls "$extracted_dir/profile/chrome/"* &>/dev/null; then
+        echo "  Installing to profile..."
         cp -r "$extracted_dir/profile/chrome/"* "$CHROME_DIR/"
     fi
 
@@ -524,10 +536,11 @@ install_zenleap() {
     # Append CSS to userChrome.css if it exists and not already added
     if [ -f "$source_dir/chrome.css" ]; then
         if [ -f "$CHROME_DIR/userChrome.css" ]; then
+            backup_user_chrome
             # Remove old ZenLeap styles first
             if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
                 if command -v perl &>/dev/null; then
-                    perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/\n?|\z)//s' "$CHROME_DIR/userChrome.css"
+                    perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?\/\* === End ZenLeap Styles === \*\/\n?//s' "$CHROME_DIR/userChrome.css"
                 else
                     echo -e "${YELLOW}⚠${NC} perl not found; old ZenLeap styles may be duplicated in userChrome.css"
                 fi
@@ -590,9 +603,10 @@ uninstall_zenleap() {
 
     # Remove styles from userChrome.css
     if [ -f "$CHROME_DIR/userChrome.css" ]; then
+        backup_user_chrome
         if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
             if command -v perl &>/dev/null; then
-                perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/\n?|\z)//s' "$CHROME_DIR/userChrome.css"
+                perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?\/\* === End ZenLeap Styles === \*\/\n?//s' "$CHROME_DIR/userChrome.css"
             else
                 echo -e "${YELLOW}⚠${NC} perl not found; please manually remove ZenLeap styles from userChrome.css"
             fi
@@ -832,6 +846,11 @@ do_uninstall() {
 
     echo ""
     echo -e "${GREEN}Uninstallation complete!${NC}"
+    echo ""
+    echo -e "${BLUE}Note:${NC} A backup of your userChrome.css was saved as"
+    echo "  userChrome.css.zenleap-backup in each profile's chrome/ directory."
+    echo "  If Zen looks broken after uninstalling, restore it with:"
+    echo "    cp chrome/userChrome.css.zenleap-backup chrome/userChrome.css"
 
     # Offer to reopen Zen if it was running
     if [ "$ZEN_WAS_RUNNING" = true ]; then

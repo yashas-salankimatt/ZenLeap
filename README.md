@@ -271,6 +271,12 @@ cd ZenLeap
 # powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
 ```
 
+If Zen Browser isn't found automatically (e.g. CachyOS `zen-browser-bin`), the installer will prompt you for the path. You can also specify it directly:
+
+```bash
+./install.sh install --zen-path /opt/zen-browser-bin
+```
+
 ### Manual Installation
 
 <details>
