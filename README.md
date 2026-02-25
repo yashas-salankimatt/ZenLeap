@@ -2,6 +2,34 @@
 
 A comprehensive vim-style navigation, command palette, and session management mod for [Zen Browser](https://zen-browser.app/).
 
+## Table of Contents
+
+- [Features](#features)
+  - [Relative Tab Numbers](#relative-tab-numbers)
+  - [Keyboard Navigation](#keyboard-navigation) (Leap Mode, Browse Mode, G-Mode, Z-Mode)
+  - [Marks](#marks)
+  - [Jump History](#jump-history)
+  - [Tab Search](#tab-search-spotlight-like-fuzzy-finder)
+  - [Command Palette](#command-palette)
+  - [Workspace Sessions](#workspace-sessions)
+  - [Tab Sorting](#tab-sorting)
+  - [Quick Navigation (Alt+HJKL)](#quick-navigation-althjkl)
+  - [Split View Layout (gTile)](#split-view-layout-gtile)
+  - [Help & Settings](#help--settings)
+  - [Settings Modal](#settings-modal)
+  - [Compact Mode Support](#compact-mode-support)
+- [Visual Demo](#visual-demo)
+- [Installation](#installation)
+  - [ZenLeap Manager App (macOS)](#option-1-zenleap-manager-app-macos)
+  - [Command Line](#option-2-command-line)
+  - [Manual Installation](#manual-installation)
+- [Uninstallation](#uninstallation)
+- [Usage Examples](#usage-examples)
+- [Customization](#customization) (Themes, Appearance)
+- [Debugging](#debugging)
+- [Requirements](#requirements)
+- [License](#license)
+
 ## Features
 
 ### Relative Tab Numbers
