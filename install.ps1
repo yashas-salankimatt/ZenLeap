@@ -27,7 +27,7 @@ $ZenLeapScriptUrl = "https://raw.githubusercontent.com/yashas-salankimatt/ZenLea
 $ZenLeapCssUrl    = "https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
 $ZenLeapThemesUrl = "https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/zenleap-themes.json"
 # Determine script directory (for local file detection)
-$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
+$ScriptDir = $(if ($PSScriptRoot -and $PSScriptRoot -ne '') { $PSScriptRoot } else { $PWD.Path })
 
 # --- Helper functions ---
 function Write-Status  { param([string]$Msg) Write-Host "[OK] $Msg" -ForegroundColor Green }
@@ -48,7 +48,7 @@ function Get-Version {
 
 function Get-RemoteVersion {
     try {
-        $content = Invoke-RestMethod -Uri $ZenLeapScriptUrl -UseBasicParsing
+        $content = (Invoke-WebRequest -Uri $ZenLeapScriptUrl -UseBasicParsing).Content
         if ($content -match '@version\s+([\d.]+)') {
             return $Matches[1]
         }
@@ -58,12 +58,12 @@ function Get-RemoteVersion {
 
 function Compare-Versions {
     param([string]$v1, [string]$v2)
-    $parts1 = $v1.Split('.') | ForEach-Object { [int]$_ }
-    $parts2 = $v2.Split('.') | ForEach-Object { [int]$_ }
+    $parts1 = @($v1.Split('.') | ForEach-Object { if ($_ -match '^\d+') { [int]$Matches[0] } else { 0 } })
+    $parts2 = @($v2.Split('.') | ForEach-Object { if ($_ -match '^\d+') { [int]$Matches[0] } else { 0 } })
     $max = [Math]::Max($parts1.Count, $parts2.Count)
     for ($i = 0; $i -lt $max; $i++) {
-        $a = if ($i -lt $parts1.Count) { $parts1[$i] } else { 0 }
-        $b = if ($i -lt $parts2.Count) { $parts2[$i] } else { 0 }
+        $a = $(if ($i -lt $parts1.Count) { $parts1[$i] } else { 0 })
+        $b = $(if ($i -lt $parts2.Count) { $parts2[$i] } else { 0 })
         if ($a -gt $b) { return 1 }
         if ($a -lt $b) { return -1 }
     }
@@ -100,8 +100,8 @@ function Request-Admin {
         if ($Profile -gt 0) { $argList += " -Profile $Profile" }
         if ($Yes) { $argList += " -Yes" }
 
-        Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
-        exit $LASTEXITCODE
+        $proc = Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait -PassThru
+        exit $proc.ExitCode
     }
 }
 
@@ -301,20 +301,20 @@ function Install-ZenLeap {
         $cssContent = Get-Content $localCss -Raw
     } else {
         Write-Info "Downloading chrome.css..."
-        $cssContent = Invoke-RestMethod -Uri $ZenLeapCssUrl -UseBasicParsing
+        $cssContent = (Invoke-WebRequest -Uri $ZenLeapCssUrl -UseBasicParsing).Content
     }
 
     $zenleapBlock = "`n/* === ZenLeap Styles === */`n$cssContent`n/* === End ZenLeap Styles === */"
     if (Test-Path $userChromeFile) {
         # Remove old ZenLeap styles
         $existing = Get-Content $userChromeFile -Raw
-        if ($existing -match '(?s)/\* === ZenLeap Styles === \*/.*?(/\* === End ZenLeap Styles === \*/)?') {
-            $existing = $existing -replace '(?s)\r?\n?/\* === ZenLeap Styles === \*/.*?(/\* === End ZenLeap Styles === \*/)?', ''
+        if ($existing -match '(?s)/\* === ZenLeap Styles === \*/') {
+            $existing = $existing -replace '(?s)[\r\n]*/\* === ZenLeap Styles === \*/.*?(/\* === End ZenLeap Styles === \*/[\r\n]*|\z)', ''
         }
-        Set-Content -Path $userChromeFile -Value ($existing + $zenleapBlock) -NoNewline
+        Set-Content -Path $userChromeFile -Value ($existing + $zenleapBlock) -NoNewline -Encoding UTF8
         Write-Status "Updated styles in userChrome.css"
     } else {
-        Set-Content -Path $userChromeFile -Value "/* === ZenLeap Styles === */`n$cssContent`n/* === End ZenLeap Styles === */" -NoNewline
+        Set-Content -Path $userChromeFile -Value "/* === ZenLeap Styles === */`n$cssContent`n/* === End ZenLeap Styles === */" -NoNewline -Encoding UTF8
         Write-Status "Created userChrome.css with styles"
     }
 
@@ -341,10 +341,10 @@ function Install-ZenLeap {
     if (Test-Path $userJs) {
         $content = Get-Content $userJs -Raw
         if ($content -notmatch 'toolkit\.legacyUserProfileCustomizations\.stylesheets') {
-            Add-Content -Path $userJs -Value "`n$pref"
+            Add-Content -Path $userJs -Value "`n$pref" -Encoding UTF8
         }
     } else {
-        Set-Content -Path $userJs -Value $pref
+        Set-Content -Path $userJs -Value $pref -Encoding UTF8
     }
     Write-Status "Set required preferences"
 }
@@ -368,8 +368,8 @@ function Uninstall-ZenLeap {
     if (Test-Path $userChromeFile) {
         $content = Get-Content $userChromeFile -Raw
         if ($content -match 'ZenLeap Styles') {
-            $content = $content -replace '(?s)\r?\n?/\* === ZenLeap Styles === \*/.*?(/\* === End ZenLeap Styles === \*/)?', ''
-            Set-Content -Path $userChromeFile -Value $content -NoNewline
+            $content = $content -replace '(?s)[\r\n]*/\* === ZenLeap Styles === \*/.*?(/\* === End ZenLeap Styles === \*/[\r\n]*|\z)', ''
+            Set-Content -Path $userChromeFile -Value $content -NoNewline -Encoding UTF8
             Write-Status "Removed styles from userChrome.css"
             $found = $true
         } else {
@@ -471,7 +471,7 @@ function Main {
             Write-Status "Found $($selectedProfiles.Count) profiles (operating on all):"
             foreach ($p in $selectedProfiles) {
                 $jsFile = Join-Path $p.FullName "chrome\JS\zenleap.uc.js"
-                $status = if (Test-Path $jsFile) { " (ZenLeap installed)" } else { "" }
+                $status = $(if (Test-Path $jsFile) { " (ZenLeap installed)" } else { "" })
                 Write-Host "    - $($p.Name)$status"
             }
         }
@@ -553,19 +553,28 @@ function Main {
             $zenWasRunning = $null -ne (Get-Process -Name "zen" -ErrorAction SilentlyContinue)
             Stop-ZenBrowser | Out-Null
 
-            # Uninstalling fx-autoconfig from Program Files needs admin
-            if (-not (Test-IsAdmin)) {
-                Request-Admin
-                return
-            }
-
+            # Uninstall ZenLeap from each profile
             foreach ($p in $selectedProfiles) {
                 $chromeDir = Join-Path $p.FullName "chrome"
 
                 Write-Host ""
                 Write-Host "--- $($p.Name) ---" -ForegroundColor Blue
                 Uninstall-ZenLeap -ChromeDir $chromeDir
-                Uninstall-FxAutoconfig -ZenDir $zenDir -ChromeDir $chromeDir
+            }
+
+            # Offer to remove fx-autoconfig (other userscripts may depend on it)
+            $hasFxAutoconfig = (Test-Path "$zenDir\config.js") -or ($selectedProfiles | Where-Object { Test-Path (Join-Path $_.FullName "chrome\utils") })
+            if ($hasFxAutoconfig) {
+                if (Confirm-Action "Also remove fx-autoconfig? Other userscripts may depend on it") {
+                    if ((Test-Path "$zenDir\config.js") -and -not (Test-IsAdmin)) {
+                        Request-Admin
+                        return
+                    }
+                    foreach ($p in $selectedProfiles) {
+                        $chromeDir = Join-Path $p.FullName "chrome"
+                        Uninstall-FxAutoconfig -ZenDir $zenDir -ChromeDir $chromeDir
+                    }
+                }
             }
 
             Clear-StartupCache

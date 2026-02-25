@@ -87,22 +87,23 @@ get_version() {
 
 # Get remote version from GitHub
 get_remote_version() {
-    local temp_file=$(mktemp)
-    if curl -sfL "$ZENLEAP_SCRIPT_URL" -o "$temp_file" 2>/dev/null; then
-        local version=$(get_version "$temp_file")
-        rm -f "$temp_file"
-        echo "$version"
-    else
-        rm -f "$temp_file"
-        echo ""
-    fi
+    local content
+    content=$(curl -sfL "$ZENLEAP_SCRIPT_URL" 2>/dev/null) || { echo ""; return; }
+    echo "$content" | grep -o '@version[[:space:]]*[0-9.]*' | head -1 | sed 's/@version[[:space:]]*//'
 }
 
 # Compare versions (returns 0 if v1 >= v2, 1 if v1 < v2)
 version_gte() {
-    local v1="$1"
-    local v2="$2"
-    [ "$(printf '%s\n' "$v2" "$v1" | sort -V | head -n1)" = "$v2" ]
+    local IFS=.
+    local i v1=($1) v2=($2)
+    for ((i=0; i<${#v2[@]}; i++)); do
+        if ((10#${v1[i]:-0} < 10#${v2[i]:-0})); then
+            return 1
+        elif ((10#${v1[i]:-0} > 10#${v2[i]:-0})); then
+            return 0
+        fi
+    done
+    return 0
 }
 
 # Download ZenLeap from remote
@@ -340,52 +341,73 @@ check_fxautoconfig() {
 install_fxautoconfig() {
     echo -e "${BLUE}Installing fx-autoconfig...${NC}"
 
-    TEMP_DIR=$(mktemp -d)
-    trap 'rm -rf "$TEMP_DIR"' EXIT
+    local temp_dir
+    temp_dir=$(mktemp -d)
 
     echo "  Downloading..."
     if command -v curl &> /dev/null; then
-        curl -sfL "$FXAUTOCONFIG_REPO" -o "$TEMP_DIR/fxautoconfig.zip"
+        if ! curl -sfL "$FXAUTOCONFIG_REPO" -o "$temp_dir/fxautoconfig.zip"; then
+            echo -e "${RED}Error: Failed to download fx-autoconfig${NC}"
+            rm -rf "$temp_dir"
+            exit 1
+        fi
     elif command -v wget &> /dev/null; then
-        wget -q "$FXAUTOCONFIG_REPO" -O "$TEMP_DIR/fxautoconfig.zip"
+        if ! wget -q "$FXAUTOCONFIG_REPO" -O "$temp_dir/fxautoconfig.zip"; then
+            echo -e "${RED}Error: Failed to download fx-autoconfig${NC}"
+            rm -rf "$temp_dir"
+            exit 1
+        fi
     else
         echo -e "${RED}Error: Neither curl nor wget found${NC}"
+        rm -rf "$temp_dir"
         exit 1
     fi
 
     echo "  Extracting..."
-    unzip -q "$TEMP_DIR/fxautoconfig.zip" -d "$TEMP_DIR"
+    if ! unzip -q "$temp_dir/fxautoconfig.zip" -d "$temp_dir"; then
+        echo -e "${RED}Error: Failed to extract fx-autoconfig${NC}"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
 
     # Find the extracted directory
-    EXTRACTED_DIR=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "fx-autoconfig*" | head -1)
+    local extracted_dir
+    extracted_dir=$(find "$temp_dir" -maxdepth 1 -type d -name "fx-autoconfig*" | head -1)
 
-    if [ -z "$EXTRACTED_DIR" ]; then
+    if [ -z "$extracted_dir" ]; then
         echo -e "${RED}Error: Could not find extracted fx-autoconfig files${NC}"
+        rm -rf "$temp_dir"
         exit 1
     fi
 
     # Install to Zen Resources
-    if [ -d "$EXTRACTED_DIR/program" ]; then
+    if [ -d "$extracted_dir/program" ]; then
         if [ "$IS_FLATPAK" = true ]; then
             echo "  Installing to Flatpak systemconfig extension..."
             mkdir -p "$ZEN_RESOURCES/defaults/pref"
-            cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
-            cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+            cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
+            cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        elif [ -w "$ZEN_RESOURCES" ] || [ -w "$(dirname "$ZEN_RESOURCES")" ]; then
+            echo "  Installing to Zen Browser..."
+            mkdir -p "$ZEN_RESOURCES/defaults/pref"
+            cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
+            cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
         else
             echo "  Installing to Zen Browser (may require admin password)..."
             sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
-            sudo cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
-            sudo cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+            sudo cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
+            sudo cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
         fi
     fi
 
     # Install to profile
     echo "  Installing to profile..."
     mkdir -p "$CHROME_DIR"
-    if [ -d "$EXTRACTED_DIR/profile/chrome" ]; then
-        cp -r "$EXTRACTED_DIR/profile/chrome/"* "$CHROME_DIR/"
+    if [ -d "$extracted_dir/profile/chrome" ] && ls "$extracted_dir/profile/chrome/"* &>/dev/null; then
+        cp -r "$extracted_dir/profile/chrome/"* "$CHROME_DIR/"
     fi
 
+    rm -rf "$temp_dir"
     echo -e "${GREEN}✓${NC} fx-autoconfig installed"
 }
 
@@ -423,7 +445,11 @@ install_zenleap() {
         if [ -f "$CHROME_DIR/userChrome.css" ]; then
             # Remove old ZenLeap styles first
             if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
-                perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$CHROME_DIR/userChrome.css"
+                if command -v perl &>/dev/null; then
+                    perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/\n?|\z)//s' "$CHROME_DIR/userChrome.css"
+                else
+                    echo -e "${YELLOW}⚠${NC} perl not found; old ZenLeap styles may be duplicated in userChrome.css"
+                fi
             fi
             echo "" >> "$CHROME_DIR/userChrome.css"
             echo "/* === ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
@@ -484,8 +510,11 @@ uninstall_zenleap() {
     # Remove styles from userChrome.css
     if [ -f "$CHROME_DIR/userChrome.css" ]; then
         if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
-            # Use perl for more reliable multi-line removal on macOS
-            perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$CHROME_DIR/userChrome.css"
+            if command -v perl &>/dev/null; then
+                perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/\n?|\z)//s' "$CHROME_DIR/userChrome.css"
+            else
+                echo -e "${YELLOW}⚠${NC} perl not found; please manually remove ZenLeap styles from userChrome.css"
+            fi
             echo -e "${GREEN}✓${NC} Removed styles from userChrome.css"
             found_anything=true
         else
@@ -509,7 +538,7 @@ uninstall_fxautoconfig() {
 
     # Remove program-level files
     if [ -f "$ZEN_RESOURCES/config.js" ]; then
-        if [ "$IS_FLATPAK" = true ]; then
+        if [ "$IS_FLATPAK" = true ] || [ -w "$ZEN_RESOURCES/config.js" ]; then
             rm -f "$ZEN_RESOURCES/config.js"
         else
             echo "  Removing config.js (may require admin password)..."
@@ -520,7 +549,7 @@ uninstall_fxautoconfig() {
     fi
 
     if [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
-        if [ "$IS_FLATPAK" = true ]; then
+        if [ "$IS_FLATPAK" = true ] || [ -w "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
             rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
         else
             sudo rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
@@ -588,8 +617,12 @@ launch_zen() {
         open "$ZEN_APP"
     elif [ "$IS_FLATPAK" = true ]; then
         flatpak run app.zen_browser.zen &
-    else
+    elif command -v zen &>/dev/null; then
         zen &
+    elif [ -x "$ZEN_RESOURCES/zen" ]; then
+        "$ZEN_RESOURCES/zen" &
+    else
+        echo -e "${YELLOW}⚠${NC} Could not find zen executable to launch"
     fi
 }
 
@@ -668,7 +701,7 @@ do_uninstall() {
 
     # Track if Zen was running before we closed it
     ZEN_WAS_RUNNING=false
-    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen" > /dev/null 2>&1; then
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1; then
         ZEN_WAS_RUNNING=true
     fi
 
@@ -827,7 +860,7 @@ while [ $# -gt 0 ]; do
             exit 1
             ;;
     esac
-    shift
+    shift || true
 done
 
 # Show banner (unless in check mode)
