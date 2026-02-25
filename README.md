@@ -101,6 +101,8 @@ Set bookmarks on tabs for quick access:
 - `Ctrl+Space` → `'{char}` — Jump to marked tab
 - `Ctrl+' → {char}` — Quick jump without entering leap mode
 - `Ctrl+Space` → `M` — Clear all marks
+- Works in browse mode too — `m` marks the highlighted tab, `'` moves the highlight
+- Marks on essential tabs persist across browser restarts
 
 ### Jump History
 Like vim's Ctrl+O / Ctrl+I:

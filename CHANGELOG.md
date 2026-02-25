@@ -5,6 +5,22 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.4] - 2026-02-25
+
+### Added
+- **Relative Numbers Display Modes** — The "Show Relative Numbers" setting is now a three-option select: Always, In Leap/Browse Mode, or Off
+  - "In Leap/Browse Mode" shows numbers only when entering leap or browse mode, and hides them on exit
+  - Migrates existing boolean setting automatically (true → Always, false → Off)
+- **Browse Mode Marks** — `m`, `'`, and `M` now work in browse mode
+  - `m{char}` sets a mark on the highlighted tab (not the selected tab)
+  - `'{char}` moves the highlight to the marked tab
+  - `M` clears all marks
+  - Overlay shows MARK/GOTO indicators with contextual hints
+  - Escape exits mark/goto sub-mode without leaving browse mode
+- **Persistent Essential Tab Marks** — Marks on essential tabs are saved across browser restarts
+  - Stored as URL mappings, restored on startup with retry logic for slow-loading tabs
+  - New setting: Settings > Display > Tab Badges > "Persist Essential Tab Marks" (default: on)
+
 ## [3.3.3] - 2026-02-24
 
 ### Added
@@ -468,6 +484,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.3.4 | 2026-02-25 | Relative numbers display modes, browse mode marks, persistent essential tab marks |
 | 3.3.3 | 2026-02-24 | Show Relative Numbers toggle, uninstaller fx-autoconfig fix |
 | 3.3.2 | 2026-02-24 | Split view session save/restore, browse mode scroll fix, cross-workspace marks & jumps, delete workspace defaults to current |
 | 3.3.1 | 2026-02-19 | Find Playing Tab command, fix browser theme not auto-applying on launch |
