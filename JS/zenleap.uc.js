@@ -91,7 +91,7 @@
     'timing.jjThreshold':          { default: 150, type: 'number', label: 'jj Escape Threshold', description: 'Max gap between two j presses to trigger normal mode escape (ms)', category: 'Timing', group: 'Timeouts', min: 50, max: 500, step: 10 },
 
     // --- Display ---
-    'display.showRelativeNumbers': { default: true, type: 'toggle', label: 'Show Relative Numbers', description: 'Show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges' },
+    'display.showRelativeNumbers': { default: 'always', type: 'select', label: 'Show Relative Numbers', description: 'When to show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges', options: [{ value: 'always', label: 'Always' }, { value: 'active', label: 'In Leap/Browse Mode' }, { value: 'off', label: 'Off' }] },
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
@@ -977,6 +977,11 @@
         const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
         if (ind) S['display.currentTabIndicator'] = ind;
       }
+      // Migrate showRelativeNumbers from boolean to select string
+      if (typeof S['display.showRelativeNumbers'] === 'boolean') {
+        S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
+        saveSettings();
+      }
       // Clear dismissed version when installed version changes (e.g. fresh install)
       if (S['updates.lastInstalledVersion'] !== VERSION) {
         S['updates.dismissedVersion'] = '';
@@ -1169,6 +1174,10 @@
       const schema = SETTINGS_SCHEMA[id];
       if (!schema || schema.hidden) continue;
       S[id] = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
+    }
+    // Migrate boolean showRelativeNumbers from old exports
+    if (typeof S['display.showRelativeNumbers'] === 'boolean') {
+      S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
     }
     saveSettings();
     applyThemeColors();
@@ -12573,7 +12582,6 @@
         saveSettings();
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
         if (id === 'appearance.applyToBrowser') applyBrowserTheme();
-        if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
       });
       control.appendChild(toggle);
     } else if (schema.type === 'select') {
@@ -12591,6 +12599,7 @@
         S[id] = select.value;
         saveSettings();
         if (id === 'appearance.theme') applyTheme();
+        if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
       });
       control.appendChild(select);
@@ -13524,6 +13533,10 @@
     // Restore browse state
     restoreBrowseState(savedBrowseState);
 
+    // Refresh relative numbers (needed for 'active' mode since they may have been
+    // stripped while leapMode/browseMode were false during command bar)
+    if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
+
     // Clean up browse command state
     browseCommandMode = false;
     browseCommandTabs = [];
@@ -13645,6 +13658,8 @@
     if (browseCommandMode) {
       document.documentElement.removeAttribute('data-zenleap-active');
       restoreFocusToContent();
+      // Strip relative numbers if in 'active' mode (leap/browse modes are already false)
+      if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
       // Restore sidebar if we expanded it for compact mode
       if (sidebarWasExpanded) {
         setTimeout(() => {
@@ -15239,8 +15254,9 @@
   function updateRelativeNumbers() {
     const tabs = getVisibleTabs();
 
-    // If relative numbers are disabled, strip all badges and return
-    if (!S['display.showRelativeNumbers']) {
+    // Check relative numbers display mode: 'always', 'active' (leap/browse only), 'off'
+    const relMode = S['display.showRelativeNumbers'];
+    if (relMode === 'off' || (relMode === 'active' && !leapMode && !browseMode)) {
       for (const tab of tabs) {
         tab.removeAttribute('data-zenleap-direction');
         tab.removeAttribute('data-zenleap-distance');
@@ -16074,6 +16090,9 @@
     // Steal focus from content to prevent input leaking to web pages
     stealFocusFromContent();
 
+    // Show relative numbers if in "active" mode (leap/browse only)
+    if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
+
     // Show sidebar if in compact mode and sidebar is not already visible
     if (isCompactModeEnabled()) {
       // showFloatingSidebar checks visibility internally and returns false if already visible
@@ -16812,6 +16831,9 @@
     browseNumberTimeout = null;
     selectedItems.clear();
     yankItems = [];
+
+    // Hide relative numbers if in "active" mode (leap/browse only)
+    if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
 
     // Reset folder delete modal state
     folderDeleteMode = false;
