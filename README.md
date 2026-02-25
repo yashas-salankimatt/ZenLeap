@@ -2,6 +2,10 @@
 
 A comprehensive vim-style navigation, command palette, and session management mod for [Zen Browser](https://zen-browser.app/).
 
+<p align="center">
+  <img src="assets/demo.gif" alt="ZenLeap Demo" width="640">
+</p>
+
 ## Table of Contents
 
 - [Features](#features)
