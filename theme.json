@@ -1,7 +1,7 @@
 {
   "id": "zenleap-relative-tab-nav",
-  "name": "ZenLeap - Relative Tab Navigation",
-  "description": "Vim-style relative tab numbering with keyboard navigation. Adds leap mode, browse mode, command palette, marks, split view, and more.",
+  "name": "ZenLeap",
+  "description": "Vim-powered keyboard navigation suite for Zen Browser. Relative tab numbers, leap mode, browse mode, command palette, marks, jump history, tab search, split view, workspace sessions, plugin system, and 20+ themes.",
   "homepage": "https://github.com/yashas-salankimatt/ZenLeap",
   "author": "ZenLeap",
   "version": "3.3.4",
