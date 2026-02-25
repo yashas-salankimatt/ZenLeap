@@ -271,7 +271,7 @@ The Manager app will:
 **macOS / Linux:**
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash
+curl -sfL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash -s -- install --remote
 ```
 
 **Windows (PowerShell):**
