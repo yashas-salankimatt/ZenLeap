@@ -471,9 +471,11 @@ install_fxautoconfig() {
         exit 1
     fi
 
-    # Install to Zen Resources
+    # Install to Zen Resources (skip if config.js already exists — may be Sine or another loader)
     if [ -d "$extracted_dir/program" ]; then
-        if [ "$IS_FLATPAK" = true ]; then
+        if [ -f "$ZEN_RESOURCES/config.js" ] && [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
+            echo "  App-level config already present (Sine or fx-autoconfig), skipping"
+        elif [ "$IS_FLATPAK" = true ]; then
             echo "  Installing to Flatpak systemconfig extension..."
             mkdir -p "$ZEN_RESOURCES/defaults/pref"
             cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
