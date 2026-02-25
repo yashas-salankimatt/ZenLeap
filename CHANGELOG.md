@@ -5,6 +5,17 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.3] - 2026-02-24
+
+### Added
+- **Show Relative Numbers setting** — New toggle in Settings > Display > Tab Badges to show/hide relative distance numbers on tab icons
+  - When disabled, all relative number badges and mark badges are stripped from tabs
+  - Marks remain stored internally and reappear when re-enabled
+  - Setting takes effect immediately on toggle, reset, or import
+
+### Fixed
+- **Uninstaller fx-autoconfig cleanup** — Fixed fx-autoconfig removal to run on all selected profiles instead of only the first one
+
 ## [3.3.2] - 2026-02-24
 
 ### Added
@@ -457,6 +468,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.3.3 | 2026-02-24 | Show Relative Numbers toggle, uninstaller fx-autoconfig fix |
 | 3.3.2 | 2026-02-24 | Split view session save/restore, browse mode scroll fix, cross-workspace marks & jumps, delete workspace defaults to current |
 | 3.3.1 | 2026-02-19 | Find Playing Tab command, fix browser theme not auto-applying on launch |
 | 3.3.0 | 2026-02-18 | Essential-tab search inclusion toggle, essential badge in search results, consistent WS/All search scope handling |

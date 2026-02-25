@@ -65,7 +65,6 @@ ZENLEAP_REPO="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main"
 ZENLEAP_SCRIPT_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js"
 ZENLEAP_CSS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css"
 ZENLEAP_THEMES_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/zenleap-themes.json"
-ZENLEAP_CHECKSUMS_URL="https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHECKSUMS.sha256"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Flags
@@ -105,47 +104,7 @@ version_gte() {
     [ "$(printf '%s\n' "$v2" "$v1" | sort -V | head -n1)" = "$v2" ]
 }
 
-# Verify a downloaded file against a SHA-256 checksums file.
-# Usage: verify_checksum <file> <relative_path> <checksums_file>
-# Returns 0 if checksum matches, 1 if mismatch, 2 if entry not found.
-verify_checksum() {
-    local file="$1"
-    local rel_path="$2"
-    local checksums_file="$3"
-
-    if [ ! -f "$checksums_file" ]; then
-        return 2
-    fi
-
-    # Extract expected hash for this relative path
-    local expected
-    expected=$(grep -E "^[0-9a-f]{64}  ${rel_path}$" "$checksums_file" | awk '{print $1}')
-    if [ -z "$expected" ]; then
-        return 2
-    fi
-
-    # Compute actual hash (shasum on macOS, sha256sum on Linux)
-    local actual
-    if command -v sha256sum &> /dev/null; then
-        actual=$(sha256sum "$file" | awk '{print $1}')
-    elif command -v shasum &> /dev/null; then
-        actual=$(shasum -a 256 "$file" | awk '{print $1}')
-    else
-        echo -e "${YELLOW}⚠${NC} Cannot verify checksum (sha256sum/shasum not found)"
-        return 2
-    fi
-
-    if [ "$actual" = "$expected" ]; then
-        return 0
-    else
-        echo -e "${RED}Checksum mismatch for ${rel_path}!${NC}"
-        echo "  Expected: $expected"
-        echo "  Got:      $actual"
-        return 1
-    fi
-}
-
-# Download ZenLeap from remote (with optional checksum verification)
+# Download ZenLeap from remote
 download_zenleap() {
     local dest_dir="$1"
     echo "  Downloading latest ZenLeap from GitHub..."
@@ -162,30 +121,8 @@ download_zenleap() {
         return 1
     fi
 
-    # Download themes template (best-effort — not critical)
+    # Download themes template (best-effort)
     curl -sfL "$ZENLEAP_THEMES_URL" -o "$dest_dir/zenleap-themes.json" 2>/dev/null || true
-
-    # Verify integrity against repo checksums (best-effort: warn but don't
-    # block install if the checksums file is missing or doesn't have entries).
-    local checksums_file="$dest_dir/.checksums"
-    if curl -sfL "$ZENLEAP_CHECKSUMS_URL" -o "$checksums_file" 2>/dev/null; then
-        local failed=false
-        local rc=0
-        verify_checksum "$dest_dir/JS/zenleap.uc.js" "JS/zenleap.uc.js" "$checksums_file" || rc=$?
-        if [ "$rc" -eq 1 ]; then failed=true; fi
-        rc=0
-        verify_checksum "$dest_dir/chrome.css" "chrome.css" "$checksums_file" || rc=$?
-        if [ "$rc" -eq 1 ]; then failed=true; fi
-        rm -f "$checksums_file"
-
-        if [ "$failed" = true ]; then
-            echo -e "${RED}Error: Downloaded files failed integrity check — aborting${NC}"
-            return 1
-        fi
-        echo -e "${GREEN}✓${NC} Integrity verified"
-    else
-        echo -e "${YELLOW}⚠${NC} Checksums file not available — skipping integrity check"
-    fi
 
     echo -e "${GREEN}✓${NC} Downloaded latest ZenLeap"
     return 0
@@ -235,8 +172,9 @@ detect_os() {
             ;;
         MINGW*|MSYS*|CYGWIN*)
             OS="windows"
-            echo -e "${RED}Windows is not currently supported. Please install manually.${NC}"
-            echo "See: https://github.com/yashas-salankimatt/ZenLeap#manual-installation"
+            echo -e "${RED}This bash installer does not support Windows.${NC}"
+            echo "Use the PowerShell installer instead:"
+            echo -e "${BLUE}  powershell -ExecutionPolicy Bypass -c \"irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 | iex\"${NC}"
             exit 1
             ;;
         *)
@@ -652,12 +590,22 @@ do_uninstall() {
         uninstall_zenleap
     done
 
-    # Offer to uninstall fx-autoconfig (check first profile for utils)
-    set_profile_paths "${SELECTED_PROFILES[0]}"
-    if [ -f "$ZEN_RESOURCES/config.js" ] || [ -d "$CHROME_DIR/utils" ]; then
+    # Offer to uninstall fx-autoconfig
+    local has_fxautoconfig=false
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        set_profile_paths "$profile"
+        if [ -f "$ZEN_RESOURCES/config.js" ] || [ -d "$CHROME_DIR/utils" ]; then
+            has_fxautoconfig=true
+            break
+        fi
+    done
+    if [ "$has_fxautoconfig" = true ]; then
         if [ "$AUTO_YES" = true ]; then
             if [ "$REMOVE_FXAUTOCONFIG" = true ]; then
-                uninstall_fxautoconfig
+                for profile in "${SELECTED_PROFILES[@]}"; do
+                    set_profile_paths "$profile"
+                    uninstall_fxautoconfig
+                done
             else
                 echo -e "${YELLOW}Skipping fx-autoconfig removal (use --remove-fxautoconfig to include)${NC}"
             fi
@@ -666,7 +614,10 @@ do_uninstall() {
             echo -n "Also remove fx-autoconfig? Other userscripts may depend on it. (y/n): "
             read -r response <&3
             if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-                uninstall_fxautoconfig
+                for profile in "${SELECTED_PROFILES[@]}"; do
+                    set_profile_paths "$profile"
+                    uninstall_fxautoconfig
+                done
             fi
         fi
     fi

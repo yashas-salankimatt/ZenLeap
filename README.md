@@ -220,9 +220,16 @@ The Manager app will:
 
 #### Option 2: Command Line
 
+**macOS / Linux:**
+
 ```bash
-# Download and run the installer
 curl -sfL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 | iex"
 ```
 
 Or clone the repo and run locally:
@@ -230,7 +237,8 @@ Or clone the repo and run locally:
 ```bash
 git clone https://github.com/yashas-salankimatt/ZenLeap.git
 cd ZenLeap
-./install.sh
+./install.sh          # macOS/Linux
+# powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
 ```
 
 ### Manual Installation

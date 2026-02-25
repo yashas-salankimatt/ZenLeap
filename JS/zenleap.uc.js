@@ -3,14 +3,14 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.2  // Keep in sync with VERSION constant below
+// @version        3.3.3  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
   'use strict';
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.2';
+  const VERSION = '3.3.3';
 
   // ============================================
   // SETTINGS SYSTEM
@@ -91,6 +91,7 @@
     'timing.jjThreshold':          { default: 150, type: 'number', label: 'jj Escape Threshold', description: 'Max gap between two j presses to trigger normal mode escape (ms)', category: 'Timing', group: 'Timeouts', min: 50, max: 500, step: 10 },
 
     // --- Display ---
+    'display.showRelativeNumbers': { default: true, type: 'toggle', label: 'Show Relative Numbers', description: 'Show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges' },
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
@@ -1001,6 +1002,7 @@
     S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
     saveSettings();
     if (id === 'appearance.theme') applyTheme();
+    if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
   }
 
   function resetAllSettings() {
@@ -1009,6 +1011,7 @@
     }
     saveSettings();
     applyTheme();
+    updateRelativeNumbers();
   }
 
   // ── Export / Import ──
@@ -1169,6 +1172,7 @@
     }
     saveSettings();
     applyThemeColors();
+    updateRelativeNumbers();
     renderSettingsContent();
     showSettingsToast('success', 'Settings imported successfully');
   }
@@ -12569,6 +12573,7 @@
         saveSettings();
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
         if (id === 'appearance.applyToBrowser') applyBrowserTheme();
+        if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
       });
       control.appendChild(toggle);
     } else if (schema.type === 'select') {
@@ -15233,6 +15238,22 @@
   // instead of iterating the marks map per tab.
   function updateRelativeNumbers() {
     const tabs = getVisibleTabs();
+
+    // If relative numbers are disabled, strip all badges and return
+    if (!S['display.showRelativeNumbers']) {
+      for (const tab of tabs) {
+        tab.removeAttribute('data-zenleap-direction');
+        tab.removeAttribute('data-zenleap-distance');
+        tab.removeAttribute('data-zenleap-has-mark');
+        const tc = tab.querySelector('.tab-content');
+        if (tc) {
+          tc.removeAttribute('data-zenleap-rel');
+          tc.removeAttribute('data-zenleap-mark');
+        }
+      }
+      return;
+    }
+
     const currentTab = gBrowser.selectedTab;
     let currentIndex = tabs.indexOf(currentTab);
 
