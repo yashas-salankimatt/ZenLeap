@@ -506,12 +506,20 @@ install_fxautoconfig() {
     echo -e "${GREEN}✓${NC} fx-autoconfig installed"
 }
 
+# Detect Sine-managed ZenLeap in a profile. Sets SINE_ZENLEAP_DIR if found.
+check_sine_zenleap() {
+    SINE_ZENLEAP_DIR=""
+    local sine_mod_dir="$CHROME_DIR/sine-mods/zenleap-relative-tab-nav"
+    if [ -f "$sine_mod_dir/JS/zenleap.uc.js" ]; then
+        SINE_ZENLEAP_DIR="$sine_mod_dir"
+        return 0
+    fi
+    return 1
+}
+
 # Install ZenLeap
 install_zenleap() {
     echo -e "${BLUE}Installing ZenLeap...${NC}"
-
-    # Create directories
-    mkdir -p "$JS_DIR"
 
     # Determine source (remote or local)
     local source_dir="$SCRIPT_DIR"
@@ -524,46 +532,92 @@ install_zenleap() {
         fi
     fi
 
-    # Copy main script
-    if [ -f "$source_dir/JS/zenleap.uc.js" ]; then
-        cp "$source_dir/JS/zenleap.uc.js" "$JS_DIR/"
-        local version=$(get_version "$JS_DIR/zenleap.uc.js")
-        echo -e "${GREEN}✓${NC} Installed zenleap.uc.js (v$version)"
-    else
+    if [ ! -f "$source_dir/JS/zenleap.uc.js" ]; then
         echo -e "${RED}Error: zenleap.uc.js not found${NC}"
         [ "$USE_REMOTE" = true ] && rm -rf "$source_dir"
         exit 1
     fi
 
-    # Append CSS to userChrome.css if it exists and not already added
-    if [ -f "$source_dir/chrome.css" ]; then
-        if [ -f "$CHROME_DIR/userChrome.css" ]; then
-            backup_user_chrome
-            # Remove old ZenLeap styles first
-            if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
-                if command -v perl &>/dev/null; then
-                    perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?\/\* === End ZenLeap Styles === \*\/\n?//s' "$CHROME_DIR/userChrome.css"
-                else
-                    echo -e "${YELLOW}⚠${NC} perl not found; old ZenLeap styles may be duplicated in userChrome.css"
-                fi
-            fi
-            echo "" >> "$CHROME_DIR/userChrome.css"
-            echo "/* === ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
-            cat "$source_dir/chrome.css" >> "$CHROME_DIR/userChrome.css"
-            echo "/* === End ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
-            echo -e "${GREEN}✓${NC} Updated styles in userChrome.css"
+    local version=$(get_version "$source_dir/JS/zenleap.uc.js")
+    local install_via_sine=false
+
+    # Check if ZenLeap is managed by Sine in this profile
+    if check_sine_zenleap; then
+        local sine_version=$(get_version "$SINE_ZENLEAP_DIR/JS/zenleap.uc.js")
+        echo -e "${YELLOW}⚠${NC} ZenLeap is installed via Sine in this profile (v$sine_version)"
+
+        local do_override=false
+        if [ "$AUTO_YES" = true ]; then
+            do_override=true
         else
-            echo "/* === ZenLeap Styles === */" > "$CHROME_DIR/userChrome.css"
-            cat "$source_dir/chrome.css" >> "$CHROME_DIR/userChrome.css"
-            echo "/* === End ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
-            echo -e "${GREEN}✓${NC} Created userChrome.css with styles"
+            echo -n "  Override Sine-managed ZenLeap with v$version? (y/n): "
+            read -r response <&3
+            if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
+                do_override=true
+            fi
+        fi
+
+        if [ "$do_override" = true ]; then
+            install_via_sine=true
+        else
+            echo -e "${YELLOW}⚠${NC} Skipping ZenLeap install for this profile (managed by Sine)"
+            [ "$USE_REMOTE" = true ] && rm -rf "$source_dir"
+            return 0
         fi
     fi
 
-    # Copy themes template if not already present (don't overwrite user customizations)
-    if [ ! -f "$CHROME_DIR/zenleap-themes.json" ] && [ -f "$source_dir/zenleap-themes.json" ]; then
-        cp "$source_dir/zenleap-themes.json" "$CHROME_DIR/zenleap-themes.json"
-        echo -e "${GREEN}✓${NC} Created zenleap-themes.json template"
+    if [ "$install_via_sine" = true ]; then
+        # Install to Sine mod directory
+        cp "$source_dir/JS/zenleap.uc.js" "$SINE_ZENLEAP_DIR/JS/zenleap.uc.js"
+        echo -e "${GREEN}✓${NC} Updated Sine-managed zenleap.uc.js (v$version)"
+
+        # Update chrome.css in the Sine mod dir if we have one
+        if [ -f "$source_dir/chrome.css" ]; then
+            cp "$source_dir/chrome.css" "$SINE_ZENLEAP_DIR/chrome.css"
+            echo -e "${GREEN}✓${NC} Updated Sine-managed chrome.css"
+        fi
+
+        # Update themes in Sine mod dir
+        if [ -f "$source_dir/zenleap-themes.json" ]; then
+            cp "$source_dir/zenleap-themes.json" "$SINE_ZENLEAP_DIR/zenleap-themes.json"
+            echo -e "${GREEN}✓${NC} Updated Sine-managed zenleap-themes.json"
+        fi
+    else
+        # Standard install to chrome/JS/
+        mkdir -p "$JS_DIR"
+        cp "$source_dir/JS/zenleap.uc.js" "$JS_DIR/"
+        echo -e "${GREEN}✓${NC} Installed zenleap.uc.js (v$version)"
+
+        # Append CSS to userChrome.css
+        if [ -f "$source_dir/chrome.css" ]; then
+            if [ -f "$CHROME_DIR/userChrome.css" ]; then
+                backup_user_chrome
+                # Remove old ZenLeap styles first
+                if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
+                    if command -v perl &>/dev/null; then
+                        perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?\/\* === End ZenLeap Styles === \*\/\n?//s' "$CHROME_DIR/userChrome.css"
+                    else
+                        echo -e "${YELLOW}⚠${NC} perl not found; old ZenLeap styles may be duplicated in userChrome.css"
+                    fi
+                fi
+                echo "" >> "$CHROME_DIR/userChrome.css"
+                echo "/* === ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
+                cat "$source_dir/chrome.css" >> "$CHROME_DIR/userChrome.css"
+                echo "/* === End ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
+                echo -e "${GREEN}✓${NC} Updated styles in userChrome.css"
+            else
+                echo "/* === ZenLeap Styles === */" > "$CHROME_DIR/userChrome.css"
+                cat "$source_dir/chrome.css" >> "$CHROME_DIR/userChrome.css"
+                echo "/* === End ZenLeap Styles === */" >> "$CHROME_DIR/userChrome.css"
+                echo -e "${GREEN}✓${NC} Created userChrome.css with styles"
+            fi
+        fi
+
+        # Copy themes template if not already present (don't overwrite user customizations)
+        if [ ! -f "$CHROME_DIR/zenleap-themes.json" ] && [ -f "$source_dir/zenleap-themes.json" ]; then
+            cp "$source_dir/zenleap-themes.json" "$CHROME_DIR/zenleap-themes.json"
+            echo -e "${GREEN}✓${NC} Created zenleap-themes.json template"
+        fi
     fi
 
     # Cleanup temp directory if using remote
