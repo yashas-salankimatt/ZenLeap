@@ -603,8 +603,8 @@ uninstall_zenleap() {
 
     # Remove styles from userChrome.css
     if [ -f "$CHROME_DIR/userChrome.css" ]; then
-        backup_user_chrome
         if grep -q "ZenLeap Styles" "$CHROME_DIR/userChrome.css" 2>/dev/null; then
+            backup_user_chrome
             if command -v perl &>/dev/null; then
                 perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?\/\* === End ZenLeap Styles === \*\/\n?//s' "$CHROME_DIR/userChrome.css"
             else
