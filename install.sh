@@ -73,6 +73,7 @@ CHECK_ONLY=false
 PROFILE_INDEX=""
 AUTO_YES=false
 REMOVE_FXAUTOCONFIG=false
+IS_FLATPAK=false
 
 # Get version from a zenleap.uc.js file
 get_version() {
@@ -157,18 +158,71 @@ detect_os() {
             ;;
         Linux)
             OS="linux"
-            if [ -d "/opt/zen-browser" ]; then
-                ZEN_RESOURCES="/opt/zen-browser"
-            elif [ -d "/usr/lib/zen" ]; then
-                ZEN_RESOURCES="/usr/lib/zen"
-            elif [ -d "$HOME/.local/share/zen" ]; then
-                ZEN_RESOURCES="$HOME/.local/share/zen"
+            IS_FLATPAK=false
+            ZEN_RESOURCES=""
+
+            # Check standard install paths (deb, tar, generic, appimage-extracted)
+            for candidate in \
+                "/opt/zen-browser" \
+                "/opt/zen" \
+                "/usr/lib/zen-browser" \
+                "/usr/lib/zen" \
+                "/usr/lib64/zen-browser" \
+                "/usr/lib64/zen" \
+                "$HOME/.local/share/zen" \
+                "$HOME/.local/share/zen-browser"; do
+                if [ -d "$candidate" ]; then
+                    ZEN_RESOURCES="$candidate"
+                    break
+                fi
+            done
+
+            # Fallback: find zen on PATH and resolve its directory
+            if [ -z "$ZEN_RESOURCES" ]; then
+                local zen_bin
+                zen_bin=$(command -v zen 2>/dev/null || command -v zen-browser 2>/dev/null)
+                if [ -n "$zen_bin" ]; then
+                    # Resolve symlinks to find the real installation directory
+                    zen_bin=$(readlink -f "$zen_bin" 2>/dev/null || realpath "$zen_bin" 2>/dev/null || echo "$zen_bin")
+                    local zen_dir
+                    zen_dir=$(dirname "$zen_bin")
+                    if [ -d "$zen_dir" ] && [ "$zen_dir" != "/usr/bin" ] && [ "$zen_dir" != "/usr/local/bin" ]; then
+                        ZEN_RESOURCES="$zen_dir"
+                    fi
+                fi
+            fi
+
+            # Check Flatpak install
+            if [ -z "$ZEN_RESOURCES" ] && [ -d "$HOME/.var/app/app.zen_browser.zen" ]; then
+                IS_FLATPAK=true
+            fi
+            if [ -z "$ZEN_RESOURCES" ] && [ "$IS_FLATPAK" = false ]; then
+                # Check if flatpak has zen installed even without the .var directory
+                if command -v flatpak &> /dev/null && flatpak list 2>/dev/null | grep -q "app.zen_browser.zen"; then
+                    IS_FLATPAK=true
+                fi
+            fi
+
+            if [ "$IS_FLATPAK" = true ]; then
+                # Flatpak: browser dir is read-only, use systemconfig extension
+                local flatpak_arch
+                flatpak_arch=$(flatpak --default-arch 2>/dev/null || uname -m)
+                case "$flatpak_arch" in
+                    x86_64|amd64) flatpak_arch="x86_64" ;;
+                    aarch64|arm64) flatpak_arch="aarch64" ;;
+                    i386|i686) flatpak_arch="i386" ;;
+                esac
+                ZEN_RESOURCES="$HOME/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/$flatpak_arch/stable"
+                PROFILE_BASE="$HOME/.var/app/app.zen_browser.zen/.zen"
+                echo -e "${GREEN}✓${NC} Detected Flatpak installation"
+            elif [ -n "$ZEN_RESOURCES" ]; then
+                PROFILE_BASE="$HOME/.zen"
             else
                 echo -e "${RED}Error: Could not find Zen Browser installation${NC}"
-                echo "Please install Zen Browser first or specify the path manually"
+                echo "Checked: /opt/zen-browser, /usr/lib/zen, ~/.local/share/zen, Flatpak, PATH"
+                echo "Please install Zen Browser first"
                 exit 1
             fi
-            PROFILE_BASE="$HOME/.zen"
             ;;
         MINGW*|MSYS*|CYGWIN*)
             OS="windows"
@@ -310,12 +364,19 @@ install_fxautoconfig() {
         exit 1
     fi
 
-    # Install to Zen Resources (requires admin)
-    echo "  Installing to Zen Browser (may require admin password)..."
+    # Install to Zen Resources
     if [ -d "$EXTRACTED_DIR/program" ]; then
-        sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
-        sudo cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
-        sudo cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        if [ "$IS_FLATPAK" = true ]; then
+            echo "  Installing to Flatpak systemconfig extension..."
+            mkdir -p "$ZEN_RESOURCES/defaults/pref"
+            cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
+            cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        else
+            echo "  Installing to Zen Browser (may require admin password)..."
+            sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
+            sudo cp "$EXTRACTED_DIR/program/config.js" "$ZEN_RESOURCES/config.js"
+            sudo cp "$EXTRACTED_DIR/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        fi
     fi
 
     # Install to profile
@@ -446,16 +507,24 @@ uninstall_fxautoconfig() {
 
     local found_anything=false
 
-    # Remove program-level files (requires admin)
+    # Remove program-level files
     if [ -f "$ZEN_RESOURCES/config.js" ]; then
-        echo "  Removing config.js (may require admin password)..."
-        sudo rm -f "$ZEN_RESOURCES/config.js"
+        if [ "$IS_FLATPAK" = true ]; then
+            rm -f "$ZEN_RESOURCES/config.js"
+        else
+            echo "  Removing config.js (may require admin password)..."
+            sudo rm -f "$ZEN_RESOURCES/config.js"
+        fi
         echo -e "${GREEN}✓${NC} Removed config.js"
         found_anything=true
     fi
 
     if [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
-        sudo rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        if [ "$IS_FLATPAK" = true ]; then
+            rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        else
+            sudo rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+        fi
         echo -e "${GREEN}✓${NC} Removed config-prefs.js"
         found_anything=true
     fi
@@ -478,18 +547,49 @@ uninstall_fxautoconfig() {
 clear_cache() {
     echo -e "${BLUE}Clearing startup cache...${NC}"
 
-    CACHE_DIR=""
+    local cleared=false
+
     if [ "$OS" = "macos" ]; then
-        CACHE_DIR="$HOME/Library/Caches/zen"
+        if [ -d "$HOME/Library/Caches/zen/startupCache" ]; then
+            rm -rf "$HOME/Library/Caches/zen/startupCache" 2>/dev/null || true
+            cleared=true
+        fi
     else
-        CACHE_DIR="$HOME/.cache/zen"
+        # Standard Linux cache
+        if [ -d "$HOME/.cache/zen/startupCache" ]; then
+            rm -rf "$HOME/.cache/zen/startupCache" 2>/dev/null || true
+            cleared=true
+        fi
+        # Flatpak cache
+        if [ -d "$HOME/.var/app/app.zen_browser.zen/cache/zen/startupCache" ]; then
+            rm -rf "$HOME/.var/app/app.zen_browser.zen/cache/zen/startupCache" 2>/dev/null || true
+            cleared=true
+        fi
     fi
 
-    if [ -d "$CACHE_DIR" ]; then
-        rm -rf "$CACHE_DIR/startupCache" 2>/dev/null || true
+    # Also clear per-profile startup caches
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        if [ -d "$profile/startupCache" ]; then
+            rm -rf "$profile/startupCache" 2>/dev/null || true
+            cleared=true
+        fi
+    done
+
+    if [ "$cleared" = true ]; then
         echo -e "${GREEN}✓${NC} Startup cache cleared"
     else
-        echo -e "${YELLOW}⚠${NC} Cache directory not found (this is OK)"
+        echo -e "${YELLOW}⚠${NC} No startup cache found (this is OK)"
+    fi
+}
+
+# Launch Zen Browser
+launch_zen() {
+    if [ "$OS" = "macos" ]; then
+        open "$ZEN_APP"
+    elif [ "$IS_FLATPAK" = true ]; then
+        flatpak run app.zen_browser.zen &
+    else
+        zen &
     fi
 }
 
@@ -546,11 +646,7 @@ do_install() {
     echo ""
     if [ "$ZEN_WAS_RUNNING" = true ]; then
         echo -e "${BLUE}Restarting Zen Browser...${NC}"
-        if [ "$OS" = "macos" ]; then
-            open "$ZEN_APP"
-        else
-            zen &
-        fi
+        launch_zen
         echo -e "${GREEN}✓${NC} Zen Browser restarted"
     elif [ "$AUTO_YES" = true ]; then
         echo -e "${YELLOW}Please start Zen Browser to activate ZenLeap${NC}"
@@ -558,11 +654,7 @@ do_install() {
         echo -n "Open Zen Browser now? (y/n): "
         read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-            if [ "$OS" = "macos" ]; then
-                open "$ZEN_APP"
-            else
-                zen &
-            fi
+            launch_zen
         else
             echo -e "${YELLOW}Please start Zen Browser to activate ZenLeap${NC}"
         fi
@@ -637,11 +729,7 @@ do_uninstall() {
             echo -n "Reopen Zen Browser? (y/n): "
             read -r response <&3
             if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-                if [ "$OS" = "macos" ]; then
-                    open "$ZEN_APP"
-                else
-                    zen &
-                fi
+                launch_zen
             fi
         fi
     else
