@@ -8,6 +8,7 @@
 #   --profile <index>       Select profile by index (1-based); omit to install to ALL profiles
 #   --yes, -y               Auto-confirm all prompts (non-interactive mode)
 #   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
+#   --zen-path <dir>        Specify Zen Browser installation directory manually
 #
 # This script handles everything:
 # 1. Downloads and installs fx-autoconfig (if needed)
@@ -74,6 +75,7 @@ PROFILE_INDEX=""
 AUTO_YES=false
 REMOVE_FXAUTOCONFIG=false
 IS_FLATPAK=false
+CUSTOM_ZEN_PATH=""
 
 # Get version from a zenleap.uc.js file
 get_version() {
@@ -140,21 +142,88 @@ show_banner() {
     echo -e "${NC}"
 }
 
+# Prompt user for Zen Browser installation path
+prompt_zen_path() {
+    echo ""
+    echo -e "${YELLOW}Could not find Zen Browser in the default locations.${NC}"
+    echo ""
+    echo "To find your Zen installation directory:"
+    echo "  1. Open Zen Browser"
+    echo "  2. Go to ${BLUE}about:support${NC}"
+    echo "  3. Look for ${BLUE}Application Binary${NC} in the table"
+    echo "  4. The installation directory is the folder containing that binary"
+    echo ""
+    echo "Common locations:"
+    if [ "$OS" = "macos" ]; then
+        echo "  /Applications/Zen.app/Contents/Resources"
+        echo "  /Applications/Zen Browser.app/Contents/Resources"
+    else
+        echo "  /opt/zen-browser    /opt/zen    /usr/lib/zen-browser"
+        echo "  ~/.local/share/zen  /opt/zen-browser-bin"
+    fi
+    echo ""
+
+    if [ "$AUTO_YES" = true ]; then
+        echo -e "${RED}Error: Cannot prompt for path in non-interactive mode.${NC}"
+        echo "Use --zen-path <directory> to specify the Zen installation directory."
+        exit 1
+    fi
+
+    while true; do
+        echo -n "Enter the Zen Browser installation directory (or 'q' to quit): "
+        read -r user_path <&3
+        if [ "$user_path" = "q" ] || [ "$user_path" = "Q" ]; then
+            echo "Installation cancelled."
+            exit 1
+        fi
+        # Trim whitespace
+        user_path=$(echo "$user_path" | xargs)
+        if [ -z "$user_path" ]; then
+            echo -e "${RED}Path cannot be empty.${NC}"
+            continue
+        fi
+        if [ ! -d "$user_path" ]; then
+            echo -e "${RED}Directory not found: $user_path${NC}"
+            continue
+        fi
+        # On macOS, if they gave an .app path, resolve to Contents/Resources
+        if [[ "$user_path" == *.app ]]; then
+            if [ -d "$user_path/Contents/Resources" ]; then
+                user_path="$user_path/Contents/Resources"
+                echo -e "${GREEN}✓${NC} Resolved to: $user_path"
+            fi
+        fi
+        echo -e "${GREEN}✓${NC} Using Zen installation at: $user_path"
+        ZEN_RESOURCES="$user_path"
+        return 0
+    done
+}
+
 # Detect OS
 detect_os() {
     case "$(uname -s)" in
         Darwin)
             OS="macos"
-            # Try both possible app names
-            if [ -d "/Applications/Zen.app" ]; then
-                ZEN_APP="/Applications/Zen.app"
+            ZEN_RESOURCES=""
+            if [ -n "$CUSTOM_ZEN_PATH" ]; then
+                if [ -d "$CUSTOM_ZEN_PATH" ]; then
+                    # If they gave an .app path, resolve to Contents/Resources
+                    if [[ "$CUSTOM_ZEN_PATH" == *.app ]] && [ -d "$CUSTOM_ZEN_PATH/Contents/Resources" ]; then
+                        ZEN_RESOURCES="$CUSTOM_ZEN_PATH/Contents/Resources"
+                    else
+                        ZEN_RESOURCES="$CUSTOM_ZEN_PATH"
+                    fi
+                else
+                    echo -e "${RED}Error: Directory not found: $CUSTOM_ZEN_PATH${NC}"
+                    exit 1
+                fi
+            elif [ -d "/Applications/Zen.app" ]; then
+                ZEN_RESOURCES="/Applications/Zen.app/Contents/Resources"
             elif [ -d "/Applications/Zen Browser.app" ]; then
-                ZEN_APP="/Applications/Zen Browser.app"
+                ZEN_RESOURCES="/Applications/Zen Browser.app/Contents/Resources"
             else
-                echo -e "${RED}Error: Could not find Zen Browser in /Applications${NC}"
-                exit 1
+                prompt_zen_path
             fi
-            ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
             PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
             ;;
         Linux)
@@ -162,45 +231,59 @@ detect_os() {
             IS_FLATPAK=false
             ZEN_RESOURCES=""
 
-            # Check standard install paths (deb, tar, generic, appimage-extracted)
-            for candidate in \
-                "/opt/zen-browser" \
-                "/opt/zen" \
-                "/usr/lib/zen-browser" \
-                "/usr/lib/zen" \
-                "/usr/lib64/zen-browser" \
-                "/usr/lib64/zen" \
-                "$HOME/.local/share/zen" \
-                "$HOME/.local/share/zen-browser"; do
-                if [ -d "$candidate" ]; then
-                    ZEN_RESOURCES="$candidate"
-                    break
+            # Use custom path if provided
+            if [ -n "$CUSTOM_ZEN_PATH" ]; then
+                if [ -d "$CUSTOM_ZEN_PATH" ]; then
+                    ZEN_RESOURCES="$CUSTOM_ZEN_PATH"
+                else
+                    echo -e "${RED}Error: Directory not found: $CUSTOM_ZEN_PATH${NC}"
+                    exit 1
                 fi
-            done
+            fi
 
-            # Fallback: find zen on PATH and resolve its directory
+            # Auto-detect if no custom path provided
             if [ -z "$ZEN_RESOURCES" ]; then
-                local zen_bin
-                zen_bin=$(command -v zen 2>/dev/null || command -v zen-browser 2>/dev/null || true)
-                if [ -n "$zen_bin" ]; then
-                    # Resolve symlinks to find the real installation directory
-                    zen_bin=$(readlink -f "$zen_bin" 2>/dev/null || realpath "$zen_bin" 2>/dev/null || echo "$zen_bin")
-                    local zen_dir
-                    zen_dir=$(dirname "$zen_bin")
-                    if [ -d "$zen_dir" ] && [ "$zen_dir" != "/usr/bin" ] && [ "$zen_dir" != "/usr/local/bin" ]; then
-                        ZEN_RESOURCES="$zen_dir"
+                # Check standard install paths (deb, tar, generic, appimage-extracted)
+                for candidate in \
+                    "/opt/zen-browser" \
+                    "/opt/zen-browser-bin" \
+                    "/opt/zen" \
+                    "/usr/lib/zen-browser" \
+                    "/usr/lib/zen" \
+                    "/usr/lib64/zen-browser" \
+                    "/usr/lib64/zen" \
+                    "$HOME/.local/share/zen" \
+                    "$HOME/.local/share/zen-browser"; do
+                    if [ -d "$candidate" ]; then
+                        ZEN_RESOURCES="$candidate"
+                        break
+                    fi
+                done
+
+                # Fallback: find zen on PATH and resolve its directory
+                if [ -z "$ZEN_RESOURCES" ]; then
+                    local zen_bin
+                    zen_bin=$(command -v zen 2>/dev/null || command -v zen-browser 2>/dev/null || true)
+                    if [ -n "$zen_bin" ]; then
+                        # Resolve symlinks to find the real installation directory
+                        zen_bin=$(readlink -f "$zen_bin" 2>/dev/null || realpath "$zen_bin" 2>/dev/null || echo "$zen_bin")
+                        local zen_dir
+                        zen_dir=$(dirname "$zen_bin")
+                        if [ -d "$zen_dir" ] && [ "$zen_dir" != "/usr/bin" ] && [ "$zen_dir" != "/usr/local/bin" ]; then
+                            ZEN_RESOURCES="$zen_dir"
+                        fi
                     fi
                 fi
-            fi
 
-            # Check Flatpak install
-            if [ -z "$ZEN_RESOURCES" ] && [ -d "$HOME/.var/app/app.zen_browser.zen" ]; then
-                IS_FLATPAK=true
-            fi
-            if [ -z "$ZEN_RESOURCES" ] && [ "$IS_FLATPAK" = false ]; then
-                # Check if flatpak has zen installed even without the .var directory
-                if command -v flatpak &> /dev/null && flatpak list 2>/dev/null | grep -q "app.zen_browser.zen"; then
+                # Check Flatpak install
+                if [ -z "$ZEN_RESOURCES" ] && [ -d "$HOME/.var/app/app.zen_browser.zen" ]; then
                     IS_FLATPAK=true
+                fi
+                if [ -z "$ZEN_RESOURCES" ] && [ "$IS_FLATPAK" = false ]; then
+                    # Check if flatpak has zen installed even without the .var directory
+                    if command -v flatpak &> /dev/null && flatpak list 2>/dev/null | grep -q "app.zen_browser.zen"; then
+                        IS_FLATPAK=true
+                    fi
                 fi
             fi
 
@@ -219,10 +302,8 @@ detect_os() {
             elif [ -n "$ZEN_RESOURCES" ]; then
                 PROFILE_BASE="$HOME/.zen"
             else
-                echo -e "${RED}Error: Could not find Zen Browser installation${NC}"
-                echo "Checked: /opt/zen-browser, /usr/lib/zen, ~/.local/share/zen, Flatpak, PATH"
-                echo "Please install Zen Browser first"
-                exit 1
+                prompt_zen_path
+                PROFILE_BASE="$HOME/.zen"
             fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
@@ -835,6 +916,14 @@ while [ $# -gt 0 ]; do
         --remove-fxautoconfig)
             REMOVE_FXAUTOCONFIG=true
             ;;
+        --zen-path)
+            shift
+            if [ -z "$1" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --zen-path requires a directory argument${NC}"
+                exit 1
+            fi
+            CUSTOM_ZEN_PATH="$1"
+            ;;
         --help|-h)
             echo "Usage: $0 [install|uninstall|check] [OPTIONS]"
             echo ""
@@ -848,9 +937,11 @@ while [ $# -gt 0 ]; do
             echo "  --profile <index>       Select profile by index (1-based); omit for ALL profiles"
             echo "  --yes, -y               Auto-confirm all prompts (non-interactive mode)"
             echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
+            echo "  --zen-path <dir>        Specify Zen Browser installation directory manually"
             echo ""
             echo "Non-interactive examples:"
             echo "  $0 install --remote --profile 1 --yes"
+            echo "  $0 install --remote --zen-path /opt/zen-browser-bin --yes"
             echo "  $0 uninstall --profile 1 --yes --remove-fxautoconfig"
             exit 0
             ;;
