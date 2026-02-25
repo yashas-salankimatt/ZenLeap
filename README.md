@@ -20,6 +20,7 @@ A comprehensive vim-style navigation, command palette, and session management mo
   - [Compact Mode Support](#compact-mode-support)
 - [Visual Demo](#visual-demo)
 - [Installation](#installation)
+  - [Install via Sine (Recommended)](#install-via-sine-recommended)
   - [ZenLeap Manager App (macOS)](#option-1-zenleap-manager-app-macos)
   - [Command Line](#option-2-command-line)
   - [Manual Installation](#manual-installation)
@@ -234,13 +235,13 @@ To jump far: Ctrl+Space → j → 1 → 0   (jump 10 tabs down)
 
 ### Install via Sine (Recommended)
 
-> **Note:** ZenLeap is pending approval on the official Sine store. Until then, you can install it directly from the GitHub repo URL. Once approved, it will be available in Sine's built-in marketplace.
+> **Note:** ZenLeap is pending approval on the official Sine store. Until then, you need to temporarily enable unofficial JS sources to install. Once approved, it will be available directly in Sine's built-in marketplace and this step will no longer be needed.
 
 1. Open Zen Browser and go to the **Sine mods settings page**
-2. Click the **settings gear icon** and enable **"Enable installing JS from unofficial sources"**
-   - This is only needed temporarily until ZenLeap is approved on the Sine store
-3. In the install field, enter: `yashas-salankimatt/ZenLeap`
-4. Click **Install** and restart Zen Browser
+2. Click the **settings gear icon** (top right of the Sine panel)
+3. Toggle on **"Enable installing JS from unofficial sources. (unsafe, use at your own risk)"**
+4. In the install field, enter: `yashas-salankimatt/ZenLeap`
+5. Click **Install** and restart Zen Browser
 
 ### Alternative Install Methods
 
