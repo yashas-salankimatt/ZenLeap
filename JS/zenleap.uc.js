@@ -15978,18 +15978,27 @@
       if (yankItems.length > 0) statusParts.push(`${yankItems.length} yanked`);
       overlayDirectionLabel.textContent = statusParts.join(' | ');
 
-      // Show contextual hints based on highlighted item type
-      const onFolder = highlightedTabIndex >= 0 && highlightedTabIndex < items.length && isFolder(items[highlightedTabIndex]);
-      if (onFolder && yankItems.length > 0) {
-        overlayHintLabel.textContent = 'p=paste after  P=paste before  Enter=toggle fold  j/k=move  Esc=cancel';
-      } else if (onFolder) {
-        overlayHintLabel.textContent = 'Space=select  Enter=toggle fold  y=yank  x=delete  j/k=move  Esc=cancel';
-      } else if (yankItems.length > 0) {
-        overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
-      } else if (selectedItems.size > 0) {
-        overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
+      // Mark/goto-mark sub-modes override browse hints
+      if (markMode) {
+        overlayModeLabel.textContent = 'MARK';
+        overlayHintLabel.textContent = 'a-z/0-9 to set on highlighted tab (same char toggles off)  Esc=cancel';
+      } else if (gotoMarkMode) {
+        overlayModeLabel.textContent = 'GOTO';
+        overlayHintLabel.textContent = 'press mark character to jump highlight  Esc=cancel';
       } else {
-        overlayHintLabel.textContent = 'j/k=move  Space=select  Ctrl+Shift+/=cmds  Enter=open  x=close  Esc=cancel';
+        // Show contextual hints based on highlighted item type
+        const onFolder = highlightedTabIndex >= 0 && highlightedTabIndex < items.length && isFolder(items[highlightedTabIndex]);
+        if (onFolder && yankItems.length > 0) {
+          overlayHintLabel.textContent = 'p=paste after  P=paste before  Enter=toggle fold  j/k=move  Esc=cancel';
+        } else if (onFolder) {
+          overlayHintLabel.textContent = 'Space=select  Enter=toggle fold  y=yank  x=delete  j/k=move  Esc=cancel';
+        } else if (yankItems.length > 0) {
+          overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
+        } else if (selectedItems.size > 0) {
+          overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
+        } else {
+          overlayHintLabel.textContent = "j/k=move  Space=select  m=mark  '=goto mark  Enter=open  x=close  Esc=cancel";
+        }
       }
     } else if (markMode) {
       leapOverlay.classList.add('leap-direction-set');
@@ -17285,6 +17294,16 @@
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
+
+      // Exit mark/goto-mark sub-mode first (in both leap and browse mode)
+      if (markMode || gotoMarkMode) {
+        markMode = false;
+        gotoMarkMode = false;
+        updateLeapOverlayState();
+        log('Escaped mark/goto-mark sub-mode');
+        return;
+      }
+
       if (browseMode) {
         // Two-stage escape: first clears any pending state, second exits browse mode
         const hasSelection = selectedItems.size > 0;
@@ -17314,7 +17333,9 @@
     }
 
     // === BROWSE MODE HANDLING ===
-    if (browseMode) {
+    // When mark/goto-mark sub-mode is active, skip browse keys and fall through
+    // to the mark/goto-mark handlers below.
+    if (browseMode && !markMode && !gotoMarkMode) {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -17363,6 +17384,31 @@
           key === S['keys.browse.nextWorkspace'] || key === S['keys.browse.nextWorkspaceAlt']) {
         const isPrev = key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'];
         browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
+        return;
+      }
+
+      // m = set mark on highlighted tab
+      if (key === S['keys.leap.setMark'] && originalKey !== S['keys.leap.clearMarks']) {
+        markMode = true;
+        updateLeapOverlayState();
+        log('Browse: entered mark mode');
+        return;
+      }
+
+      // M = clear all marks
+      if (originalKey === S['keys.leap.clearMarks']) {
+        clearAllMarks();
+        updateHighlight();
+        updateLeapOverlayState();
+        log('Browse: cleared all marks');
+        return;
+      }
+
+      // ' = goto mark (move highlight to marked tab)
+      if (key === S['keys.leap.gotoMark'] || key === S['keys.leap.gotoMarkAlt']) {
+        gotoMarkMode = true;
+        updateLeapOverlayState();
+        log('Browse: entered goto mark mode');
         return;
       }
 
@@ -17540,12 +17586,33 @@
 
       // Accept a-z and 0-9 as mark characters
       if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
-        setMark(key, gBrowser.selectedTab);
-        exitLeapMode(false);
+        // In browse mode, mark the highlighted tab; otherwise mark the selected tab
+        let targetTab = gBrowser.selectedTab;
+        if (browseMode && highlightedTabIndex >= 0) {
+          const items = getVisibleItems();
+          const item = items[highlightedTabIndex];
+          if (!item || isFolder(item)) {
+            // Can't mark a folder — exit mark sub-mode silently
+            markMode = false;
+            updateLeapOverlayState();
+            log('Cannot set mark on folder');
+            return;
+          }
+          targetTab = item;
+        }
+        setMark(key, targetTab);
+        if (browseMode) {
+          // Stay in browse mode, just exit mark sub-mode
+          markMode = false;
+          updateHighlight();
+          updateLeapOverlayState();
+        } else {
+          exitLeapMode(false);
+        }
         return;
       }
 
-      // Invalid key, exit mark mode but stay in leap mode
+      // Invalid key, exit mark mode but stay in leap/browse mode
       markMode = false;
       updateLeapOverlayState();
       log(`Invalid mark key: ${key}, exiting mark mode`);
@@ -17560,16 +17627,45 @@
 
       // Accept a-z and 0-9 as mark characters
       if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
-        if (goToMark(key)) {
-          exitLeapMode(true); // Center scroll on the marked tab
+        if (browseMode) {
+          // In browse mode, move highlight to the marked tab
+          const markedTab = marks.get(key);
+          if (markedTab && !markedTab.closing && markedTab.parentNode) {
+            const items = getVisibleItems();
+            const idx = items.indexOf(markedTab);
+            if (idx >= 0) {
+              highlightedTabIndex = idx;
+              gotoMarkMode = false;
+              updateHighlight();
+              updateLeapOverlayState();
+              log(`Browse: moved highlight to mark '${key}'`);
+            } else {
+              gotoMarkMode = false;
+              updateLeapOverlayState();
+              log(`Mark '${key}' tab not in current visible items`);
+            }
+          } else {
+            gotoMarkMode = false;
+            updateLeapOverlayState();
+            if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
+              marks.delete(key);
+              log(`Mark '${key}' tab was closed, removing mark`);
+            } else {
+              log(`Mark '${key}' not found`);
+            }
+          }
         } else {
-          // Mark not found, stay in goto mark mode for retry
-          log(`Mark '${key}' not found`);
+          if (goToMark(key)) {
+            exitLeapMode(true); // Center scroll on the marked tab
+          } else {
+            // Mark not found, stay in goto mark mode for retry
+            log(`Mark '${key}' not found`);
+          }
         }
         return;
       }
 
-      // Invalid key, exit goto mark mode but stay in leap mode
+      // Invalid key, exit goto mark mode but stay in leap/browse mode
       gotoMarkMode = false;
       updateLeapOverlayState();
       log(`Invalid goto mark key: ${key}, exiting goto mark mode`);
