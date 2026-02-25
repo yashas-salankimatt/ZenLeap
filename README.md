@@ -561,3 +561,14 @@ MIT License
 - Inspired by vim's relative line numbers
 - Built with [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig)
 - For [Zen Browser](https://zen-browser.app/)
+
+## Privacy
+
+**ZenLeap collects no telemetry, analytics, or user data of any kind.**
+
+- All settings and data (marks, themes, plugin state) are stored locally in your browser's preference system (`about:config`) and never leave your machine
+- The only network requests ZenLeap makes are to the [GitHub repository](https://github.com/yashas-salankimatt/ZenLeap) to check for updates and download new versions — no data is sent
+- ZenLeap does not access or store passwords, cookies, browsing history, or web page content
+- Third-party plugins loaded through the plugin system run locally and are not subject to any ZenLeap network activity
+
+For more details, see [SECURITY.md](SECURITY.md).
