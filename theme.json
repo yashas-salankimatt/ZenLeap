@@ -11,7 +11,7 @@
   "fork": ["zen"],
   "scripts": {
     "JS/zenleap.uc.js": {
-      "include": ["chrome://browser/*"],
+      "include": ["chrome://browser/content/browser.xhtml"],
       "exclude": [],
       "loadOrder": 10
     }

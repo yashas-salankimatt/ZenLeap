@@ -232,7 +232,20 @@ To jump far: Ctrl+Space → j → 1 → 0   (jump 10 tabs down)
 
 ## Installation
 
-### Easy Install (Recommended)
+### Install via Sine (Recommended)
+
+> **Note:** ZenLeap is pending approval on the official Sine store. Until then, you can install it directly from the GitHub repo URL. Once approved, it will be available in Sine's built-in marketplace.
+
+1. Open Zen Browser and go to the **Sine mods settings page**
+2. Click the **settings gear icon** and enable **"Enable installing JS from unofficial sources"**
+   - This is only needed temporarily until ZenLeap is approved on the Sine store
+3. In the install field, enter: `yashas-salankimatt/ZenLeap`
+4. Click **Install** and restart Zen Browser
+
+### Alternative Install Methods
+
+<details>
+<summary>Click to expand alternative installation methods</summary>
 
 #### Option 1: ZenLeap Manager App (macOS)
 
@@ -312,6 +325,8 @@ If Zen Browser isn't found automatically (e.g. CachyOS `zen-browser-bin`), the i
 2. Go to `about:support` → **"Clear Startup Cache"**
 
 3. Restart Zen Browser
+
+</details>
 
 </details>
 
