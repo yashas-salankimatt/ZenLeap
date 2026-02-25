@@ -107,6 +107,9 @@
     'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
 
+    // --- Behavior ---
+    'behavior.refocusOnClose': { default: true, type: 'toggle', label: 'Refocus Page on Close', description: 'Restore keyboard focus to the web page after closing overlays (search, settings, help). Fixes compatibility with extensions like Surfing Keys and Vimium.', category: 'Display', group: 'Navigation' },
+
     // --- Appearance ---
     'appearance.theme': { default: 'meridian', type: 'select', label: 'Theme', description: 'Color theme for all ZenLeap UI components', category: 'Appearance', group: 'Theme', dynamicOptions: 'theme' },
     'appearance.applyToBrowser': { default: false, type: 'toggle', label: 'Apply Theme to Browser', description: 'Also apply the selected theme colors to the Zen Browser chrome (toolbar, sidebar, backgrounds)', category: 'Appearance', group: 'Theme' },
@@ -11066,6 +11069,7 @@
     helpMode = false;
     helpModal.classList.remove('active');
 
+    if (S['behavior.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
     log('Exited help mode');
   }
 
@@ -11546,6 +11550,7 @@
     reorgMovingIndex = -1;
     reorgDragState = null;
 
+    if (S['behavior.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
     log('Exited reorganize workspaces mode');
   }
 
@@ -12830,6 +12835,7 @@
     settingsModal.classList.remove('active');
     aboutUpdateState = null;
     aboutRemoteVersion = null;
+    if (S['behavior.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
     log('Exited settings mode');
   }
 
@@ -13758,6 +13764,7 @@
     browseCommandTabs = [];
     savedBrowseState = null;
 
+    if (S['behavior.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
     _pluginEventBus.emit('searchMode:exit', {});
     log('Exited search mode');
   }
