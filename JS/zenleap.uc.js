@@ -9,6 +9,10 @@
 (function() {
   'use strict';
 
+  // Prevent double-loading (e.g. both fx-autoconfig and Sine active)
+  if (window.__zenleapLoaded) return;
+  window.__zenleapLoaded = true;
+
   // Version - keep in sync with @version in header above
   const VERSION = '3.3.4';
 
