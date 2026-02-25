@@ -180,7 +180,7 @@ detect_os() {
             # Fallback: find zen on PATH and resolve its directory
             if [ -z "$ZEN_RESOURCES" ]; then
                 local zen_bin
-                zen_bin=$(command -v zen 2>/dev/null || command -v zen-browser 2>/dev/null)
+                zen_bin=$(command -v zen 2>/dev/null || command -v zen-browser 2>/dev/null || true)
                 if [ -n "$zen_bin" ]; then
                     # Resolve symlinks to find the real installation directory
                     zen_bin=$(readlink -f "$zen_bin" 2>/dev/null || realpath "$zen_bin" 2>/dev/null || echo "$zen_bin")
