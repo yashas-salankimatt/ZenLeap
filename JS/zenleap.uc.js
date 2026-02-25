@@ -92,6 +92,7 @@
 
     // --- Display ---
     'display.showRelativeNumbers': { default: 'always', type: 'select', label: 'Show Relative Numbers', description: 'When to show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges', options: [{ value: 'always', label: 'Always' }, { value: 'active', label: 'In Leap/Browse Mode' }, { value: 'off', label: 'Off' }] },
+    'display.persistEssentialMarks': { default: true, type: 'toggle', label: 'Persist Essential Tab Marks', description: 'Save marks on essential tabs across browser restarts', category: 'Display', group: 'Tab Badges' },
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
     'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
@@ -1008,6 +1009,10 @@
     saveSettings();
     if (id === 'appearance.theme') applyTheme();
     if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
+    if (id === 'display.persistEssentialMarks') {
+      if (S[id]) saveEssentialMarks();
+      else try { Services.prefs.clearUserPref('uc.zenleap.essentialMarks'); } catch(e) {}
+    }
   }
 
   function resetAllSettings() {
@@ -1017,6 +1022,7 @@
     saveSettings();
     applyTheme();
     updateRelativeNumbers();
+    saveEssentialMarks();
   }
 
   // ── Export / Import ──
@@ -1182,6 +1188,8 @@
     saveSettings();
     applyThemeColors();
     updateRelativeNumbers();
+    if (S['display.persistEssentialMarks']) saveEssentialMarks();
+    else try { Services.prefs.clearUserPref('uc.zenleap.essentialMarks'); } catch(e) {}
     renderSettingsContent();
     showSettingsToast('success', 'Settings imported successfully');
   }
@@ -1768,6 +1776,7 @@
       marks.delete(char);
       _pluginEventBus.emit('mark:cleared', { char });
       log(`Toggled off mark '${char}' from tab`);
+      saveEssentialMarks();
       updateRelativeNumbers();
       return;
     }
@@ -1786,7 +1795,8 @@
     _pluginEventBus.emit('mark:set', { char, tab });
     log(`Set mark '${char}' on tab`);
 
-    // Update display to show the mark
+    // Persist and update display
+    saveEssentialMarks();
     updateRelativeNumbers();
   }
 
@@ -1796,7 +1806,68 @@
     marks.clear();
     _pluginEventBus.emit('marks:cleared', { count });
     log(`Cleared all marks (${count} marks removed)`);
+    saveEssentialMarks();
     updateRelativeNumbers();
+  }
+
+  // ── Persistent essential tab marks ──
+
+  function saveEssentialMarks() {
+    if (!S['display.persistEssentialMarks']) return;
+    const saved = {};
+    for (const [char, tab] of marks) {
+      if (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential')) {
+        const url = tab.linkedBrowser?.currentURI?.spec;
+        if (url && url !== 'about:blank') saved[char] = url;
+      }
+    }
+    try {
+      Services.prefs.setStringPref('uc.zenleap.essentialMarks', JSON.stringify(saved));
+    } catch (e) { log(`Failed to save essential marks: ${e}`); }
+  }
+
+  function restoreEssentialMarks(retriesLeft = 5) {
+    if (!S['display.persistEssentialMarks']) return;
+    try {
+      if (Services?.prefs?.getPrefType('uc.zenleap.essentialMarks') !== Services.prefs.PREF_STRING) return;
+      const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.essentialMarks'));
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+
+      // Build a URL → tab lookup for essential tabs only (consume matched tabs to handle duplicates)
+      const essentialByUrl = new Map();
+      for (const tab of gBrowser.tabs) {
+        if (!tab.hasAttribute('zen-essential') || tab.closing || !tab.parentNode) continue;
+        const url = tab.linkedBrowser?.currentURI?.spec;
+        if (url && url !== 'about:blank') {
+          if (!essentialByUrl.has(url)) essentialByUrl.set(url, []);
+          essentialByUrl.get(url).push(tab);
+        }
+      }
+
+      let restored = 0;
+      const unmatched = {};
+      for (const [char, url] of Object.entries(saved)) {
+        if (typeof char !== 'string' || char.length !== 1 || typeof url !== 'string') continue;
+        if (marks.has(char)) continue; // Already restored in a prior retry
+        const tabs = essentialByUrl.get(url);
+        if (tabs && tabs.length > 0) {
+          marks.set(char, tabs.shift()); // Consume the first matching tab
+          restored++;
+        } else {
+          unmatched[char] = url;
+        }
+      }
+      if (restored > 0) {
+        updateRelativeNumbers();
+        log(`Restored ${restored} essential tab mark(s)`);
+      }
+
+      // Retry for unmatched marks (tabs may still be loading from about:blank)
+      if (Object.keys(unmatched).length > 0 && retriesLeft > 0) {
+        log(`${Object.keys(unmatched).length} essential mark(s) unmatched, retrying in 1s (${retriesLeft} left)`);
+        setTimeout(() => restoreEssentialMarks(retriesLeft - 1), 1000);
+      }
+    } catch (e) { log(`Failed to restore essential marks: ${e}`); }
   }
 
   // Go to a marked tab
@@ -1810,6 +1881,7 @@
     if (tab.closing || !tab.parentNode) {
       // Tab was closed, remove the mark
       marks.delete(char);
+      saveEssentialMarks();
       log(`Mark '${char}' tab was closed, removing mark`);
       return false;
     }
@@ -1823,9 +1895,11 @@
       recordJump(gBrowser.selectedTab);
       gZenWorkspaces.changeWorkspaceWithID(tabWsId).then(() => {
         if (tab.closing || !tab.parentNode) {
+          marks.delete(char);
+          saveEssentialMarks();
           jumpList = savedJumpList;
           jumpListIndex = savedJumpIndex;
-          log(`Mark '${char}' tab closed during workspace switch`);
+          log(`Mark '${char}' tab closed during workspace switch, removing mark`);
           return;
         }
         gBrowser.selectedTab = tab;
@@ -1860,12 +1934,15 @@
 
   // Clean up marks for closed tabs
   function cleanupMarks() {
+    let cleaned = false;
     for (const [char, tab] of marks) {
       if (!tab || tab.closing || !tab.parentNode) {
         marks.delete(char);
+        cleaned = true;
         log(`Cleaned up mark '${char}' for closed tab`);
       }
     }
+    if (cleaned) saveEssentialMarks();
   }
 
   // ============================================
@@ -3048,7 +3125,7 @@
       marks: {
         set: (char, tab) => setMark(char, tab),
         get: (char) => marks.get(char) || null,
-        clear: (char) => { marks.delete(char); updateRelativeNumbers(); },
+        clear: (char) => { marks.delete(char); saveEssentialMarks(); updateRelativeNumbers(); },
         clearAll: () => clearAllMarks(),
         getAll: () => {
           const result = {};
@@ -12582,6 +12659,10 @@
         saveSettings();
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
         if (id === 'appearance.applyToBrowser') applyBrowserTheme();
+        if (id === 'display.persistEssentialMarks') {
+          if (cb.checked) saveEssentialMarks();
+          else try { Services.prefs.clearUserPref('uc.zenleap.essentialMarks'); } catch(e) {}
+        }
       });
       control.appendChild(toggle);
     } else if (schema.type === 'select') {
@@ -17649,6 +17730,7 @@
             updateLeapOverlayState();
             if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
               marks.delete(key);
+              saveEssentialMarks();
               log(`Mark '${key}' tab was closed, removing mark`);
             } else {
               log(`Mark '${key}' not found`);
@@ -19048,6 +19130,9 @@
     log('  \'{char} = goto mark | Ctrl+\'{char} = quick goto');
     log('  o = jump back | i = jump forward');
     log('Press Ctrl+/ for tab search (vim-style fuzzy finder)');
+
+    // Restore essential tab marks (delayed to let essential tabs finish loading URLs)
+    setTimeout(() => restoreEssentialMarks(), 2000);
 
     // Auto-check for updates (delayed to not block startup)
     setTimeout(() => autoCheckForUpdates(), 5000);
