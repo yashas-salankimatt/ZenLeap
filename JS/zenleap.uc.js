@@ -17514,11 +17514,11 @@
         browseNumberBuffer = '';
       }
 
-      if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt']) {
+      if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt'] || key === S['keys.leap.browseDown'] || key === S['keys.leap.browseDownAlt']) {
         event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
         return;
       }
-      if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt']) {
+      if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt'] || key === S['keys.leap.browseUp'] || key === S['keys.leap.browseUpAlt']) {
         event.shiftKey ? shiftMoveHighlight('up') : moveHighlight('up');
         return;
       }
