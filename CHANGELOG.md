@@ -5,6 +5,23 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.6] - 2026-02-27
+
+### Fixed
+- **Relative tab numbers with collapsed folders** (#42) — Numbers now properly exclude tabs inside collapsed folders, treat folders as navigable items with relative number badges, handle nested subfolders, and keep the active "peeking" tab numbered when its folder is collapsed
+- **Rebound browse keys only working once** (#44) — Custom keybindings for browse up/down now work consistently by also checking leap mode key settings as fallbacks
+- **Install script permission denied on macOS** (#43) — Replaced unreliable `-w` permission check with try-then-sudo pattern for both install and uninstall
+- **Install script opening wrong app** — Fixed `launch_zen()` using undefined `$ZEN_APP` variable; now correctly derives `.app` path from `$ZEN_RESOURCES`
+- **fx-autoconfig false "already installed"** — Global check now verifies both profile-level and app-level files exist before reporting installed
+
+### Added
+- **Folder relative number badges** — Collapsed folders display relative number badges matching tab badge styling, with direction coloring and highlight states
+- **Stale badge cleanup** — Badges are cleaned from elements that leave the visible items list (prevents ghost badges from Zen's CSS animation approach)
+- **`folder-active` attribute watching** — MutationObserver now tracks Zen's `folder-active` attribute changes to keep numbering in sync when tabs peek from collapsed folders
+
+### Changed
+- **Number jump to folder** — Pressing a number that lands on a folder now highlights it and stays in browse mode instead of auto-expanding/collapsing; use Enter to toggle the folder
+
 ## [3.3.5] - 2026-02-26
 
 ### Added

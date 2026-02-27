@@ -14,7 +14,7 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.5';
+  const VERSION = '3.3.6';
 
   // Sine package manager detection — when true, self-update is disabled
   // (Sine manages file installation; ZenLeap only checks & notifies)
