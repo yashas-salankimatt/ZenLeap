@@ -6096,10 +6096,9 @@
 
       browseMode = true;
       browseDirection = 'down';
-      const currentTab = gBrowser.selectedTab;
-      const currentIdx = visibleItems.indexOf(currentTab);
+      const currentIdx = findCurrentItemIndex(visibleItems);
       originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
-      originalTab = currentTab;
+      originalTab = gBrowser.selectedTab;
       highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
 
       // Pre-select the matched tabs
@@ -15314,9 +15313,18 @@
 
     const tabs = getVisibleTabs().filter(tab => {
       // Exclude tabs inside collapsed folders — Zen hides the container,
-      // not individual tabs, so tab.hidden stays false
-      const folder = tab.group;
-      if (folder && folder.isZenFolder && folder.collapsed) return false;
+      // not individual tabs, so tab.hidden stays false.
+      // Exception: Zen keeps selected tabs visible in collapsed folders via
+      // the 'folder-active' attribute (negative-margin peek). Include these
+      // so numbering matches what the user actually sees.
+      if (tab.hasAttribute('folder-active')) return true;
+      // Walk up the folder hierarchy: if ANY ancestor folder is collapsed,
+      // the tab is hidden (handles nested subfolders).
+      let folder = tab.group;
+      while (folder && folder.isZenFolder) {
+        if (folder.collapsed) return false;
+        folder = folder.group;
+      }
       return true;
     });
     const folders = Array.from(
@@ -15325,6 +15333,12 @@
       const activeWsId = window.gZenWorkspaces?.activeWorkspace;
       const folderWsId = folder.getAttribute('zen-workspace-id');
       if (activeWsId && folderWsId && folderWsId !== activeWsId) return false;
+      // Exclude subfolders whose parent folder is collapsed
+      let parent = folder.group;
+      while (parent && parent.isZenFolder) {
+        if (parent.collapsed) return false;
+        parent = parent.group;
+      }
       return true;
     });
     const combined = [...tabs, ...folders];
@@ -15410,35 +15424,81 @@
     }
   }
 
+  // Find the index of the current tab within the visible items list.
+  // Handles the case where the selected tab is inside a collapsed folder
+  // (including nested subfolders) by returning the folder's index instead.
+  // Returns -1 only when the tab is truly absent from the list.
+  function findCurrentItemIndex(items) {
+    const currentTab = gBrowser.selectedTab;
+    // First pass: direct match.  Prioritized so that a folder-active tab
+    // (visible despite its parent folder being collapsed) is found before
+    // the folder's contains() check would claim it.
+    for (let i = 0; i < items.length; i++) {
+      if (items[i] === currentTab) return i;
+    }
+    // Second pass: check collapsed folders for DOM containment
+    // (handles tabs fully hidden inside collapsed folders/subfolders)
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (isFolder(item) && item.collapsed && item.contains(currentTab)) return i;
+    }
+    return -1;
+  }
+
   // Update relative numbers on all tabs
   // Optimized: builds a reverse mark map (tab→char) once per call for O(1) lookup
   // instead of iterating the marks map per tab.
   function updateRelativeNumbers() {
-    const tabs = getVisibleTabs();
+    // Use folder-aware list: collapsed folders count as one item,
+    // their hidden child tabs are excluded, and folder elements are included.
+    const items = getVisibleItems();
+
+    // Clean stale badges from elements that left the visible items list
+    // (e.g. tabs hidden by folder collapse, subfolders inside collapsed parents).
+    // Without this, badges persist on hidden elements due to Zen's CSS animation
+    // approach (opacity/height transitions instead of display:none).
+    const itemsSet = new Set(items);
+    for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-rel]')) {
+      if (!itemsSet.has(el)) {
+        el.removeAttribute('data-zenleap-direction');
+        el.removeAttribute('data-zenleap-distance');
+        el.removeAttribute('data-zenleap-has-mark');
+        el.removeAttribute('data-zenleap-rel');
+      }
+    }
+    for (const tc of gBrowser.tabContainer.querySelectorAll('.tab-content[data-zenleap-rel]')) {
+      const tab = tc.closest('tab');
+      if (tab && !itemsSet.has(tab)) {
+        tc.removeAttribute('data-zenleap-rel');
+        tc.removeAttribute('data-zenleap-mark');
+      }
+    }
 
     // Check relative numbers display mode: 'always', 'active' (leap/browse only), 'off'
     const relMode = S['display.showRelativeNumbers'];
     if (relMode === 'off' || (relMode === 'active' && !leapMode && !browseMode)) {
-      for (const tab of tabs) {
-        tab.removeAttribute('data-zenleap-direction');
-        tab.removeAttribute('data-zenleap-distance');
-        tab.removeAttribute('data-zenleap-has-mark');
-        const tc = tab.querySelector('.tab-content');
-        if (tc) {
-          tc.removeAttribute('data-zenleap-rel');
-          tc.removeAttribute('data-zenleap-mark');
+      for (const item of items) {
+        item.removeAttribute('data-zenleap-direction');
+        item.removeAttribute('data-zenleap-distance');
+        item.removeAttribute('data-zenleap-has-mark');
+        item.removeAttribute('data-zenleap-rel');
+        if (!isFolder(item)) {
+          const tc = item.querySelector('.tab-content');
+          if (tc) {
+            tc.removeAttribute('data-zenleap-rel');
+            tc.removeAttribute('data-zenleap-mark');
+          }
         }
       }
       return;
     }
 
-    const currentTab = gBrowser.selectedTab;
-    let currentIndex = tabs.indexOf(currentTab);
+    let currentIndex = findCurrentItemIndex(items);
 
     // If the current tab isn't in the visible list (e.g. new tab page),
     // fall back to index 0 so relative numbers still render correctly.
     if (currentIndex === -1) {
-      if (tabs.length === 0) return;
+      if (items.length === 0) return;
       currentIndex = 0;
     }
 
@@ -15451,33 +15511,38 @@
       tabToMark.set(markedTab, char);
     }
 
-    tabs.forEach((tab, index) => {
+    items.forEach((item, index) => {
       const relativeDistance = Math.abs(index - currentIndex);
       const direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
       const displayChar = numberToDisplay(relativeDistance);
 
-      const mark = tabToMark.get(tab) || null;
+      const mark = tabToMark.get(item) || null;
 
-      tab.setAttribute('data-zenleap-direction', direction);
-      tab.setAttribute('data-zenleap-distance', relativeDistance);
+      item.setAttribute('data-zenleap-direction', direction);
+      item.setAttribute('data-zenleap-distance', relativeDistance);
 
-      const tabContent = tab.querySelector('.tab-content');
-      if (tabContent) {
-        if (mark) {
-          // Show mark instead of relative number
-          tabContent.setAttribute('data-zenleap-rel', mark);
-          tabContent.setAttribute('data-zenleap-mark', mark);
-          tab.setAttribute('data-zenleap-has-mark', 'true');
-        } else {
-          // Show relative number
-          tabContent.setAttribute('data-zenleap-rel', displayChar);
-          tabContent.removeAttribute('data-zenleap-mark');
-          tab.removeAttribute('data-zenleap-has-mark');
+      if (isFolder(item)) {
+        // Folders get the badge directly as an attribute (CSS renders via ::after)
+        item.setAttribute('data-zenleap-rel', displayChar);
+      } else {
+        const tabContent = item.querySelector('.tab-content');
+        if (tabContent) {
+          if (mark) {
+            // Show mark instead of relative number
+            tabContent.setAttribute('data-zenleap-rel', mark);
+            tabContent.setAttribute('data-zenleap-mark', mark);
+            item.setAttribute('data-zenleap-has-mark', 'true');
+          } else {
+            // Show relative number
+            tabContent.setAttribute('data-zenleap-rel', displayChar);
+            tabContent.removeAttribute('data-zenleap-mark');
+            item.removeAttribute('data-zenleap-has-mark');
+          }
         }
       }
     });
 
-    log(`Updated ${tabs.length} tabs, current at index ${currentIndex}`);
+    log(`Updated ${items.length} items (tabs + folders), current at index ${currentIndex}`);
   }
 
   // Coalesce rapid relative-number updates into a single animation frame.
@@ -16291,7 +16356,7 @@
   function enterBrowseMode(direction) {
     const items = getVisibleItems();
     const currentTab = gBrowser.selectedTab;
-    const currentIndex = items.indexOf(currentTab);
+    const currentIndex = findCurrentItemIndex(items);
 
     // Evict the active tab's preview from cache — the user was just interacting
     // with it (scrolling, typing, etc.) so any cached snapshot is likely stale.
@@ -16316,7 +16381,7 @@
       browseMode = true;
       browseDirection = direction;
       originalTabIndex = currentIndex;
-      originalTab = items[currentIndex];
+      originalTab = currentTab;
 
       // Move highlight one step in the initial direction
       if (direction === 'down') {
@@ -16404,6 +16469,12 @@
       item.removeAttribute('data-zenleap-highlight');
       item.removeAttribute('data-zenleap-selected');
     });
+    // Also clean stale highlights on elements that left the visible items list
+    // (e.g. a folder-active tab that lost the attribute after tab switch)
+    for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-highlight], [data-zenleap-selected]')) {
+      el.removeAttribute('data-zenleap-highlight');
+      el.removeAttribute('data-zenleap-selected');
+    }
     _previousHighlightedItem = null;
     // Dismiss folder delete modal if open
     if (folderDeleteMode) {
@@ -16476,7 +16547,7 @@
       setTimeout(() => {
         _visibleItemsCache = null; // Ensure fresh data after workspace switch
         const newItems = getVisibleItems();
-        const activeIdx = newItems.indexOf(gBrowser.selectedTab);
+        const activeIdx = findCurrentItemIndex(newItems);
         highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
         if (newItems.length > 0) {
           updateHighlight();
@@ -16517,10 +16588,11 @@
     if (targetIndex >= 0 && targetIndex < items.length) {
       const target = items[targetIndex];
       if (isFolder(target)) {
-        // If jumping lands on a folder, toggle it instead
-        target.collapsed = !target.collapsed;
-        log(`Jumped ${direction} ${distance} from original, toggled folder "${target.label}"`);
-        exitLeapMode(true);
+        // If jumping lands on a folder, move highlight there and stay in browse mode
+        highlightedTabIndex = targetIndex;
+        updateHighlight();
+        updateLeapOverlayState();
+        log(`Jumped ${direction} ${distance} from original, highlighted folder "${target.label}"`);
         return;
       }
       gBrowser.selectedTab = target;
@@ -16550,6 +16622,7 @@
           }
           updateHighlight();
           updateLeapOverlayState();
+          updateRelativeNumbers();
         }, 50);
         return; // Stay in browse mode
       }
@@ -17032,14 +17105,32 @@
 
   // Go to absolute tab position (1-indexed)
   function goToAbsoluteTab(tabNumber) {
-    const tabs = getVisibleTabs();
-    if (tabs.length === 0) return;
+    const items = getVisibleItems();
+    if (items.length === 0) return;
 
     // tabNumber is 1-indexed, convert to 0-indexed
-    const targetIndex = Math.max(0, Math.min(tabs.length - 1, tabNumber - 1));
-    gBrowser.selectedTab = tabs[targetIndex];
-    log(`Jumped to absolute tab ${tabNumber} (index ${targetIndex})`);
-    exitLeapMode(true);
+    const targetIndex = Math.max(0, Math.min(items.length - 1, tabNumber - 1));
+    const target = items[targetIndex];
+    if (isFolder(target)) {
+      // Jump to folder: enter browse mode with highlight on the folder
+      if (!browseMode) {
+        browseMode = true;
+        browseDirection = 'down';
+        originalTabIndex = findCurrentItemIndex(items);
+        if (originalTabIndex === -1) originalTabIndex = 0;
+        originalTab = gBrowser.selectedTab;
+        clearTimeout(leapModeTimeout);
+      }
+      highlightedTabIndex = targetIndex;
+      updateHighlight();
+      updateLeapOverlayState();
+      updateRelativeNumbers();
+      log(`Jumped to folder at position ${tabNumber}`);
+    } else {
+      gBrowser.selectedTab = target;
+      log(`Jumped to absolute tab ${tabNumber} (index ${targetIndex})`);
+      exitLeapMode(true);
+    }
   }
 
   // Find scrollable tab container by walking up from a starting element.
@@ -17652,12 +17743,17 @@
       // gg - go to first tab (or first unpinned if setting enabled)
       if (key === S['keys.gMode.first'] && gNumberBuffer === '') {
         if (S['display.ggSkipPinned']) {
-          const tabs = getVisibleTabs();
-          const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+          const items = getVisibleItems();
+          const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
           const targetIdx = firstUnpinned >= 0 ? firstUnpinned : 0;
-          gBrowser.selectedTab = tabs[targetIdx];
-          log(`Jumped to first unpinned tab via gg (index ${targetIdx})`);
-          exitLeapMode(true);
+          const target = items[targetIdx];
+          if (isFolder(target)) {
+            goToAbsoluteTab(targetIdx + 1);
+          } else {
+            gBrowser.selectedTab = target;
+            log(`Jumped to first unpinned tab via gg (index ${targetIdx})`);
+            exitLeapMode(true);
+          }
         } else {
           goToAbsoluteTab(1);
         }
@@ -17666,8 +17762,8 @@
 
       // G in g-mode - go to last tab
       if (originalKey === S['keys.gMode.last'] && gNumberBuffer === '') {
-        const tabs = getVisibleTabs();
-        goToAbsoluteTab(tabs.length);
+        const items = getVisibleItems();
+        goToAbsoluteTab(items.length);
         return;
       }
 
@@ -17853,8 +17949,8 @@
       return;
     }
     if (originalKey === S['keys.leap.lastTab']) {
-      const tabs = getVisibleTabs();
-      goToAbsoluteTab(tabs.length);
+      const items = getVisibleItems();
+      goToAbsoluteTab(items.length);
       return;
     }
     if (key === S['keys.leap.gMode']) {
@@ -17906,10 +18002,10 @@
       const isPrev = key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.prevWorkspaceAlt'];
       browseMode = true;
       browseDirection = isPrev ? 'up' : 'down';
-      const tabs = getVisibleTabs();
-      const currentTab = gBrowser.selectedTab;
-      originalTabIndex = tabs.indexOf(currentTab);
-      originalTab = currentTab;
+      const wsItems = getVisibleItems();
+      originalTabIndex = findCurrentItemIndex(wsItems);
+      if (originalTabIndex === -1) originalTabIndex = 0;
+      originalTab = gBrowser.selectedTab;
       highlightedTabIndex = 0;
       clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
@@ -17923,10 +18019,11 @@
 
     // 0 = jump to first unpinned tab (like vim's 0 goes to start of line)
     if (key === '0') {
-      const tabs = getVisibleTabs();
-      const firstUnpinned = tabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
+      const items = getVisibleItems();
+      const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
       if (firstUnpinned >= 0) {
-        gBrowser.selectedTab = tabs[firstUnpinned];
+        const target = items[firstUnpinned];
+        gBrowser.selectedTab = target;
         log(`Jumped to first unpinned tab (index ${firstUnpinned})`);
       }
       exitLeapMode(true);
@@ -17935,10 +18032,15 @@
 
     // $ = jump to last tab (like vim's $ goes to end of line)
     if (originalKey === '$') {
-      const tabs = getVisibleTabs();
-      if (tabs.length > 0) {
-        gBrowser.selectedTab = tabs[tabs.length - 1];
-        log(`Jumped to last tab (index ${tabs.length - 1})`);
+      const items = getVisibleItems();
+      if (items.length > 0) {
+        // Find the last non-folder item, or fall back to last item
+        let lastTabIdx = items.length - 1;
+        while (lastTabIdx >= 0 && isFolder(items[lastTabIdx])) lastTabIdx--;
+        if (lastTabIdx >= 0) {
+          gBrowser.selectedTab = items[lastTabIdx];
+          log(`Jumped to last tab (index ${lastTabIdx})`);
+        }
       }
       exitLeapMode(true);
       return;
@@ -17976,6 +18078,19 @@
     document.addEventListener('ZenWorkspaceChanged', (event) => {
       scheduleRelativeNumberUpdate();
       _pluginEventBus.emit('workspace:changed', { event });
+    });
+
+    // Watch for folder collapse/expand and folder-active changes to refresh
+    // relative numbers.  Zen toggles 'collapsed' on zen-folder elements and
+    // 'folder-active' on tabs that peek out from collapsed folders.
+    const folderObserver = new MutationObserver(() => {
+      _visibleItemsCache = null;
+      scheduleRelativeNumberUpdate();
+    });
+    folderObserver.observe(gBrowser.tabContainer, {
+      attributes: true,
+      attributeFilter: ['collapsed', 'folder-active'],
+      subtree: true,
     });
 
     log('Tab listeners set up');
@@ -18457,6 +18572,48 @@
         outline-offset: -2px;
         background-color: var(--zl-highlight-selected-20) !important;
         border-radius: var(--zl-r-sm) !important;
+      }
+
+      /* ═══ Folder relative number badges ═══ */
+      zen-folder[data-zenleap-rel] {
+        position: relative;
+      }
+      zen-folder[data-zenleap-rel]::after {
+        content: attr(data-zenleap-rel) !important;
+        font-weight: bold !important;
+        font-size: 80% !important;
+        z-index: 100 !important;
+        display: inline-block !important;
+        background-color: var(--zl-badge-bg) !important;
+        color: var(--zl-badge-color) !important;
+        text-align: center !important;
+        min-width: 20px !important;
+        height: 20px !important;
+        line-height: 20px !important;
+        padding: 0 3px !important;
+        border-radius: 4px !important;
+        margin-left: 3px !important;
+        font-family: var(--zl-font-mono) !important;
+        position: absolute !important;
+        top: 4px !important;
+        right: 4px !important;
+      }
+      zen-folder[data-zenleap-direction="current"][data-zenleap-rel]::after {
+        background-color: var(--zl-current-bg) !important;
+        color: var(--zl-current-color) !important;
+      }
+      zen-folder[data-zenleap-direction="up"][data-zenleap-rel]::after {
+        background-color: var(--zl-up-bg) !important;
+        color: var(--zl-current-color) !important;
+      }
+      zen-folder[data-zenleap-direction="down"][data-zenleap-rel]::after {
+        background-color: var(--zl-down-bg) !important;
+        color: var(--zl-current-color) !important;
+      }
+      zen-folder[data-zenleap-highlight="true"][data-zenleap-rel]::after {
+        background-color: var(--zl-highlight) !important;
+        color: var(--zl-current-color) !important;
+        box-shadow: 0 0 8px var(--zl-highlight-60) !important;
       }
 
       /* ═══ Folder Delete Modal ═══ */
