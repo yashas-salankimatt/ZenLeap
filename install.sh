@@ -421,7 +421,18 @@ check_zen_running() {
 
 # Check if fx-autoconfig is installed
 check_fxautoconfig() {
+    # Check both profile-level files AND app-level bootstrap files.
+    # A previous install may have left profile files intact but the app-level
+    # config.js/config-prefs.js could be missing (e.g. Zen update, manual removal).
+    local has_profile=false
+    local has_app=false
     if [ -f "$CHROME_DIR/utils/boot.sys.mjs" ] || [ -f "$CHROME_DIR/utils/chrome.manifest" ]; then
+        has_profile=true
+    fi
+    if [ -f "$ZEN_RESOURCES/config.js" ] && [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
+        has_app=true
+    fi
+    if [ "$has_profile" = true ] && [ "$has_app" = true ]; then
         echo -e "${GREEN}✓${NC} fx-autoconfig already installed"
         return 0
     fi
@@ -480,16 +491,21 @@ install_fxautoconfig() {
             mkdir -p "$ZEN_RESOURCES/defaults/pref"
             cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
             cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
-        elif [ -w "$ZEN_RESOURCES" ] || [ -w "$(dirname "$ZEN_RESOURCES")" ]; then
-            echo "  Installing to Zen Browser..."
-            mkdir -p "$ZEN_RESOURCES/defaults/pref"
-            cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
-            cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
         else
-            echo "  Installing to Zen Browser (may require admin password)..."
-            sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
-            sudo cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
-            sudo cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+            # Try without sudo first; fall back to sudo if it fails.
+            # The shell -w test can give false positives on macOS (e.g. SIP,
+            # app translocation, or nested directory ownership differences).
+            echo "  Installing to Zen Browser..."
+            if mkdir -p "$ZEN_RESOURCES/defaults/pref" 2>/dev/null && \
+               cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js" 2>/dev/null && \
+               cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js" 2>/dev/null; then
+                true  # success without sudo
+            else
+                echo "  Retrying with elevated permissions (may require admin password)..."
+                sudo mkdir -p "$ZEN_RESOURCES/defaults/pref"
+                sudo cp "$extracted_dir/program/config.js" "$ZEN_RESOURCES/config.js"
+                sudo cp "$extracted_dir/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
+            fi
         fi
     fi
 
@@ -687,11 +703,9 @@ uninstall_fxautoconfig() {
 
     local found_anything=false
 
-    # Remove program-level files
+    # Remove program-level files (try without sudo, fall back to sudo)
     if [ -f "$ZEN_RESOURCES/config.js" ]; then
-        if [ "$IS_FLATPAK" = true ] || [ -w "$ZEN_RESOURCES/config.js" ]; then
-            rm -f "$ZEN_RESOURCES/config.js"
-        else
+        if ! rm -f "$ZEN_RESOURCES/config.js" 2>/dev/null; then
             echo "  Removing config.js (may require admin password)..."
             sudo rm -f "$ZEN_RESOURCES/config.js"
         fi
@@ -700,9 +714,8 @@ uninstall_fxautoconfig() {
     fi
 
     if [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
-        if [ "$IS_FLATPAK" = true ] || [ -w "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
-            rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
-        else
+        if ! rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" 2>/dev/null; then
+            echo "  Removing config-prefs.js (may require admin password)..."
             sudo rm -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js"
         fi
         echo -e "${GREEN}✓${NC} Removed config-prefs.js"
@@ -765,7 +778,9 @@ clear_cache() {
 # Launch Zen Browser
 launch_zen() {
     if [ "$OS" = "macos" ]; then
-        open "$ZEN_APP"
+        # Derive .app path from ZEN_RESOURCES (e.g. /Applications/Zen.app/Contents/Resources → /Applications/Zen.app)
+        local zen_app="${ZEN_RESOURCES%/Contents/Resources}"
+        open "$zen_app"
     elif [ "$IS_FLATPAK" = true ]; then
         flatpak run app.zen_browser.zen &
     elif command -v zen &>/dev/null; then
