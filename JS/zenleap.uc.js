@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.4  // Keep in sync with VERSION constant below
+// @version        3.3.5  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
@@ -14,7 +14,11 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.4';
+  const VERSION = '3.3.5';
+
+  // Sine package manager detection — when true, self-update is disabled
+  // (Sine manages file installation; ZenLeap only checks & notifies)
+  let isSineManaged = false;
 
   // ============================================
   // SETTINGS SYSTEM
@@ -7590,6 +7594,20 @@
   let updateToastVersion = null;
   let updateStylesInjected = false;
 
+  // Detect Sine package manager install (disables self-update when found)
+  async function detectSineInstall() {
+    try {
+      const sinePath = PathUtils.join(
+        PathUtils.profileDir, 'chrome', 'sine-mods', 'zenleap-relative-tab-nav'
+      );
+      isSineManaged = await IOUtils.exists(sinePath);
+      if (isSineManaged) log('Sine-managed installation detected \u2014 self-update disabled');
+    } catch (e) {
+      log(`Sine detection failed (non-critical): ${e}`);
+      isSineManaged = false;
+    }
+  }
+
   // Parse version from script content (matches @version X.Y.Z)
   function parseVersionFromContent(content) {
     const match = content.match(/@version\s+([0-9.]+)/);
@@ -7687,6 +7705,14 @@
   // Download and install the update
   // Callback: onProgress('downloading' | 'installing-js' | 'installing-css' | 'done' | 'error', detail?)
   async function downloadAndInstallUpdate(onProgress) {
+    // Hard block: Sine-managed installs must never self-update
+    if (isSineManaged) {
+      const msg = 'Self-update is disabled — this installation is managed by Sine';
+      log(msg);
+      onProgress('error', msg);
+      return { success: false, error: msg };
+    }
+
     try {
       // --- Download JS ---
       onProgress('downloading', 'Fetching zenleap.uc.js from GitHub');
@@ -8046,6 +8072,14 @@
     `;
     body.appendChild(versions);
 
+    // Sine notice — shown prominently between version pills and changelog
+    if (isSineManaged) {
+      const sineBar = document.createElement('div');
+      sineBar.style.cssText = 'padding:10px 24px;border-bottom:1px solid var(--zl-border-subtle);display:flex;align-items:center;justify-content:center;gap:8px;background:var(--zl-accent-dim);';
+      sineBar.innerHTML = '<span style="font-size:13px;color:var(--zl-accent);font-weight:600;">Update through the Sine mod settings page</span>';
+      body.appendChild(sineBar);
+    }
+
     // Changelog
     if (changelog && changelog.length > 0) {
       const cl = document.createElement('div');
@@ -8072,28 +8106,49 @@
     const actions = document.createElement('div');
     actions.className = 'zenleap-update-actions';
 
-    const laterBtn = document.createElement('button');
-    laterBtn.className = 'zenleap-update-btn secondary';
-    laterBtn.textContent = 'Later';
-    const laterKbd = document.createElement('kbd');
-    laterKbd.textContent = 'Esc';
-    laterBtn.appendChild(laterKbd);
-    laterBtn.addEventListener('click', () => {
-      exitUpdateMode();
-    });
+    if (isSineManaged) {
+      // Sine-managed: show informational message instead of update button
+      actions.style.flexDirection = 'column';
+      actions.style.alignItems = 'center';
+      actions.style.gap = '12px';
 
-    const updateBtn = document.createElement('button');
-    updateBtn.className = 'zenleap-update-btn primary';
-    updateBtn.textContent = 'Update Now';
-    const updateKbd = document.createElement('kbd');
-    updateKbd.textContent = '\u21B5';
-    updateBtn.appendChild(updateKbd);
-    updateBtn.addEventListener('click', () => {
-      performUpdate();
-    });
+      const sineNotice = document.createElement('div');
+      sineNotice.style.cssText = 'font-size:12px;color:var(--zl-text-secondary);text-align:center;line-height:1.5;';
+      sineNotice.innerHTML = 'This installation is managed by <strong style="color:var(--zl-accent)">Sine</strong>.<br>Update through the Sine mod settings page.';
+      actions.appendChild(sineNotice);
 
-    actions.appendChild(laterBtn);
-    actions.appendChild(updateBtn);
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'zenleap-update-btn secondary';
+      closeBtn.textContent = 'Close';
+      const closeKbd = document.createElement('kbd');
+      closeKbd.textContent = 'Esc';
+      closeBtn.appendChild(closeKbd);
+      closeBtn.addEventListener('click', () => exitUpdateMode());
+      actions.appendChild(closeBtn);
+    } else {
+      const laterBtn = document.createElement('button');
+      laterBtn.className = 'zenleap-update-btn secondary';
+      laterBtn.textContent = 'Later';
+      const laterKbd = document.createElement('kbd');
+      laterKbd.textContent = 'Esc';
+      laterBtn.appendChild(laterKbd);
+      laterBtn.addEventListener('click', () => {
+        exitUpdateMode();
+      });
+
+      const updateBtn = document.createElement('button');
+      updateBtn.className = 'zenleap-update-btn primary';
+      updateBtn.textContent = 'Update Now';
+      const updateKbd = document.createElement('kbd');
+      updateKbd.textContent = '\u21B5';
+      updateBtn.appendChild(updateKbd);
+      updateBtn.addEventListener('click', () => {
+        performUpdate();
+      });
+
+      actions.appendChild(laterBtn);
+      actions.appendChild(updateBtn);
+    }
     body.appendChild(actions);
   }
 
@@ -8220,7 +8275,9 @@
     retryBtn.addEventListener('click', () => performUpdate());
 
     actions.appendChild(closeBtn);
-    actions.appendChild(retryBtn);
+    if (!isSineManaged) {
+      actions.appendChild(retryBtn);
+    }
     body.appendChild(actions);
   }
 
@@ -8281,6 +8338,9 @@
 
   // Perform the actual update (download + install)
   async function performUpdate() {
+    // Hard block: Sine-managed installs must never self-update
+    if (isSineManaged) return;
+
     renderUpdateProgress('downloading', 'Fetching files from GitHub');
     const result = await downloadAndInstallUpdate((status, detail) => {
       if (!updateMode) return;
@@ -8343,11 +8403,15 @@
 
     const text = document.createElement('span');
     text.className = 'zenleap-toast-text';
-    text.innerHTML = `ZenLeap <strong>v${remoteVersion}</strong> available`;
+    text.innerHTML = isSineManaged
+      ? `ZenLeap <strong>v${remoteVersion}</strong> available \u2014 update via <strong>Sine</strong>`
+      : `ZenLeap <strong>v${remoteVersion}</strong> available`;
 
     const keys = document.createElement('span');
     keys.className = 'zenleap-toast-keys';
-    keys.innerHTML = `<kbd>\u21B5</kbd> update <kbd>Esc</kbd> dismiss`;
+    keys.innerHTML = isSineManaged
+      ? `<kbd>\u21B5</kbd> info <kbd>Esc</kbd> dismiss`
+      : `<kbd>\u21B5</kbd> update <kbd>Esc</kbd> dismiss`;
 
     toast.appendChild(text);
     toast.appendChild(keys);
@@ -12951,11 +13015,16 @@
     updateHint.className = 'zenleap-about-update-hint';
     updateHint.style.display = 'none';
 
-    const hintKbd = document.createElement('kbd');
-    hintKbd.textContent = '\u21B5';
-    const hintText = document.createTextNode(' to update');
-    updateHint.appendChild(hintKbd);
-    updateHint.appendChild(hintText);
+    if (isSineManaged) {
+      const hintText = document.createTextNode('Update via Sine');
+      updateHint.appendChild(hintText);
+    } else {
+      const hintKbd = document.createElement('kbd');
+      hintKbd.textContent = '\u21B5';
+      const hintText = document.createTextNode(' to update');
+      updateHint.appendChild(hintKbd);
+      updateHint.appendChild(hintText);
+    }
     versionCard.appendChild(updateHint);
 
     wrap.appendChild(versionCard);
@@ -17113,7 +17182,7 @@
         } else {
           exitSettingsMode();
         }
-      } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available') {
+      } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available' && !isSineManaged) {
         event.preventDefault();
         event.stopPropagation();
         exitSettingsMode();
@@ -17129,11 +17198,15 @@
       if (event.key === 'Escape') {
         exitUpdateMode();
       } else if (event.key === 'Enter') {
-        if (updateModalState === 'available') performUpdate();
+        if (updateModalState === 'available') {
+          if (isSineManaged) exitUpdateMode(); else performUpdate();
+        }
         else if (updateModalState === 'success') {
           try { Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart); } catch(e) { log(`Restart failed: ${e}`); }
         }
-        else if (updateModalState === 'error') performUpdate(); // retry
+        else if (updateModalState === 'error') {
+          if (isSineManaged) exitUpdateMode(); else performUpdate(); // retry
+        }
         else if (updateModalState === 'uptodate') exitUpdateMode();
       }
       return;
@@ -19146,8 +19219,10 @@
     // Restore essential tab marks (delayed to let essential tabs finish loading URLs)
     setTimeout(() => restoreEssentialMarks(), 2000);
 
-    // Auto-check for updates (delayed to not block startup)
-    setTimeout(() => autoCheckForUpdates(), 5000);
+    // Detect Sine install, then auto-check for updates (delayed to not block startup)
+    detectSineInstall().then(() => {
+      setTimeout(() => autoCheckForUpdates(), 5000);
+    });
   }
 
   // Start initialization

@@ -5,6 +5,21 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.5] - 2026-02-26
+
+### Added
+- **Sine Package Manager Compatibility** — ZenLeap now detects Sine-managed installations at runtime and disables self-update
+  - Checks for the Sine mod directory on startup
+  - Update checking and notifications are preserved — users are informed when new versions are available
+  - Update toast shows "update via Sine" with an info shortcut instead of an update trigger
+  - Update modal displays a prominent "Update through the Sine mod settings page" notice between version pills and changelog
+  - "Update Now" button and Enter-to-update keyboard shortcut are removed when Sine-managed
+  - Defense-in-depth: both `performUpdate()` and `downloadAndInstallUpdate()` have independent hard guards
+  - About page shows "Update via Sine" hint instead of "Enter to update"
+
+### Changed
+- **Theme author** — Updated theme.json author to `yashas-salankimatt`
+
 ## [3.3.4] - 2026-02-25
 
 ### Added
