@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.5  // Keep in sync with VERSION constant below
+// @version        3.3.7  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
@@ -14,7 +14,7 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.6';
+  const VERSION = '3.3.7';
 
   // Sine package manager detection — when true, self-update is disabled
   // (Sine manages file installation; ZenLeap only checks & notifies)
@@ -2836,38 +2836,85 @@
   };
 
   // ── Plugin Data Persistence ──
-  function loadPluginData() {
-    try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
-        _pluginData = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
-      }
-    } catch (e) { _pluginData = {}; }
+  const _pluginDataPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugin-data.json');
+  let _pluginSaveTimer = null;
+  let _pluginSavePromise = Promise.resolve();
+  let _pluginDataLoaded = false;
+  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+
+  function _isPlainObject(v) {
+    return v != null && typeof v === 'object' && !Array.isArray(v);
   }
 
-  let _pluginSaveTimer = null;
-  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+  async function loadPluginData() {
+    // Try loading from file first
+    try {
+      const loaded = await IOUtils.readJSON(_pluginDataPath);
+      if (_isPlainObject(loaded)) {
+        Object.assign(_pluginData, loaded);
+        _pluginDataLoaded = true;
+        return;
+      }
+      console.warn('[ZenLeap] Plugin data file contained invalid data, ignoring');
+    } catch (e) {
+      if (e?.name !== 'NotFoundError') {
+        console.warn('[ZenLeap] Plugin data file corrupt or unreadable, checking for pref migration:', e);
+      }
+    }
+
+    // Migrate from old pref-based storage
+    try {
+      if (Services?.prefs?.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
+        const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
+        if (_isPlainObject(parsed)) {
+          Object.assign(_pluginData, parsed);
+          await IOUtils.writeJSON(_pluginDataPath, _pluginData);
+          Services.prefs.clearUserPref('uc.zenleap.plugins');
+          log('Migrated plugin data from prefs to file');
+        }
+      }
+    } catch (e) {
+      console.warn('[ZenLeap] Pref migration failed:', e);
+    }
+
+    _pluginDataLoaded = true;
+  }
+
+  function _doWritePluginData() {
+    _pluginSavePromise = _pluginSavePromise.then(
+      () => IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
+        console.error('[ZenLeap] Failed to save plugin data:', e);
+      })
+    );
+  }
 
   function savePluginData() {
     if (_pluginSaveTimer) return;
     _pluginSaveTimer = setTimeout(() => {
       _pluginSaveTimer = null;
-      try {
-        const json = JSON.stringify(_pluginData);
-        Services.prefs.setStringPref('uc.zenleap.plugins', json);
-      } catch (e) {
-        console.error('[ZenLeap] Failed to save plugin data:', e);
-      }
+      _doWritePluginData();
     }, 500);
   }
 
   function savePluginDataImmediate() {
     if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
-    try {
-      Services.prefs.setStringPref('uc.zenleap.plugins', JSON.stringify(_pluginData));
-    } catch (e) {
-      console.error('[ZenLeap] Failed to save plugin data:', e);
-    }
+    _doWritePluginData();
   }
+
+  // Flush pending writes on shutdown — blocker ensures writes complete before profile teardown
+  IOUtils.profileBeforeChange.addBlocker(
+    'ZenLeap plugin data flush',
+    async () => {
+      if (_pluginSaveTimer) {
+        clearTimeout(_pluginSaveTimer);
+        _pluginSaveTimer = null;
+      }
+      await _pluginSavePromise;
+      if (_pluginDataLoaded) {
+        await IOUtils.writeJSON(_pluginDataPath, _pluginData);
+      }
+    }
+  );
 
   function checkStorageQuota(pluginId) {
     const data = _pluginData[pluginId]?.storage;
@@ -2878,7 +2925,10 @@
         console.warn(`[ZenLeap] Plugin "${pluginId}" storage exceeds quota (${Math.round(size / 1024)}KB / ${PLUGIN_STORAGE_QUOTA / 1024}KB)`);
         return false;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn(`[ZenLeap] Plugin "${pluginId}" storage quota check failed:`, e);
+      return false;
+    }
     return true;
   }
 
@@ -4247,7 +4297,7 @@
 
   // ── Initialize Plugin System ──
   async function initPluginSystem() {
-    loadPluginData();
+    await loadPluginData();
     await loadExternalPlugins();
     log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) loaded`);
   }
@@ -19356,7 +19406,7 @@
     // Load user themes async; re-apply theme once loaded (built-in applies immediately via injectStyles)
     loadUserThemes().then(() => applyTheme());
     ensureThemesFile();
-    initPluginSystem(); // Async — built-in plugins load synchronously, external plugins load in background
+    initPluginSystem().catch(e => console.error('[ZenLeap] Plugin system init failed:', e));
     setupTabListeners();
     setupKeyboardListener();
     setupUrlbarVimMode();

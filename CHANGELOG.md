@@ -5,6 +5,14 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.7] - 2026-03-04
+
+### Changed
+- **Plugin data persistence moved to file** — Plugin data (enabled state, settings, scoped storage) is now stored in `zenleap-plugin-data.json` instead of a Firefox preference, eliminating the `uc.zenleap.plugins` pref size warning and improving scalability
+- **Automatic migration** — Existing plugin data is migrated from the old pref to the new file on first launch; the pref is then cleaned up
+- **Shutdown safety** — Plugin data writes are flushed via `IOUtils.profileBeforeChange` shutdown blocker, preventing data loss on browser exit
+- **Write serialization** — Concurrent plugin data writes are serialized through a promise chain to prevent race conditions
+
 ## [3.3.6] - 2026-02-27
 
 ### Fixed
