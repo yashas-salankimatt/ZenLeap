@@ -5,6 +5,17 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.8] - 2026-03-13
+
+### Fixed
+- **Browser theme not applying on Zen 1.19+** — Zen moved `--zen-main-browser-background` and `--zen-main-browser-background-toolbar` from `:root` to dedicated `#zen-browser-background` and `#zen-toolbar-background` elements. ZenLeap now sets these properties on the correct element targets while maintaining backwards compatibility with older Zen versions
+- **Workspace switch animation flash** — The `onWorkspaceChange` wrapper now passes `duringAnimation` to avoid clobbering Zen's cross-fade spring animation mid-transition, preventing brief flashes of native Zen colors during workspace switches
+- **Stale element references** — Background element targets are now resolved at call time via `gZenThemePicker` getters (with `getElementById` fallback) instead of being cached once at script load
+
+### Changed
+- **Element-target property lists** — Managed properties for each background element are now in declarative lists (`_zenBgElProps`, `_zenToolbarBgElProps`) for cleaner revert logic
+- **Complete revert path** — Disabling "Apply Theme to Browser" now clears all overrides from both `:root` and element targets, including `-old` variants and `--zen-background-opacity`
+
 ## [3.3.7] - 2026-03-04
 
 ### Changed

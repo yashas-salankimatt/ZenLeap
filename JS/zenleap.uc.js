@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.7  // Keep in sync with VERSION constant below
+// @version        3.3.8  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
@@ -14,7 +14,7 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.7';
+  const VERSION = '3.3.8';
 
   // Sine package manager detection — when true, self-update is disabled
   // (Sine manages file installation; ZenLeap only checks & notifies)
@@ -18338,9 +18338,51 @@
     '--toolbar-bgcolor',
   ];
 
-  // Apply or revert Zen Browser chrome theme colors
-  function applyBrowserTheme(t) {
+  // Apply or revert Zen Browser chrome theme colors.
+  // New Zen (1.19+) sets --zen-main-browser-background on #zen-browser-background
+  // and --zen-main-browser-background-toolbar on #zen-toolbar-background instead
+  // of on :root. We target both for backwards compatibility with older Zen.
+  // Element-level properties that we manage on the dedicated background elements.
+  const _zenBgElProps = [
+    '--zen-main-browser-background',
+    '--zen-main-browser-background-old',
+    '--zen-background-opacity',
+  ];
+  const _zenToolbarBgElProps = [
+    '--zen-main-browser-background-toolbar',
+    '--zen-main-browser-background-toolbar-old',
+    '--zen-background-opacity',
+  ];
+
+  // Resolve the background element targets. Uses gZenThemePicker's getters when
+  // available (stays in sync with Zen's own references), falls back to getElementById.
+  function _getZenBgEl() {
+    return window.gZenThemePicker?.browserBackgroundElement
+      || document.getElementById('zen-browser-background');
+  }
+  function _getZenToolbarBgEl() {
+    return window.gZenThemePicker?.toolbarBackgroundElement
+      || document.getElementById('zen-toolbar-background');
+  }
+
+  // applyBrowserTheme accepts an options object:
+  //   t: theme object (resolved from settings if omitted)
+  //   duringAnimation: true when called from the workspace-change wrapper, so we
+  //     avoid clobbering --zen-background-opacity and -old variants mid-transition.
+  function applyBrowserTheme(opts) {
+    // Support legacy call signature: applyBrowserTheme(themeObj)
+    // Discriminate by checking for 'duringAnimation' key (never present on theme objects).
+    let t, duringAnimation = false;
+    if (opts && typeof opts === 'object' && 'duringAnimation' in opts) {
+      t = opts.t;
+      duringAnimation = !!opts.duringAnimation;
+    } else {
+      t = opts;
+    }
+
     const root = document.documentElement;
+    const zenBgEl = _getZenBgEl();
+    const zenToolbarBgEl = _getZenToolbarBgEl();
 
     // Always remove injected stylesheet first
     const existingStyle = document.getElementById('zenleap-browser-theme');
@@ -18349,6 +18391,17 @@
     if (!S['appearance.applyToBrowser']) {
       // Revert: remove our overrides so Zen's own theme takes over
       for (const prop of _zenBrowserProps) root.style.removeProperty(prop);
+      // Clean up -old and opacity from :root too (defensive, for legacy Zen)
+      root.style.removeProperty('--zen-main-browser-background-old');
+      root.style.removeProperty('--zen-main-browser-background-toolbar-old');
+      root.style.removeProperty('--zen-background-opacity');
+      // Also clear element-level overrides if applicable
+      if (zenBgEl) {
+        for (const prop of _zenBgElProps) zenBgEl.style.removeProperty(prop);
+      }
+      if (zenToolbarBgEl) {
+        for (const prop of _zenToolbarBgElProps) zenToolbarBgEl.style.removeProperty(prop);
+      }
       return;
     }
 
@@ -18370,10 +18423,35 @@
     const textSecondary = toHex6(t.textSecondary);
     const textMuted = toHex6(t.textMuted);
 
-    // Core browser chrome properties
+    const bgGradient = `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`;
+    const toolbarGradient = `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`;
+
+    // Core browser chrome properties — always set on :root for properties that
+    // remain there in all Zen versions
     root.style.setProperty('--zen-primary-color', accent);
-    root.style.setProperty('--zen-main-browser-background', `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`);
-    root.style.setProperty('--zen-main-browser-background-toolbar', `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`);
+
+    // Background gradients: new Zen reads these from dedicated elements, not :root.
+    // Set on the correct targets; also set on :root for legacy Zen compat.
+    if (zenBgEl) {
+      zenBgEl.style.setProperty('--zen-main-browser-background', bgGradient);
+      // During workspace-switch animations, Zen is animating --zen-background-opacity
+      // via a spring. Only set -old and opacity when NOT mid-animation (initial apply,
+      // settings change) so we don't disrupt the cross-fade.
+      if (!duringAnimation) {
+        zenBgEl.style.setProperty('--zen-main-browser-background-old', bgGradient);
+        zenBgEl.style.setProperty('--zen-background-opacity', '1');
+      }
+    }
+    if (zenToolbarBgEl) {
+      zenToolbarBgEl.style.setProperty('--zen-main-browser-background-toolbar', toolbarGradient);
+      if (!duringAnimation) {
+        zenToolbarBgEl.style.setProperty('--zen-main-browser-background-toolbar-old', toolbarGradient);
+        zenToolbarBgEl.style.setProperty('--zen-background-opacity', '1');
+      }
+    }
+    // Legacy / fallback: always set on :root too (harmless on new Zen, required on old)
+    root.style.setProperty('--zen-main-browser-background', bgGradient);
+    root.style.setProperty('--zen-main-browser-background-toolbar', toolbarGradient);
 
     // Toolbar element backgrounds (urlbar collapsed state)
     root.style.setProperty('--zen-toolbar-element-bg', hexToRgba(textPrimary, 0.08));
@@ -18488,7 +18566,8 @@
       gZenThemePicker.onWorkspaceChange = (...args) => {
         const result = _origOnWorkspaceChange(...args);
         if (S['appearance.applyToBrowser']) {
-          try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+          // Pass duringAnimation so we don't clobber Zen's cross-fade spring
+          try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
         }
         return result;
       };
@@ -18505,6 +18584,8 @@
     try {
       gZenWorkspaces.addChangeListeners(() => {
         if (S['appearance.applyToBrowser']) {
+          // Change listeners fire after _animateTabs completes, so the animation
+          // is done. Call without duringAnimation to sync -old and opacity values.
           try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
         }
       });
