@@ -5,6 +5,12 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.9] - 2026-03-14
+
+### Fixed
+- **Folder badge off-center and overlapping label text** (#45) — Folder relative number badges are now positioned inside `.tab-group-label-container` instead of on the `zen-folder` element, fixing vertical centering and horizontal alignment with tab badges
+- **Long folder names clashing with badges** (#45) — Folder labels now fade out via `mask-image` gradient before reaching the badge area, matching the text clipping behavior of tab labels
+
 ## [3.3.8] - 2026-03-13
 
 ### Fixed

@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.3.8  // Keep in sync with VERSION constant below
+// @version        3.3.9  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
@@ -14,7 +14,7 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.3.8';
+  const VERSION = '3.3.9';
 
   // Sine package manager detection — when true, self-update is disabled
   // (Sine manages file installation; ZenLeap only checks & notifies)
@@ -15514,6 +15514,9 @@
         el.removeAttribute('data-zenleap-distance');
         el.removeAttribute('data-zenleap-has-mark');
         el.removeAttribute('data-zenleap-rel');
+        // Also clean label container attribute on folders
+        const lc = el.querySelector?.('.tab-group-label-container');
+        if (lc) lc.removeAttribute('data-zenleap-rel');
       }
     }
     for (const tc of gBrowser.tabContainer.querySelectorAll('.tab-content[data-zenleap-rel]')) {
@@ -15532,7 +15535,10 @@
         item.removeAttribute('data-zenleap-distance');
         item.removeAttribute('data-zenleap-has-mark');
         item.removeAttribute('data-zenleap-rel');
-        if (!isFolder(item)) {
+        if (isFolder(item)) {
+          const lc = item.querySelector('.tab-group-label-container');
+          if (lc) lc.removeAttribute('data-zenleap-rel');
+        } else {
           const tc = item.querySelector('.tab-content');
           if (tc) {
             tc.removeAttribute('data-zenleap-rel');
@@ -15572,8 +15578,11 @@
       item.setAttribute('data-zenleap-distance', relativeDistance);
 
       if (isFolder(item)) {
-        // Folders get the badge directly as an attribute (CSS renders via ::after)
+        // Folders: set on both the folder and its label container so the
+        // ::after pseudo on .tab-group-label-container can read the attribute.
         item.setAttribute('data-zenleap-rel', displayChar);
+        const labelContainer = item.querySelector('.tab-group-label-container');
+        if (labelContainer) labelContainer.setAttribute('data-zenleap-rel', displayChar);
       } else {
         const tabContent = item.querySelector('.tab-content');
         if (tabContent) {
@@ -18706,10 +18715,21 @@
       }
 
       /* ═══ Folder relative number badges ═══ */
-      zen-folder[data-zenleap-rel] {
+      /* Badge is positioned inside .tab-group-label-container so it aligns
+         with the folder label row (not the entire folder including child tabs). */
+      zen-folder[data-zenleap-rel] > .tab-group-label-container {
         position: relative;
       }
-      zen-folder[data-zenleap-rel]::after {
+      /* Clip the folder label text so it fades before hitting the badge.
+         Zen's label is width:100% with no overflow handling, unlike tab labels. */
+      zen-folder[data-zenleap-rel] > .tab-group-label-container > label.tab-group-label {
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        mask-image: linear-gradient(to right, black calc(100% - 30px), transparent 100%) !important;
+        -webkit-mask-image: linear-gradient(to right, black calc(100% - 30px), transparent 100%) !important;
+      }
+      zen-folder[data-zenleap-rel] > .tab-group-label-container::after {
         content: attr(data-zenleap-rel) !important;
         font-weight: bold !important;
         font-size: 80% !important;
@@ -18723,25 +18743,25 @@
         line-height: 20px !important;
         padding: 0 3px !important;
         border-radius: 4px !important;
-        margin-left: 3px !important;
         font-family: var(--zl-font-mono) !important;
         position: absolute !important;
-        top: 4px !important;
-        right: 4px !important;
+        right: 8px !important;
+        top: 50% !important;
+        transform: translateY(-50%) !important;
       }
-      zen-folder[data-zenleap-direction="current"][data-zenleap-rel]::after {
+      zen-folder[data-zenleap-direction="current"] > .tab-group-label-container[data-zenleap-rel]::after {
         background-color: var(--zl-current-bg) !important;
         color: var(--zl-current-color) !important;
       }
-      zen-folder[data-zenleap-direction="up"][data-zenleap-rel]::after {
+      zen-folder[data-zenleap-direction="up"] > .tab-group-label-container[data-zenleap-rel]::after {
         background-color: var(--zl-up-bg) !important;
         color: var(--zl-current-color) !important;
       }
-      zen-folder[data-zenleap-direction="down"][data-zenleap-rel]::after {
+      zen-folder[data-zenleap-direction="down"] > .tab-group-label-container[data-zenleap-rel]::after {
         background-color: var(--zl-down-bg) !important;
         color: var(--zl-current-color) !important;
       }
-      zen-folder[data-zenleap-highlight="true"][data-zenleap-rel]::after {
+      zen-folder[data-zenleap-highlight="true"] > .tab-group-label-container[data-zenleap-rel]::after {
         background-color: var(--zl-highlight) !important;
         color: var(--zl-current-color) !important;
         box-shadow: 0 0 8px var(--zl-highlight-60) !important;
