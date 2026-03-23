@@ -5,6 +5,16 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-03-22
+
+### Fixed
+- **Browser freeze on quit** (#48) — Removed the `profileBeforeChange` shutdown blocker that awaited promises which could never resolve during that shutdown phase (both `setTimeout` and `IOUtils.writeJSON` hang when the timer service is already shut down). Plugin data is now flushed via fire-and-forget write in the window `unload` handler instead
+- **jj escape swallowing next character in URL bar** (#47) — The `urlbarSuppressKeypress` flag was not cleared after flushing a pending single `j`, causing the subsequent character's keypress event to be blocked
+
+### Added
+- **`jj Escape to Normal Mode` toggle** — New `timing.jjEscape` setting (default: off) lets users opt in to the jj escape behavior in search and URL bars. Previously this was always on with no way to disable it
+- **Proper shutdown cleanup** — `destroy()` function removes keyboard listeners, disconnects MutationObserver, and aborts gTile document-level listeners via AbortController on window unload
+
 ## [3.3.9] - 2026-03-14
 
 ### Fixed
