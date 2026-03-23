@@ -97,6 +97,7 @@
     'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
     'timing.quickNavSidebarPeek':  { default: 1000, type: 'number', label: 'Quick Nav Sidebar Peek', description: 'Show sidebar after Alt+J/K in compact mode (ms, 0 to disable)', category: 'Timing', group: 'Delays', min: 0, max: 5000, step: 100 },
     'timing.jjThreshold':          { default: 150, type: 'number', label: 'jj Escape Threshold', description: 'Max gap between two j presses to trigger normal mode escape (ms)', category: 'Timing', group: 'Timeouts', min: 50, max: 500, step: 10 },
+    'timing.jjEscape':              { default: false, type: 'toggle', label: 'jj Escape to Normal Mode', description: 'Type jj quickly to escape from insert to normal mode in search and URL bars', category: 'Timing', group: 'Timeouts' },
 
     // --- Display ---
     'display.showRelativeNumbers': { default: 'always', type: 'select', label: 'Show Relative Numbers', description: 'When to show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges', options: [{ value: 'always', label: 'Always' }, { value: 'active', label: 'In Leap/Browse Mode' }, { value: 'off', label: 'Off' }] },
@@ -2683,8 +2684,8 @@
 
     // Handle keydown on input for insert mode navigation
     searchInput.addEventListener('keydown', (e) => {
-      // --- jj-to-normal-mode intercept (insert mode only, vim enabled) ---
-      if (S['display.vimModeInBars'] && searchVimMode === 'insert' &&
+      // --- jj-to-normal-mode intercept (insert mode only, vim enabled, jj enabled) ---
+      if (S['display.vimModeInBars'] && S['timing.jjEscape'] && searchVimMode === 'insert' &&
           e.key === 'j' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -14780,7 +14781,7 @@
     const input = getUrlbarInput();
     if (!input) return;
 
-    if (e.key === 'j' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    if (S['timing.jjEscape'] && e.key === 'j' && !e.ctrlKey && !e.altKey && !e.metaKey) {
       urlbarSuppressKeypress = true;
       e.preventDefault();
       e.stopPropagation();
@@ -14812,9 +14813,11 @@
       return;
     }
 
-    // Flush pending j when any other key arrives
+    // Flush pending j when any other key arrives — clear suppress flag so
+    // this character's keypress fires normally (fixes #47: next char swallowed)
     if (urlbarJjPending) {
       flushUrlbarJ();
+      urlbarSuppressKeypress = false;
     }
   }
 
