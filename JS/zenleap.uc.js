@@ -1616,6 +1616,7 @@
   let gtileDrag = null;              // Move mode mouse drag state
   let gtileMouseSelecting = false;   // Resize mode mouse drag-select active
   let gtileGhostEl = null;           // Ghost element for drag placeholder
+  let _gtileDocAbort = null;          // AbortController for gTile document-level listeners
 
   const GTILE_COLS = 6;
   const GTILE_ROWS = 4;
@@ -2901,20 +2902,14 @@
     _doWritePluginData();
   }
 
-  // Flush pending writes on shutdown — blocker ensures writes complete before profile teardown
-  IOUtils.profileBeforeChange.addBlocker(
-    'ZenLeap plugin data flush',
-    async () => {
-      if (_pluginSaveTimer) {
-        clearTimeout(_pluginSaveTimer);
-        _pluginSaveTimer = null;
-      }
-      await _pluginSavePromise;
-      if (_pluginDataLoaded) {
-        await IOUtils.writeJSON(_pluginDataPath, _pluginData);
-      }
-    }
-  );
+  // Plugin data is saved eagerly during normal operation (debounced 500ms writes).
+  // We previously used a profileBeforeChange blocker for a final flush, but both
+  // setTimeout and IOUtils.writeJSON hang during that shutdown phase, causing the
+  // browser to freeze on quit (issue #48).  Removing the blocker entirely — the
+  // worst case is losing <500ms of unsaved plugin data on quit, which is acceptable.
+  //
+  // Flush synchronously in the window unload handler instead (see destroy()), which
+  // fires earlier in the shutdown sequence when I/O is still alive.
 
   function checkStorageQuota(pluginId) {
     const data = _pluginData[pluginId]?.storage;
@@ -9583,6 +9578,11 @@
   }
 
   function setupGtileMouseEvents(grid, cellLayer, modeSwitch) {
+    // Abort any previous document-level gTile listeners before adding new ones
+    if (_gtileDocAbort) _gtileDocAbort.abort();
+    _gtileDocAbort = new AbortController();
+    const _gtileSig = { signal: _gtileDocAbort.signal };
+
     const DRAG_THRESHOLD = 5;
 
     // --- Hint detection: mouse hints on grid hover, revert on leave ---
@@ -9670,6 +9670,7 @@
 
     document.addEventListener('mousemove', (e) => {
       if (!moveMouseDown || !gtileMode || gtileSubMode !== 'move') return;
+
 
       const dx = e.clientX - moveMouseDown.startX;
       const dy = e.clientY - moveMouseDown.startY;
@@ -9766,7 +9767,7 @@
         gtileDrag.swapIdx = bestIdx;
         updateGtileOverlay();
       }
-    }, { passive: true });
+    }, { passive: true, ..._gtileSig });
 
     document.addEventListener('mouseup', (e) => {
       if (!gtileMode || gtileSubMode !== 'move') { moveMouseDown = null; return; }
@@ -9806,7 +9807,7 @@
       }
 
       moveMouseDown = null;
-    });
+    }, _gtileSig);
 
     // --- Resize mode: hover tracking on cells ---
     cellLayer.addEventListener('mousemove', (e) => {
@@ -9865,7 +9866,7 @@
       gtileCursor.col = col;
       gtileCursor.row = row;
       updateGtileOverlay();
-    }, { passive: true });
+    }, { passive: true, ..._gtileSig });
 
     // Release: disambiguate click (change target) vs drag (apply cell selection)
     document.addEventListener('mouseup', (e) => {
@@ -9892,7 +9893,7 @@
       if (gtileSelecting && gtileAnchor) {
         exitGtileMode(true);
       }
-    });
+    }, _gtileSig);
 
   }
 
@@ -18142,11 +18143,11 @@
     // Watch for folder collapse/expand and folder-active changes to refresh
     // relative numbers.  Zen toggles 'collapsed' on zen-folder elements and
     // 'folder-active' on tabs that peek out from collapsed folders.
-    const folderObserver = new MutationObserver(() => {
+    _folderObserver = new MutationObserver(() => {
       _visibleItemsCache = null;
       scheduleRelativeNumberUpdate();
     });
-    folderObserver.observe(gBrowser.tabContainer, {
+    _folderObserver.observe(gBrowser.tabContainer, {
       attributes: true,
       attributeFilter: ['collapsed', 'folder-active'],
       subtree: true,
@@ -18176,9 +18177,10 @@
     window.addEventListener('keyup', handleKeyUp, true);
 
     // Close gTile overlay if split view is deactivated externally
-    window.addEventListener('ZenViewSplitter:SplitViewDeactivated', () => {
+    _splitViewDeactivatedHandler = () => {
       if (gtileMode) exitGtileMode(false);
-    });
+    };
+    window.addEventListener('ZenViewSplitter:SplitViewDeactivated', _splitViewDeactivatedHandler);
     log('Keyboard listener set up');
   }
 
@@ -19477,10 +19479,49 @@
     }
   }
 
+  // Cleanup all listeners and observers on window unload to prevent shutdown hangs
+  function destroy() {
+    // Remove window-level keyboard listeners
+    window.removeEventListener('keydown', handleKeyDown, true);
+    window.removeEventListener('keyup', handleKeyUp, true);
+
+    if (_splitViewDeactivatedHandler) {
+      window.removeEventListener('ZenViewSplitter:SplitViewDeactivated', _splitViewDeactivatedHandler);
+      _splitViewDeactivatedHandler = null;
+    }
+
+    // Disconnect folder mutation observer
+    if (_folderObserver) {
+      _folderObserver.disconnect();
+      _folderObserver = null;
+    }
+
+    // Abort all gTile document-level listeners
+    if (_gtileDocAbort) {
+      _gtileDocAbort.abort();
+      _gtileDocAbort = null;
+    }
+
+    // Flush plugin data — fire-and-forget during unload (I/O still works here)
+    if (_pluginSaveTimer) {
+      clearTimeout(_pluginSaveTimer);
+      _pluginSaveTimer = null;
+    }
+    if (_pluginDataLoaded) {
+      IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
+        console.error('[ZenLeap] Plugin data flush on shutdown failed:', e);
+      });
+    }
+
+    log('ZenLeap destroyed — listeners and observers cleaned up');
+  }
+
   // Initialize
   let initRetries = 0;
   const MAX_INIT_RETRIES = 20;
   let _zenleapInitDone = false;
+  let _folderObserver = null;         // MutationObserver for folder collapse/expand
+  let _splitViewDeactivatedHandler = null; // Handler for ZenViewSplitter:SplitViewDeactivated
 
   function init() {
     if (_zenleapInitDone) {
@@ -19513,6 +19554,9 @@
     setupUrlbarVimMode();
     setupWorkspaceThemeHook();
     updateRelativeNumbers();
+
+    // Clean up listeners/observers on window unload to prevent shutdown hangs
+    window.addEventListener('unload', destroy);
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
     log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
