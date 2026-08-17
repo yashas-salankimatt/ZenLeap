@@ -1504,6 +1504,8 @@
 
   // Marks (like vim marks)
   let marks = new Map();       // character -> tab reference
+  let markWorkspaceIds = new Map();
+  const ESSENTIAL_MARKS_STORAGE_VERSION = 2;
 
   // ============================================
   // TAB SEARCH (Spotlight-like fuzzy finder)
@@ -1786,6 +1788,7 @@
     // Check if this exact mark is already on this tab - if so, toggle it off
     if (marks.get(char) === tab) {
       marks.delete(char);
+      markWorkspaceIds.delete(char);
       _pluginEventBus.emit('mark:cleared', { char });
       log(`Toggled off mark '${char}' from tab`);
       saveEssentialMarks();
@@ -1797,6 +1800,7 @@
     for (const [key, markedTab] of marks) {
       if (markedTab === tab) {
         marks.delete(key);
+        markWorkspaceIds.delete(key);
         log(`Removed existing mark '${key}' from tab`);
         break;
       }
@@ -1804,6 +1808,11 @@
 
     // Set the new mark (overwrites if char already used on different tab)
     marks.set(char, tab);
+    markWorkspaceIds.delete(char);
+    if (tab.hasAttribute('zen-essential') && window.gZenWorkspaces?.containerSpecificEssentials) {
+      const workspaceId = gZenWorkspaces.activeWorkspace;
+      if (workspaceId) markWorkspaceIds.set(char, workspaceId);
+    }
     _pluginEventBus.emit('mark:set', { char, tab });
     log(`Set mark '${char}' on tab`);
 
@@ -1816,6 +1825,7 @@
   function clearAllMarks() {
     const count = marks.size;
     marks.clear();
+    markWorkspaceIds.clear();
     _pluginEventBus.emit('marks:cleared', { count });
     log(`Cleared all marks (${count} marks removed)`);
     saveEssentialMarks();
@@ -1826,15 +1836,25 @@
 
   function saveEssentialMarks() {
     if (!S['display.persistEssentialMarks']) return;
-    const saved = {};
+    const savedMarks = {};
     for (const [char, tab] of marks) {
       if (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential')) {
         const url = tab.linkedBrowser?.currentURI?.spec;
-        if (url && url !== 'about:blank') saved[char] = url;
+        if (url && url !== 'about:blank') {
+          const workspaceId = markWorkspaceIds.get(char);
+          savedMarks[char] = {
+            url,
+            userContextId: tab.getAttribute('usercontextid') || '0',
+            ...(workspaceId ? { workspaceId } : {}),
+          };
+        }
       }
     }
     try {
-      Services.prefs.setStringPref('uc.zenleap.essentialMarks', JSON.stringify(saved));
+      Services.prefs.setStringPref('uc.zenleap.essentialMarks', JSON.stringify({
+        version: ESSENTIAL_MARKS_STORAGE_VERSION,
+        marks: savedMarks,
+      }));
     } catch (e) { log(`Failed to save essential marks: ${e}`); }
   }
 
@@ -1842,7 +1862,10 @@
     if (!S['display.persistEssentialMarks']) return;
     try {
       if (Services?.prefs?.getPrefType('uc.zenleap.essentialMarks') !== Services.prefs.PREF_STRING) return;
-      const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.essentialMarks'));
+      const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.essentialMarks'));
+      const isCurrentFormat = parsed?.version === ESSENTIAL_MARKS_STORAGE_VERSION &&
+        parsed.marks && typeof parsed.marks === 'object' && !Array.isArray(parsed.marks);
+      const saved = isCurrentFormat ? parsed.marks : parsed;
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
 
       // Build a URL → tab lookup for essential tabs only (consume matched tabs to handle duplicates)
@@ -1858,15 +1881,31 @@
 
       let restored = 0;
       const unmatched = {};
-      for (const [char, url] of Object.entries(saved)) {
-        if (typeof char !== 'string' || char.length !== 1 || typeof url !== 'string') continue;
+      for (const [char, savedMark] of Object.entries(saved)) {
+        if (typeof char !== 'string' || char.length !== 1) continue;
+        const persisted = isCurrentFormat
+          ? savedMark
+          : (typeof savedMark === 'string' ? { url: savedMark } : null);
+        if (!persisted || typeof persisted !== 'object' || typeof persisted.url !== 'string') continue;
+        const { url, workspaceId, userContextId } = persisted;
         if (marks.has(char)) continue; // Already restored in a prior retry
         const tabs = essentialByUrl.get(url);
         if (tabs && tabs.length > 0) {
-          marks.set(char, tabs.shift()); // Consume the first matching tab
-          restored++;
+          const matchingIndex = userContextId === undefined
+            ? 0
+            : tabs.findIndex(tab => (tab.getAttribute('usercontextid') || '0') === String(userContextId));
+          if (matchingIndex >= 0) {
+            const [matchedTab] = tabs.splice(matchingIndex, 1);
+            marks.set(char, matchedTab);
+            if (typeof workspaceId === 'string' && workspaceId) {
+              markWorkspaceIds.set(char, workspaceId);
+            }
+            restored++;
+          } else {
+            unmatched[char] = savedMark;
+          }
         } else {
-          unmatched[char] = url;
+          unmatched[char] = savedMark;
         }
       }
       if (restored > 0) {
@@ -1882,6 +1921,12 @@
     } catch (e) { log(`Failed to restore essential marks: ${e}`); }
   }
 
+  function isEssentialVisibleInActiveWorkspace(tab) {
+    const essentialsContainer = tab?.closest?.('.zen-essentials-container');
+    if (!essentialsContainer) return !tab?.hidden;
+    return !essentialsContainer.hasAttribute('hidden');
+  }
+
   // Go to a marked tab
   function goToMark(char) {
     const tab = marks.get(char);
@@ -1893,14 +1938,20 @@
     if (tab.closing || !tab.parentNode) {
       // Tab was closed, remove the mark
       marks.delete(char);
+      markWorkspaceIds.delete(char);
       saveEssentialMarks();
       log(`Mark '${char}' tab was closed, removing mark`);
       return false;
     }
 
-    // Switch workspace if needed (essential tabs are global, no switch needed)
-    const tabWsId = tab.getAttribute('zen-workspace-id');
-    if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace && !tab.hasAttribute('zen-essential')) {
+    // Essentials lack workspace IDs, so use the workspace captured with the mark.
+    const tabWsId = tab.hasAttribute('zen-essential')
+      ? markWorkspaceIds.get(char)
+      : tab.getAttribute('zen-workspace-id');
+    const needsWorkspaceSwitch = tabWsId && window.gZenWorkspaces &&
+      tabWsId !== gZenWorkspaces.activeWorkspace &&
+      (!tab.hasAttribute('zen-essential') || !isEssentialVisibleInActiveWorkspace(tab));
+    if (needsWorkspaceSwitch) {
       // Save jump list state so we can revert on failure
       const savedJumpList = [...jumpList];
       const savedJumpIndex = jumpListIndex;
@@ -1908,6 +1959,7 @@
       gZenWorkspaces.changeWorkspaceWithID(tabWsId).then(() => {
         if (tab.closing || !tab.parentNode) {
           marks.delete(char);
+          markWorkspaceIds.delete(char);
           saveEssentialMarks();
           jumpList = savedJumpList;
           jumpListIndex = savedJumpIndex;
@@ -1950,6 +2002,7 @@
     for (const [char, tab] of marks) {
       if (!tab || tab.closing || !tab.parentNode) {
         marks.delete(char);
+        markWorkspaceIds.delete(char);
         cleaned = true;
         log(`Cleaned up mark '${char}' for closed tab`);
       }
@@ -3181,7 +3234,7 @@
       marks: {
         set: (char, tab) => setMark(char, tab),
         get: (char) => marks.get(char) || null,
-        clear: (char) => { marks.delete(char); saveEssentialMarks(); updateRelativeNumbers(); },
+        clear: (char) => { marks.delete(char); markWorkspaceIds.delete(char); saveEssentialMarks(); updateRelativeNumbers(); },
         clearAll: () => clearAllMarks(),
         getAll: () => {
           const result = {};
@@ -17974,6 +18027,7 @@
             updateLeapOverlayState();
             if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
               marks.delete(key);
+              markWorkspaceIds.delete(key);
               saveEssentialMarks();
               log(`Mark '${key}' tab was closed, removing mark`);
             } else {
