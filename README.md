@@ -214,7 +214,7 @@ Customize every keybinding, delay, and display option:
 - Settings persist across browser restarts
 
 ### Compact Mode Support
-When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating. The sidebar also temporarily peeks when using `Alt+J/K` quick navigation (configurable duration, 0 to disable).
+When using Zen's compact mode, ZenLeap automatically expands the floating sidebar when you enter leap mode, so you can see your tabs while navigating (on by default; toggle in Settings → Display → Navigation). The sidebar also temporarily peeks when using `Alt+J/K` quick navigation (configurable duration, 0 to disable).
 
 ## Visual Demo
 

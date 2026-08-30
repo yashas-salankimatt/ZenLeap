@@ -5,6 +5,11 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`Show Sidebar in Leap Mode` toggle** (#50) — New `display.leapShowSidebar` setting (default: on) controls whether the floating sidebar is shown while leap mode is active in compact mode. Previously this was always on with no way to disable it
+
 ## [3.4.0] - 2026-03-22
 
 ### Fixed
