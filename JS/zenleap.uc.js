@@ -109,6 +109,7 @@
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
     'display.tabAsEnter':           { default: false, type: 'toggle', label: 'Tab Acts as Enter', description: 'When enabled, Tab executes commands like Enter in the command palette. When off, Tab only performs its explicit bindings (e.g. toggle workspace search).', category: 'Display', group: 'Search' },
     'display.browsePreview':        { default: true, type: 'toggle', label: 'Browse Preview', description: 'Show a floating thumbnail preview of the highlighted tab in browse mode', category: 'Display', group: 'Navigation' },
+    'display.leapShowSidebar':      { default: true, type: 'toggle', label: 'Show Sidebar in Leap Mode', description: 'Show the floating sidebar while leap mode is active in compact mode', category: 'Display', group: 'Navigation' },
     'display.maxSearchResults':    { default: 100, type: 'number', label: 'Max Search Results', description: 'Maximum results in tab search', category: 'Display', group: 'Search', min: 10, max: 500, step: 10 },
     'display.maxJumpListSize':     { default: 100, type: 'number', label: 'Max Jump History', description: 'Maximum jump history entries', category: 'Display', group: 'History', min: 10, max: 500, step: 10 },
 
@@ -16072,140 +16073,72 @@
     }
   }
 
-  // Check if sidebar is currently ACTUALLY visible on screen
-  // In compact mode, the sidebar always has a small sliver visible (for hover trigger)
-  // - Hidden: left=-223, right=5 (only ~5px visible)
-  // - Visible: left=-4, right=224 (most of width visible)
-  // So we check if MORE THAN HALF of the sidebar is on-screen
+  // Check if the compact-mode sidebar is currently open, mirroring Zen's own
+  // gZenCompactModeManager.isSidebarPotentiallyOpen(). The sidebar state lives
+  // as attributes on gNavToolbox (#navigator-toolbox):
+  //   zen-user-show     - user toggled it open (what toggleSidebar() flips)
+  //   zen-has-hover     - temporarily peeked open via hover
+  //   zen-has-empty-tab - shown because it hosts an empty tab
+  // Geometry on these elements is unreliable (the toolbox stays on-screen in
+  // compact mode), so the attributes are the authoritative signal.
   function isSidebarVisible() {
-    const sidebar = document.getElementById('navigator-toolbox');
-    if (!sidebar) {
-      log('Sidebar visible check: #navigator-toolbox not found');
-      return false;
-    }
+    const toolbox = document.getElementById('navigator-toolbox');
+    if (!toolbox) return false;
 
-    const rect = sidebar.getBoundingClientRect();
-    const style = window.getComputedStyle(sidebar);
-
-    // Check basic CSS visibility
-    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) {
-      log('Sidebar visible check: hidden via CSS');
-      return false;
-    }
-
-    // The key check: how much of the sidebar is actually visible?
-    // rect.right tells us how many pixels from the left edge of viewport to the right edge of sidebar
-    // If rect.right > half the sidebar width, most of it is visible
-    const visibleWidth = Math.max(0, rect.right);
-    const visiblePercent = (visibleWidth / rect.width) * 100;
-    const isVisible = visiblePercent > 50;
-
-    log(`Sidebar visible check: right=${rect.right}, width=${rect.width}, visiblePercent=${visiblePercent.toFixed(0)}%, isVisible=${isVisible}`);
-    return isVisible;
+    const userShow = toolbox.hasAttribute('zen-user-show');
+    const hasHover = toolbox.hasAttribute('zen-has-hover');
+    const emptyTab = toolbox.hasAttribute('zen-has-empty-tab');
+    const open = userShow || hasHover || emptyTab;
+    log(`Sidebar visible check: zen-user-show=${userShow}, zen-has-hover=${hasHover}, zen-has-empty-tab=${emptyTab}, isVisible=${open}`);
+    return open;
   }
 
   // Show the floating sidebar (for compact mode)
   // Returns true if we actually toggled it (so we know to toggle it back)
   function showFloatingSidebar() {
-    // First check if sidebar is already visible - don't toggle if it is!
+    // Don't toggle if the sidebar is already open
     if (isSidebarVisible()) {
       log('Sidebar already visible, not toggling');
-      return false;  // Return false = we didn't change anything
-    }
-
-    // Try multiple methods to show the sidebar
-
-    // Method 1: Execute Zen's command to show sidebar in compact mode
-    const showSidebarCmd = document.getElementById('cmd_zenCompactModeShowSidebar');
-    if (showSidebarCmd) {
-      try {
-        showSidebarCmd.doCommand();
-        log('Showed sidebar via cmd_zenCompactModeShowSidebar');
-        return true;
-      } catch (e) {
-        log(`cmd_zenCompactModeShowSidebar failed: ${e}`);
-      }
-    }
-
-    // Method 2: Try the toggle sidebar command
-    const toggleSidebarCmd = document.getElementById('cmd_zenToggleSidebar');
-    if (toggleSidebarCmd) {
-      try {
-        toggleSidebarCmd.doCommand();
-        log('Showed sidebar via cmd_zenToggleSidebar');
-        return true;
-      } catch (e) {
-        log(`cmd_zenToggleSidebar failed: ${e}`);
-      }
-    }
-
-    // Method 3: Dispatch a synthetic mouse event to trigger hover behavior
-    const sidebarTrigger = document.querySelector('#zen-sidebar-box-container') ||
-                           document.getElementById('TabsToolbar');
-    if (sidebarTrigger) {
-      const mouseEnterEvent = new MouseEvent('mouseenter', {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      });
-      sidebarTrigger.dispatchEvent(mouseEnterEvent);
-      log('Dispatched mouseenter event to sidebar');
-      return true;
-    }
-
-    log('Could not show floating sidebar - no method worked');
-    return false;
-  }
-
-  // Hide the floating sidebar (restore compact mode state)
-  function hideFloatingSidebar() {
-    // First check if sidebar is actually visible - don't toggle if already hidden!
-    if (!isSidebarVisible()) {
-      log('Sidebar already hidden, not toggling');
       return false;
     }
 
-    // Method 1: Try the hide sidebar command
-    const hideSidebarCmd = document.getElementById('cmd_zenCompactModeShowSidebar');
-    if (hideSidebarCmd) {
-      try {
-        // This command toggles, so call it again to hide
-        hideSidebarCmd.doCommand();
-        log('Hid sidebar via cmd_zenCompactModeShowSidebar');
-        return true;
-      } catch (e) {
-        log(`cmd_zenCompactModeShowSidebar (hide) failed: ${e}`);
-      }
+    // Zen's "Toggle Floating Sidebar" action (gZenCompactModeManager
+    // .toggleSidebar) - the same command the "Compact Mode > Toggle Floating
+    // Sidebar" keyboard shortcut fires. Flips zen-user-show on
+    // #navigator-toolbox, with animation.
+    const cmd = document.getElementById('cmd_zenCompactModeShowSidebar');
+    if (!cmd) {
+      log('Could not show floating sidebar: cmd_zenCompactModeShowSidebar not found');
+      return false;
     }
-
-    // Method 2: Try the toggle sidebar command
-    const toggleSidebarCmd = document.getElementById('cmd_zenToggleSidebar');
-    if (toggleSidebarCmd) {
-      try {
-        toggleSidebarCmd.doCommand();
-        log('Hid sidebar via cmd_zenToggleSidebar');
-        return true;
-      } catch (e) {
-        log(`cmd_zenToggleSidebar (hide) failed: ${e}`);
-      }
-    }
-
-    // Method 3: Dispatch mouseleave to trigger hover-off behavior
-    const sidebarTrigger = document.querySelector('#zen-sidebar-box-container') ||
-                           document.getElementById('TabsToolbar');
-    if (sidebarTrigger) {
-      const mouseLeaveEvent = new MouseEvent('mouseleave', {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      });
-      sidebarTrigger.dispatchEvent(mouseLeaveEvent);
-      log('Dispatched mouseleave event to sidebar');
+    try {
+      cmd.doCommand();
+      log('Showed sidebar via cmd_zenCompactModeShowSidebar');
       return true;
+    } catch (e) {
+      log(`cmd_zenCompactModeShowSidebar failed: ${e}`);
+      return false;
     }
+  }
 
-    log('Could not hide floating sidebar');
-    return false;
+  // Hide the floating sidebar (restore compact mode state). Callers gate on
+  // ownership (sidebarWasExpanded / quickNavPeeking), so always toggle here:
+  // the command flips Zen's state back even if the sidebar already peeked
+  // closed, which keeps repeated leap activations in sync.
+  function hideFloatingSidebar() {
+    const cmd = document.getElementById('cmd_zenCompactModeShowSidebar');
+    if (!cmd) {
+      log('Could not hide floating sidebar: cmd_zenCompactModeShowSidebar not found');
+      return false;
+    }
+    try {
+      cmd.doCommand();
+      log('Hid sidebar via cmd_zenCompactModeShowSidebar');
+      return true;
+    } catch (e) {
+      log(`cmd_zenCompactModeShowSidebar (hide) failed: ${e}`);
+      return false;
+    }
   }
 
   // Temporarily show the sidebar after Alt+J/K in compact mode.
@@ -16392,9 +16325,11 @@
     // Show relative numbers if in "active" mode (leap/browse only)
     if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
 
-    // Show sidebar if in compact mode and sidebar is not already visible
-    if (isCompactModeEnabled()) {
-      // showFloatingSidebar checks visibility internally and returns false if already visible
+    // Show sidebar on leap entry only when: setting enabled AND compact mode
+    // active AND the sidebar currently closed. If the sidebar is already
+    // open, or we're not in compact mode, leave it alone - no show on entry,
+    // no hide on exit (sidebarWasExpanded stays false).
+    if (S['display.leapShowSidebar'] && isCompactModeEnabled() && !isSidebarVisible()) {
       sidebarWasExpanded = showFloatingSidebar();
       log(`Compact mode active, expanded sidebar: ${sidebarWasExpanded}`);
     }
