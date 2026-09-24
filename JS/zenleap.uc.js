@@ -10535,10 +10535,6 @@
       `;
     });
 
-    // Add hint bar
-    html += `
-    `;
-
     searchResultsList.innerHTML = html;
 
     // Update hint bar
@@ -12825,40 +12821,6 @@
         row.classList.toggle('modified', JSON.stringify(S[id]) !== JSON.stringify(schema.default));
       });
       control.appendChild(select);
-    } else if (schema.type === 'color') {
-      const colorWrap = document.createElement('div');
-      colorWrap.className = 'zenleap-color-control';
-      const colorInput = document.createElement('input');
-      colorInput.type = 'color';
-      colorInput.value = S[id];
-      colorInput.className = 'zenleap-color-picker';
-      const hexInput = document.createElement('input');
-      hexInput.type = 'text';
-      hexInput.value = S[id];
-      hexInput.maxLength = 7;
-      hexInput.className = 'zenleap-color-hex';
-      colorInput.addEventListener('input', () => {
-        S[id] = colorInput.value;
-        hexInput.value = colorInput.value;
-        saveSettings();
-        applyThemeColors();
-        row.classList.toggle('modified', S[id] !== schema.default);
-      });
-      hexInput.addEventListener('change', () => {
-        const val = hexInput.value.trim();
-        if (/^#[0-9a-fA-F]{6}$/.test(val)) {
-          S[id] = val;
-          colorInput.value = val;
-          saveSettings();
-          applyThemeColors();
-          row.classList.toggle('modified', S[id] !== schema.default);
-        } else {
-          hexInput.value = S[id]; // Revert invalid input
-        }
-      });
-      colorWrap.appendChild(colorInput);
-      colorWrap.appendChild(hexInput);
-      control.appendChild(colorWrap);
     }
 
     // Reset button
@@ -14086,29 +14048,41 @@
     log('Exited search mode');
   }
 
-  // Select and open a search result
+  // Select and open a search result. Guarded: a second Enter while the
+  // workspace switch is awaited must not select again (LEAP-B-37).
+  let _selectingSearchResult = false;
   async function selectSearchResult(index) {
+    if (_selectingSearchResult) return;
     if (index < 0 || index >= searchResults.length) return;
 
     const result = searchResults[index];
     if (result && result.tab) {
-      // Record jump before navigating
+      _selectingSearchResult = true;
+      // Record jump before navigating; the workspace switch selects that
+      // space's last tab first, which must not land in the jump list.
       recordJump(currentTab());
-
-      // Switch workspace if the tab belongs to a different workspace (async)
-      if (result.workspaceName && window.gZenWorkspaces) {
-        const tabWsId = result.tab.getAttribute('zen-workspace-id');
-        if (tabWsId) {
-          await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
+      recordingJumps = false;
+      try {
+        // Switch workspace if the tab belongs to a different workspace (async)
+        if (result.workspaceName && window.gZenWorkspaces) {
+          const tabWsId = result.tab.getAttribute('zen-workspace-id');
+          if (tabWsId) {
+            await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
+          }
         }
+        if (result.tab.isConnected && !result.tab.closing) {
+          gBrowser.selectedTab = result.tab;
+          log(`Opened tab from search: ${result.tab.label}`);
+        }
+      } catch (e) {
+        reportError('Opening search result failed', e);
+      } finally {
+        recordingJumps = true;
+        _selectingSearchResult = false;
       }
-
-      gBrowser.selectedTab = result.tab;
 
       // Record destination
       recordJump(result.tab);
-
-      log(`Opened tab from search: ${result.tab.label}`);
     }
 
     exitSearchMode();
@@ -14153,25 +14127,10 @@
     const tabToClose = result.tab;
     const tabLabel = tabToClose.label;
 
-    // Close the tab
-    gBrowser.removeTab(tabToClose);
+    // Close the tab, then re-run the search (it clamps the selection)
+    gBrowser.removeTab(tabToClose, { animate: false });
     log(`Closed tab from search: ${tabLabel}`);
-
-    // Remove from results array
-    searchResults.splice(searchSelectedIndex, 1);
-
-    // Adjust selection if needed
-    if (searchResults.length === 0) {
-      // No more results, re-run search to refresh
-      renderSearchResults();
-    } else {
-      // Keep selection in bounds
-      if (searchSelectedIndex >= searchResults.length) {
-        searchSelectedIndex = searchResults.length - 1;
-      }
-      // Re-render with updated results
-      renderSearchResults();
-    }
+    renderSearchResults();
   }
 
   // Move search selection (lightweight — no DOM rebuild or re-search)
