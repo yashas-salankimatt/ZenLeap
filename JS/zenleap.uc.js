@@ -155,6 +155,37 @@
     console.error(`[ZenLeap] ${context}:`, error);
   }
 
+  // Teardown registry (declared first: code all over this file registers into it,
+  // some of it while the script is still loading). Window-lifetime listeners pass
+  // this signal (see listen()) so teardown removes them all at once; observers,
+  // wrappers and other resources register a callback with onTeardown(). teardown()
+  // (end of the file) runs on window unload, and on Sine hot-unload.
+  const _lifetime = new AbortController();
+  const _teardownCallbacks = [];
+  let _tornDown = false;
+
+  function onTeardown(fn) {
+    _teardownCallbacks.push(fn);
+  }
+
+  // addEventListener bound to this instance's lifetime.
+  function listen(target, type, handler, options = {}) {
+    if (typeof options === 'boolean') options = { capture: options };
+    target.addEventListener(type, handler, { ...options, signal: _lifetime.signal });
+  }
+
+  // Window unload: remove listeners/observers (prevents shutdown hangs), flush data.
+  // Registered while loading, so whatever registered so far is released even if
+  // init() never ran or failed.
+  listen(window, 'unload', () => teardown({ full: false }), { once: true });
+
+  // setTimeout that teardown cancels (for deferred init-time work).
+  function lifetimeTimeout(fn, ms) {
+    const id = setTimeout(() => { if (!_tornDown) fn(); }, ms);
+    onTeardown(() => clearTimeout(id));
+    return id;
+  }
+
   // Zen space icons can be emoji text or chrome:// SVG URLs (selectable icon set).
   function isImageIcon(icon) {
     return typeof icon === 'string' &&
@@ -1117,28 +1148,6 @@
     }, { once: true });
   }
 
-  // Window-lifetime resources of the settings / plugins / updater code (pref and
-  // observer-service observers, the dialog key router, the plugin system). They are
-  // released once: on window unload, or earlier when the core teardown() (Sine
-  // hot-unload) calls teardownPluginSystem(). Registrations happen at script load,
-  // before the core's teardown registry is initialized, hence this separate list.
-  const _regionTeardown = [];
-  let _regionTornDown = false;
-
-  function onRegionTeardown(fn) {
-    _regionTeardown.push(fn);
-  }
-
-  function teardownCommandsRegion() {
-    if (_regionTornDown) return;
-    _regionTornDown = true;
-    window.removeEventListener('unload', teardownCommandsRegion);
-    for (const fn of _regionTeardown.splice(0).reverse()) {
-      try { fn(); } catch (e) { reportError('Teardown step failed', e); }
-    }
-  }
-  window.addEventListener('unload', teardownCommandsRegion, { once: true });
-
   const _settingsPrefObserver = {
     observe() {
       if (_settingsSelfWrite) return;
@@ -1149,7 +1158,7 @@
   // Follow settings changes made by other windows (registered at script load).
   function watchSettingsPref() {
     Services.prefs.addObserver(SETTINGS_PREF, _settingsPrefObserver);
-    onRegionTeardown(() => Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver));
+    onTeardown(() => Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver));
   }
 
   function resetSetting(id) {
@@ -4001,7 +4010,7 @@
   }
 
   window.addEventListener('keydown', _routeDialogKeys, true);
-  onRegionTeardown(() => window.removeEventListener('keydown', _routeDialogKeys, true));
+  onTeardown(() => window.removeEventListener('keydown', _routeDialogKeys, true));
 
   // ── Plugin dialog styles (themed; injected once) ──
   function ensurePluginUiStyles() {
@@ -5053,8 +5062,8 @@
   }
 
   // Window unload / hot-unload: stop plugins (destroy hooks, sandboxes) and flush pending
-  // data. Runs before destroy() (registered at script load); clearing the flags below
-  // makes destroy()'s legacy full-file flush a no-op so it cannot overwrite newer data.
+  // data. Clearing _pluginDataLoaded afterwards makes any later flush from this window a
+  // no-op, so it can't overwrite what other windows write later.
   function _pluginSystemUnload() {
     try { Services.obs.removeObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC); } catch (e) {}
     try { window.gZenWorkspaces?.removeChangeListeners?.(_onWorkspaceChangedForPlugins); } catch (e) {}
@@ -5064,14 +5073,7 @@
     flushPluginData();
     _pluginDataLoaded = false;
   }
-  onRegionTeardown(_pluginSystemUnload);
-
-  // Hook called by the core teardown() on window unload and on Sine hot-unload. It
-  // releases everything registered through onRegionTeardown (plugins, the settings and
-  // update observers, the dialog key router); calling it more than once is harmless.
-  function teardownPluginSystem() {
-    teardownCommandsRegion();
-  }
+  onTeardown(_pluginSystemUnload);
 
   async function initPluginSystem() {
     // Listen before reading the file, so changes broadcast meanwhile are not lost
@@ -9258,7 +9260,7 @@
     showUpdateToast(version);
   }
   Services.obs.addObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
-  onRegionTeardown(() => Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC));
+  onTeardown(() => Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC));
 
   // ============================================
   // FOLDER DELETE MODAL (browse mode)
@@ -20811,30 +20813,6 @@
   // one console warning (fallbacks for pre-floor versions were removed).
   const MIN_ZEN_VERSION = '1.21.7b';
 
-  // Teardown registry. Window-lifetime listeners pass this signal (see listen())
-  // so teardown removes them all at once; observers, wrappers and other
-  // resources register a callback with onTeardown().
-  const _lifetime = new AbortController();
-  const _teardownCallbacks = [];
-  let _tornDown = false;
-
-  function onTeardown(fn) {
-    _teardownCallbacks.push(fn);
-  }
-
-  // addEventListener bound to this instance's lifetime.
-  function listen(target, type, handler, options = {}) {
-    if (typeof options === 'boolean') options = { capture: options };
-    target.addEventListener(type, handler, { ...options, signal: _lifetime.signal });
-  }
-
-  // setTimeout that teardown cancels (for deferred init-time work).
-  function lifetimeTimeout(fn, ms) {
-    const id = setTimeout(() => { if (!_tornDown) fn(); }, ms);
-    onTeardown(() => clearTimeout(id));
-    return id;
-  }
-
   // Compare "1.22.3b"-style versions numerically (suffix letters are ignored).
   function zenVersionAtLeast(version, min) {
     const parse = v => String(v).trim().replace(/[a-z]+\d*$/i, '').split('.').map(n => parseInt(n, 10) || 0);
@@ -20912,10 +20890,6 @@
     }
     if (_relNumRafId) cancelAnimationFrame(_relNumRafId);
 
-    // Plugins (destroy hooks, sandboxes, data flush), the settings/update
-    // observers and the dialog key router of the commands region.
-    try { teardownPluginSystem(); } catch (e) { reportError('Plugin teardown failed', e); }
-
     if (full) {
       try {
         // ZenLeap's elements, and the id-less ones appended to the root
@@ -20979,8 +20953,6 @@
     setupWorkspaceThemeHook();
     updateRelativeNumbers();
 
-    // Window unload: remove listeners/observers (prevents shutdown hangs), flush data.
-    listen(window, 'unload', () => teardown({ full: false }), { once: true });
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
 
