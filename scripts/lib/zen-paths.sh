@@ -984,30 +984,56 @@ zp_latest_release_tag() {
 # Download ZenLeap release <tag> into <dest> (JS/zenleap.uc.js, and
 # zenleap-themes.json when available) and verify it: the script's SHA-256
 # must match the tag's CHECKSUMS.sha256 and its @version must match the tag.
-# Returns 1 with ZP_ERROR on failure. Usage: zp_fetch_release <tag> <dest>
+# Returns 1 with ZP_ERROR on failure; ZP_ERROR_KIND is "download" when a
+# download failed and "verify" when the release itself is not right (then
+# nothing may be installed from it; see zp_unverified_release_help).
+# Usage: zp_fetch_release <tag> <dest>
+# shellcheck disable=SC2034  # ZP_ERROR_KIND is read by the callers
 zp_fetch_release() {
     local tag="$1" dest="$2" raw expected actual version
     raw="https://raw.githubusercontent.com/$ZP_GITHUB_REPO/$tag"
+    ZP_ERROR_KIND=download
     mkdir -p "$dest/JS"
     if ! curl -sfL "$raw/JS/zenleap.uc.js" -o "$dest/JS/zenleap.uc.js"; then
         ZP_ERROR="Failed to download zenleap.uc.js ($tag)"
         return 1
     fi
+    ZP_ERROR_KIND=verify
     if ! curl -sfL "$raw/CHECKSUMS.sha256" -o "$dest/CHECKSUMS.sha256"; then
-        ZP_ERROR="Release $tag has no CHECKSUMS.sha256; refusing to install unverified code"
+        ZP_ERROR="the release has no CHECKSUMS.sha256"
         return 1
     fi
     expected=$(awk '$2 == "JS/zenleap.uc.js" || $2 == "*JS/zenleap.uc.js" { print tolower($1); exit }' "$dest/CHECKSUMS.sha256")
     actual=$(zp_sha256 "$dest/JS/zenleap.uc.js")
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        ZP_ERROR="zenleap.uc.js from $tag does not match the release's CHECKSUMS.sha256 (expected ${expected:-no entry}, got $actual); refusing to install it"
+        ZP_ERROR="zenleap.uc.js does not match the release's CHECKSUMS.sha256 (expected ${expected:-no entry}, got $actual)"
         return 1
     fi
     version=$(zp_file_version "$dest/JS/zenleap.uc.js")
     if [ "v$version" != "$tag" ] && [ "$version" != "$tag" ]; then
-        ZP_ERROR="zenleap.uc.js from $tag reports version ${version:-?}; refusing to install it"
+        ZP_ERROR="zenleap.uc.js reports version ${version:-?}, not $tag"
         return 1
     fi
+    ZP_ERROR_KIND=""
     curl -sfL "$raw/zenleap-themes.json" -o "$dest/zenleap-themes.json" 2>/dev/null || rm -f "$dest/zenleap-themes.json"
     return 0
+}
+
+# The way forward when the latest release fails verification (printed after
+# "ZenLeap <tag>, the latest release, could not be verified: <ZP_ERROR>").
+# <options>: install.sh options to repeat there, already shell-quoted.
+# Usage: zp_unverified_release_help [<options>]
+zp_unverified_release_help() {
+    cat <<EOF
+Nothing was installed. This is a problem with that release on GitHub, not with
+your system or your network. Until a release that passes the check is out, install
+ZenLeap from a copy of the repository: the installer then uses that copy's own
+files instead of downloading a release.
+
+    git clone --depth 1 https://github.com/$ZP_GITHUB_REPO.git
+    cd ZenLeap && ./install.sh${1:+ $1}
+
+Without git: download https://github.com/$ZP_GITHUB_REPO/archive/refs/heads/main.zip,
+unzip it, and run "bash install.sh${1:+ $1}" in the ZenLeap-main folder it contains.
+EOF
 }

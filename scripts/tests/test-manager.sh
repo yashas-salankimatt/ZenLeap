@@ -280,11 +280,17 @@ check "other config.js: error shown" has "$LOG" "loads neither fx-autoconfig nor
 check "other config.js: names the file Zen runs" has "$LOG" "$RES/config.js"
 check "other config.js: untouched" same "$T/foreign-config" "$RES/config.js"
 
-# H. Release fails verification
+# H. Release fails verification: what happened and what to do instead [REV-LINST-01]
 new_mac badsum
 FAKE_RELEASE="$T/fixtures/release-badsum" manager Install DEFAULT
 check "bad checksum: error shown" has "$LOG" "does not match the release's CHECKSUMS.sha256"
+check "bad checksum: whose problem it is" has "$LOG" "This is a problem with that release on GitHub"
+check "bad checksum: no promise about a fixed release" lacks "$LOG" "on its way"
+check "bad checksum: the clone's installer, no options (the Manager has none)" has "$LOG" "cd ZenLeap && ./install.sh"
+check "bad checksum: how to install from a clone" has "$LOG" "git clone --depth 1 https://github.com/yashas-salankimatt/ZenLeap.git"
 check "bad checksum: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+FAKE_RELEASE="$T/fixtures/no-such-release" manager Install DEFAULT
+check "download failure: not blamed on the release" lacks "$LOG" "git clone"
 
 # I. Outdated loader, userChrome.css block from an older version
 new_mac outdated

@@ -118,6 +118,7 @@ AUTO_YES=false
 REMOVE_FXAUTOCONFIG=false
 IS_FLATPAK=false
 CUSTOM_ZEN_PATH=""
+RERUN_OPTS=()   # the options to repeat when installing from a clone instead
 
 # State
 OS=""
@@ -1127,32 +1128,58 @@ zp_latest_release_tag() {
 # Download ZenLeap release <tag> into <dest> (JS/zenleap.uc.js, and
 # zenleap-themes.json when available) and verify it: the script's SHA-256
 # must match the tag's CHECKSUMS.sha256 and its @version must match the tag.
-# Returns 1 with ZP_ERROR on failure. Usage: zp_fetch_release <tag> <dest>
+# Returns 1 with ZP_ERROR on failure; ZP_ERROR_KIND is "download" when a
+# download failed and "verify" when the release itself is not right (then
+# nothing may be installed from it; see zp_unverified_release_help).
+# Usage: zp_fetch_release <tag> <dest>
+# shellcheck disable=SC2034  # ZP_ERROR_KIND is read by the callers
 zp_fetch_release() {
     local tag="$1" dest="$2" raw expected actual version
     raw="https://raw.githubusercontent.com/$ZP_GITHUB_REPO/$tag"
+    ZP_ERROR_KIND=download
     mkdir -p "$dest/JS"
     if ! curl -sfL "$raw/JS/zenleap.uc.js" -o "$dest/JS/zenleap.uc.js"; then
         ZP_ERROR="Failed to download zenleap.uc.js ($tag)"
         return 1
     fi
+    ZP_ERROR_KIND=verify
     if ! curl -sfL "$raw/CHECKSUMS.sha256" -o "$dest/CHECKSUMS.sha256"; then
-        ZP_ERROR="Release $tag has no CHECKSUMS.sha256; refusing to install unverified code"
+        ZP_ERROR="the release has no CHECKSUMS.sha256"
         return 1
     fi
     expected=$(awk '$2 == "JS/zenleap.uc.js" || $2 == "*JS/zenleap.uc.js" { print tolower($1); exit }' "$dest/CHECKSUMS.sha256")
     actual=$(zp_sha256 "$dest/JS/zenleap.uc.js")
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-        ZP_ERROR="zenleap.uc.js from $tag does not match the release's CHECKSUMS.sha256 (expected ${expected:-no entry}, got $actual); refusing to install it"
+        ZP_ERROR="zenleap.uc.js does not match the release's CHECKSUMS.sha256 (expected ${expected:-no entry}, got $actual)"
         return 1
     fi
     version=$(zp_file_version "$dest/JS/zenleap.uc.js")
     if [ "v$version" != "$tag" ] && [ "$version" != "$tag" ]; then
-        ZP_ERROR="zenleap.uc.js from $tag reports version ${version:-?}; refusing to install it"
+        ZP_ERROR="zenleap.uc.js reports version ${version:-?}, not $tag"
         return 1
     fi
+    ZP_ERROR_KIND=""
     curl -sfL "$raw/zenleap-themes.json" -o "$dest/zenleap-themes.json" 2>/dev/null || rm -f "$dest/zenleap-themes.json"
     return 0
+}
+
+# The way forward when the latest release fails verification (printed after
+# "ZenLeap <tag>, the latest release, could not be verified: <ZP_ERROR>").
+# <options>: install.sh options to repeat there, already shell-quoted.
+# Usage: zp_unverified_release_help [<options>]
+zp_unverified_release_help() {
+    cat <<EOF
+Nothing was installed. This is a problem with that release on GitHub, not with
+your system or your network. Until a release that passes the check is out, install
+ZenLeap from a copy of the repository: the installer then uses that copy's own
+files instead of downloading a release.
+
+    git clone --depth 1 https://github.com/$ZP_GITHUB_REPO.git
+    cd ZenLeap && ./install.sh${1:+ $1}
+
+Without git: download https://github.com/$ZP_GITHUB_REPO/archive/refs/heads/main.zip,
+unzip it, and run "bash install.sh${1:+ $1}" in the ZenLeap-main folder it contains.
+EOF
 }
 # <<< zen-paths.sh
 
@@ -1183,6 +1210,10 @@ user_cache_dir() {
 # Download the latest release into $1 and verify it (see zp_fetch_release)
 download_release() {
     local tag
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${RED}Error: curl is needed to download ZenLeap. Install curl, or run install.sh from a clone of the repository.${NC}"
+        return 1
+    fi
     echo "  Looking up the latest ZenLeap release..."
     if ! tag=$(zp_latest_release_tag); then
         echo -e "${RED}Error: Could not determine the latest ZenLeap release (network?)${NC}"
@@ -1190,10 +1221,30 @@ download_release() {
     fi
     echo "  Downloading ZenLeap $tag from GitHub..."
     if ! zp_fetch_release "$tag" "$1"; then
-        echo -e "${RED}Error: $ZP_ERROR${NC}"
+        if [ "$ZP_ERROR_KIND" = verify ]; then
+            echo -e "${RED}Error: ZenLeap $tag, the latest release, could not be verified: $ZP_ERROR.${NC}"
+            zp_unverified_release_help "$(rerun_options)"
+        else
+            echo -e "${RED}Error: $ZP_ERROR. Check your internet connection and try again.${NC}"
+        fi
         return 1
     fi
     ok "Downloaded ZenLeap $tag (SHA-256 verified)"
+}
+
+# RERUN_OPTS, shell-quoted on one line
+rerun_options() {
+    local out
+    if [ ${#RERUN_OPTS[@]} -gt 0 ]; then
+        out=$(printf '%q ' "${RERUN_OPTS[@]}")
+        printf '%s\n' "${out% }"
+    fi
+}
+
+# Absolute path of an existing directory (as given otherwise), for commands
+# that run from another folder
+abs_dir() {
+    if [ -d "$1" ]; then (cd -- "$1" && pwd); else printf '%s\n' "$1"; fi
 }
 
 # Decide where the ZenLeap files come from: the checkout next to this script,
@@ -2411,9 +2462,10 @@ do_uninstall() {
     fi
 }
 
-# Check version and report status
+# Check version and report status: one "<name> [<profile folder>]: STATUS" line
+# per profile (the folder is what about:support > Profile Folder shows)
 do_check() {
-    local i tag remote_version="" installed_version any_outdated=false
+    local i tag remote_version="" installed_version any_outdated=false label
     QUIET=true
     detect_os false
     choose_profiles check
@@ -2423,15 +2475,16 @@ do_check() {
     fi
 
     for i in "${ZP_SELECTED[@]}"; do
+        label="${ZP_PROFILE_NAMES[$i]} [${ZP_PROFILE_DIRS[$i]}]"
         installed_version=$(zp_zenleap_version "${ZP_PROFILE_DIRS[$i]}")
         if [ -z "$installed_version" ]; then
-            echo "${ZP_PROFILE_NAMES[$i]}: NOT_INSTALLED"
+            echo "$label: NOT_INSTALLED"
         elif [ -z "$remote_version" ]; then
-            echo "${ZP_PROFILE_NAMES[$i]}: INSTALLED:$installed_version:UNKNOWN"
+            echo "$label: INSTALLED:$installed_version:UNKNOWN"
         elif zp_version_gte "$installed_version" "$remote_version"; then
-            echo "${ZP_PROFILE_NAMES[$i]}: UP_TO_DATE:$installed_version:$remote_version"
+            echo "$label: UP_TO_DATE:$installed_version:$remote_version"
         else
-            echo "${ZP_PROFILE_NAMES[$i]}: OUTDATED:$installed_version:$remote_version"
+            echo "$label: OUTDATED:$installed_version:$remote_version"
             any_outdated=true
         fi
     done
@@ -2448,7 +2501,8 @@ show_help() {
     echo "Actions:"
     echo "  install     Install or update ZenLeap (default)"
     echo "  uninstall   Remove ZenLeap"
-    echo "  check       Compare installed versions with the latest release (exit 1 if outdated)"
+    echo "  check       Compare installed versions with the latest release (exit 1 if outdated);"
+    echo "              prints \"<profile name> [<profile folder>]: STATUS\" per profile"
     echo ""
     echo "Options:"
     echo "  --remote                Install the latest release from GitHub (SHA-256 verified)"
@@ -2506,9 +2560,11 @@ while [ $# -gt 0 ]; do
                 die "--profile requires a profile number, name, or \"all\""
             fi
             PROFILE_SPECS+=("$1")
+            RERUN_OPTS+=(--profile "$1")
             ;;
         --all-profiles)
             PROFILE_SPECS+=("all")
+            RERUN_OPTS+=(--all-profiles)
             ;;
         --profile-dir)
             shift
@@ -2516,6 +2572,7 @@ while [ $# -gt 0 ]; do
                 die "--profile-dir requires a directory argument"
             fi
             PROFILE_DIR_ARGS+=("$1")
+            RERUN_OPTS+=(--profile-dir "$(abs_dir "$1")")
             ;;
         --loader)
             shift
@@ -2525,9 +2582,11 @@ while [ $# -gt 0 ]; do
                 sine) LOADER_MODE=sine ;;
                 *) die "--loader takes auto, fx-autoconfig or sine" ;;
             esac
+            RERUN_OPTS+=(--loader "$1")
             ;;
         --yes|-y)
             AUTO_YES=true
+            RERUN_OPTS+=(--yes)
             ;;
         --remove-fxautoconfig)
             REMOVE_FXAUTOCONFIG=true
@@ -2538,6 +2597,7 @@ while [ $# -gt 0 ]; do
                 die "--zen-path requires a directory argument"
             fi
             CUSTOM_ZEN_PATH="$1"
+            RERUN_OPTS+=(--zen-path "$(abs_dir "$1")")
             ;;
         --help|-h)
             show_help

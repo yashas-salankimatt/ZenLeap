@@ -51,11 +51,11 @@ check "xdg: output names the profile" has "$OUT" "Profile: Default (release)"
 check "xdg: no pgrep/pkill/sudo calls" missing "$T/stub-calls.log"
 show_on_fail "$f"
 
-# 2. check action
+# 2. check action: "<name> [<profile folder>]: STATUS" (the folder matches about:support)
 run install.sh check
 check "check: exit 0 when up to date" rc_is 0
-check "check: reports installed profile" has "$OUT" "Default (release): UP_TO_DATE:$VERSION:$VERSION"
-check "check: reports other profile" has "$OUT" "default-release: NOT_INSTALLED"
+check "check: reports installed profile" has "$OUT" "Default (release) [$P]: UP_TO_DATE:$VERSION:$VERSION"
+check "check: reports other profile" has "$OUT" "default-release [$O]: NOT_INSTALLED"
 check "check: output has no decoration" lacks "$OUT" "Detected OS"
 FAKE_TAG=v99.0.0 run install.sh check
 check "check: exit 1 when outdated" rc_is 1
@@ -562,7 +562,7 @@ run install.sh install --yes --zen-path "$APP"
 check "'[Profile1] ': Profile0 keeps its own keys (the default)" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "'[Profile1] ': Profile1 not taken for the default" missing "$R/bbbb.two/chrome"
 run install.sh check
-check "'[Profile1] ': Profile1 is listed" has "$OUT" "two: NOT_INSTALLED"
+check "'[Profile1] ': Profile1 is listed" has "$OUT" "two [$R/bbbb.two]: NOT_INSTALLED"
 rm -rf "$R"/*/chrome
 printf '[Profile0]\n  Name=one\n\tIsRelative=1\n  Path=aaaa.one\n; Path=bbbb.two\n# Default=0\n[Profile1]x\nName=two\nIsRelative=1\nPath=bbbb.two\nDefault=1\n' > "$R/profiles.ini"
 run install.sh install --yes --all-profiles --zen-path "$APP"
@@ -828,6 +828,35 @@ env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" TMPDIR="$T" FAKE_ROOT="$T" FAKE_F
 RC=$?
 check "bash --posix (macOS sh): exit 0" rc_is 0
 check "bash --posix (macOS sh): installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+
+# 39. A release that fails verification: what happened and what to do instead  [REV-LINST-01]
+new_home unverified
+R="$H/.config/zen"
+mk_two_profiles "$R"
+FAKE_RELEASE="$T/fixtures/release-badsum" run install.sh install --remote --yes --zen-path "$APP"
+check "unverified release: exit 1" rc_is 1
+check "... names the release" has "$OUT" "ZenLeap v$VERSION, the latest release, could not be verified"
+check "... says nothing was installed and whose problem it is" has "$OUT" "Nothing was installed. This is a problem with that release on GitHub"
+check "... makes no promise about a fixed release" lacks "$OUT" "on its way"
+check "... the clone commands" has "$OUT" "git clone --depth 1 https://github.com/yashas-salankimatt/ZenLeap.git"
+check "... and how to run the installer there, with this run's options (not --remote)" has "$OUT" "cd ZenLeap && ./install.sh --yes --zen-path $APP"
+check "... nothing installed" missing "$R/gdgcari8.Default (release)/chrome"
+FAKE_RELEASE="$T/fixtures/release-badsum" run install.sh install --remote --profile "Default (release)" --loader fx-autoconfig --yes --zen-path "$APP"
+check "unverified release: options with blanks are quoted for the shell" has "$OUT" "./install.sh --profile Default\\ \\(release\\) --loader fx-autoconfig --yes --zen-path"
+FAKE_RELEASE="$T/fixtures/release-nosums" run install.sh install --remote --yes --zen-path "$APP"
+check "release without CHECKSUMS.sha256: the same advice" has "$OUT" "git clone --depth 1"
+FAKE_RELEASE="$T/fixtures/no-such-release" run install.sh install --remote --yes --zen-path "$APP"
+check "download failure: exit 1" rc_is 1
+check "download failure: not blamed on the release" lacks "$OUT" "git clone"
+check "download failure: suggests checking the connection" has "$OUT" "Check your internet connection"
+: > "$T/curl.log"
+run install.sh install --yes --zen-path "$APP"
+check "from a clone: installs the clone's own file" same "$REPO/JS/zenleap.uc.js" "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+check "from a clone: no release lookup or download" lacks "$T/curl.log" "ZenLeap"
+rm -rf "$R/gdgcari8.Default (release)/chrome/JS"
+FAKE_API_FAIL=1 FAKE_RELEASE="$T/fixtures/no-such-release" run install.sh install --yes --zen-path "$APP"
+check "from a clone, GitHub's API and releases unreachable: exit 0" rc_is 0
+check "... installed the clone's own file" same "$REPO/JS/zenleap.uc.js" "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 
 # 40. The autoconfig file Zen really runs decides (the ZenRipple installer's
 #     rules): the alphabetically first pref file in defaults/pref wins,
