@@ -8115,13 +8115,19 @@
       await IOUtils.makeDirectory(PathUtils.parent(jsPath), { createAncestors: true, ignoreExisting: true });
       const hadOriginal = await IOUtils.exists(jsPath);
       if (hadOriginal) await IOUtils.copy(jsPath, backupPath);
+      let replaced = false;
       try {
         await IOUtils.write(jsPath, bytes, { tmpPath: partPath });
+        replaced = true; // the temp file was renamed over the script
         const written = await IOUtils.read(jsPath);
         if (await sha256Hex(written) !== expected) throw new Error('The installed file does not match the verified download');
       } catch (e) {
-        if (hadOriginal) {
-          try { await IOUtils.copy(backupPath, jsPath); }
+        // A failed write never touched the script (the rename is the last step),
+        // so only a replaced file is restored, again through a temp file + rename:
+        // copying over it would truncate it first, and on a full disk leave it
+        // empty (REV-LCMDS-02).
+        if (replaced && hadOriginal) {
+          try { await IOUtils.write(jsPath, await IOUtils.read(backupPath), { tmpPath: partPath }); }
           catch (restoreError) { reportError(`Update: restoring the previous version from ${backupPath} failed`, restoreError); }
         }
         throw new Error(`Writing the update failed (${e.message}); the previous version was kept.`);
