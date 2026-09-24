@@ -95,8 +95,6 @@ mkdir -p "$REPO"
 for f in $FXAC_FILES $FXAC_EXAMPLE_FILES; do
     h=$(sha256sum "$FXAC_TREE/$f" | cut -d' ' -f1)
     for code in scripts/lib/zen-paths.sh install.sh "ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" install.ps1; do
-        # install.ps1 has no pins for the example files yet
-        case " $FXAC_EXAMPLE_FILES " in *" $f "*) if [ "$code" = install.ps1 ]; then continue; fi ;; esac
         sed -i -E "s|^[0-9a-f]{64}  $f\$|$h  $f|" "$REPO/$code"
         if ! grep -q "^$h  $f\$" "$REPO/$code"; then
             echo "fixtures: could not patch the fx-autoconfig pin for $f in $code" >&2
