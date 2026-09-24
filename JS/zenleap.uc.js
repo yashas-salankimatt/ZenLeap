@@ -852,8 +852,43 @@
     return Object.entries(themes).map(([value, t]) => ({ value, label: t.name || value }));
   }
 
+  // Normalize a user-supplied theme color to #rrggbb / rgba(), which every consumer
+  // (CSS vars, the hex math in applyTheme, the browser theme) understands. Named and
+  // hsl() colors would otherwise turn black. Returns null for unparseable values.
+  function normalizeThemeColor(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    let rgba = null;
+    try { rgba = InspectorUtils.colorToRGBA(value.trim()); } catch (e) { rgba = null; }
+    if (!rgba) return null;
+    const hex = n => Math.round(n).toString(16).padStart(2, '0');
+    if (rgba.a >= 1) return `#${hex(rgba.r)}${hex(rgba.g)}${hex(rgba.b)}`;
+    return `rgba(${Math.round(rgba.r)},${Math.round(rgba.g)},${Math.round(rgba.b)},${+rgba.a.toFixed(3)})`;
+  }
+
+  // Validate a user theme definition: known color keys must parse as CSS colors
+  // (normalized), other values must be strings/numbers. Invalid keys are dropped
+  // (with a warning) so the base theme's value applies.
+  function sanitizeUserTheme(key, def) {
+    const out = {};
+    for (const [prop, value] of Object.entries(def)) {
+      if (prop === 'extends') continue;
+      const type = THEME_EDITOR_SCHEMA[prop]?.type;
+      if (type === 'color' || type === 'rgba') {
+        const color = normalizeThemeColor(value);
+        if (color) out[prop] = color;
+        else console.warn(`[ZenLeap] Theme "${key}": ignoring invalid color for "${prop}":`, value);
+      } else if (typeof value === 'string' || typeof value === 'number') {
+        out[prop] = String(value);
+      } else {
+        console.warn(`[ZenLeap] Theme "${key}": ignoring non-string value for "${prop}"`);
+      }
+    }
+    return out;
+  }
+
   // Load user-defined themes from {profile}/chrome/zenleap-themes.json
-  // Supports "extends" to inherit from a built-in or other user theme.
+  // Supports "extends" to inherit from a built-in or other user theme; themes without
+  // "extends" inherit Meridian, so every CSS variable always has a value.
   // Uses topological resolution so extends-chain order doesn't matter.
   async function loadUserThemes() {
     // Reset to built-ins before merging (handles deletions on reload)
@@ -862,7 +897,10 @@
     try {
       const content = await IOUtils.readUTF8(themesPath);
       const userThemes = JSON.parse(content);
-      const entries = Object.entries(userThemes).filter(([k, v]) => typeof v === 'object' && v && !k.startsWith('_'));
+      if (!userThemes || typeof userThemes !== 'object' || Array.isArray(userThemes)) {
+        throw new Error('zenleap-themes.json must contain a JSON object');
+      }
+      const entries = Object.entries(userThemes).filter(([k, v]) => typeof v === 'object' && v && !Array.isArray(v) && !k.startsWith('_'));
       const resolved = new Set();
       const resolving = new Set(); // cycle detection
 
@@ -871,7 +909,7 @@
         if (resolving.has(key)) { console.warn(`[ZenLeap] Circular extends detected for theme "${key}", skipping`); return; }
         resolving.add(key);
 
-        let base = {};
+        let base = BUILTIN_THEMES.meridian;
         if (def.extends) {
           if (BUILTIN_THEMES[def.extends]) {
             base = BUILTIN_THEMES[def.extends];
@@ -879,14 +917,15 @@
             const parentEntry = entries.find(([k]) => k === def.extends);
             if (parentEntry) {
               resolve(parentEntry[0], parentEntry[1]);
-              base = themes[def.extends] || {};
+              base = themes[def.extends] || base;
+            } else {
+              console.warn(`[ZenLeap] Theme "${key}" extends unknown theme "${def.extends}"; using Meridian`);
             }
           }
         }
 
-        const { extends: _, ...rest } = def;
-        themes[key] = { ...base, ...rest };
-        if (!themes[key].name) themes[key].name = key;
+        themes[key] = { ...BUILTIN_THEMES.meridian, ...base, ...sanitizeUserTheme(key, def) };
+        if (!themes[key].name || typeof themes[key].name !== 'string') themes[key].name = key;
         resolving.delete(key);
         resolved.add(key);
       }
@@ -894,9 +933,9 @@
       for (const [key, def] of entries) resolve(key, def);
       log(`Loaded ${entries.length} user theme(s) from zenleap-themes.json`);
     } catch (e) {
-      // Silently ignore missing file — it's optional
+      // A missing file is fine — it's optional
       if (e.name !== 'NotFoundError' && (!e.result || e.result !== 0x80520012)) {
-        console.warn('[ZenLeap] Error loading user themes:', e);
+        reportError('Error loading user themes from zenleap-themes.json', e);
       }
     }
   }
