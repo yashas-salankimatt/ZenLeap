@@ -16517,7 +16517,6 @@
 
       browseMode = true;
       browseDirection = direction;
-      browseVirtualOrigin = origin;
       originalTabIndex = direction === 'down' ? origin - 1 : origin;
       originalTab = current;
       highlightedTabIndex = direction === 'down'
@@ -16674,9 +16673,6 @@
     updateLeapOverlayState();
   }
 
-  // Browse mode started with no current item (see virtualOriginIndex)
-  let browseVirtualOrigin = null;
-
   // Switch workspace in browse mode (h = prev, l = next)
   let _browseWorkspaceSwitchId = 0;
   async function browseWorkspaceSwitch(direction) {
@@ -16721,28 +16717,35 @@
     } catch (e) { reportError('Workspace switch failed', e); }
   }
 
-  // Jump directly to a tab N positions from original and open it
-  // Direction is determined by where the highlight currently is relative to original
+  // Jump directly to the item badged N in the highlight's direction and open it.
+  // Counts from the origin the badges use, recomputed from the current list:
+  // after h/l the badges belong to the new space (REV-LCORE-04), and after a
+  // paste the current tab may have moved.
   function jumpAndOpenTab(distance) {
     const items = getVisibleItems();
+    const currentIndex = findCurrentItemIndex(items);
 
-    // Determine direction based on current highlight position vs original
     let direction;
     let targetIndex;
-    if (browseVirtualOrigin !== null) {
-      // Started from Zen's empty tab: the badges count from a virtual origin
-      direction = highlightedTabIndex >= browseVirtualOrigin ? 'down' : 'up';
-      targetIndex = direction === 'down' ? browseVirtualOrigin - 1 + distance : browseVirtualOrigin - distance;
+    if (currentIndex < 0) {
+      // Zen's empty tab is selected: the badges count from a virtual origin
+      const origin = virtualOriginIndex(items);
+      direction = highlightedTabIndex >= origin ? 'down' : 'up';
+      targetIndex = direction === 'down' ? origin - 1 + distance : origin - distance;
     } else {
-      if (highlightedTabIndex < originalTabIndex) {
+      if (highlightedTabIndex < currentIndex) {
         direction = 'up';
-      } else if (highlightedTabIndex > originalTabIndex) {
+      } else if (highlightedTabIndex > currentIndex) {
         direction = 'down';
       } else {
-        // Highlight is on original tab, use initial browse direction as fallback
-        direction = browseDirection;
+        // Highlight is on the current tab (where h/l land): the browse
+        // direction decides, unless only the other direction has an item
+        // badged `distance`.
+        const fits = (dir) => dir === 'down' ? currentIndex + distance < items.length : currentIndex - distance >= 0;
+        const other = browseDirection === 'down' ? 'up' : 'down';
+        direction = !fits(browseDirection) && fits(other) ? other : browseDirection;
       }
-      targetIndex = direction === 'down' ? originalTabIndex + distance : originalTabIndex - distance;
+      targetIndex = direction === 'down' ? currentIndex + distance : currentIndex - distance;
     }
 
     // Clamp to valid range
@@ -16755,11 +16758,11 @@
         highlightedTabIndex = targetIndex;
         updateHighlight();
         updateLeapOverlayState();
-        log(`Jumped ${direction} ${distance} from original, highlighted folder "${target.label}"`);
+        log(`Jumped ${direction} ${distance}, highlighted folder "${target.label}"`);
         return;
       }
       gBrowser.selectedTab = target;
-      log(`Jumped ${direction} ${distance} from original (highlight was ${highlightedTabIndex < originalTabIndex ? 'above' : 'below'}), opened tab ${targetIndex}`);
+      log(`Jumped ${direction} ${distance}, opened tab ${targetIndex}`);
     }
 
     exitLeapMode(true); // Center scroll on new tab
@@ -17218,7 +17221,7 @@
   function saveBrowseState() {
     return {
       highlightedTabIndex, originalTabIndex, originalTab,
-      browseDirection, browseVirtualOrigin, selectedItems: new Set(selectedItems),
+      browseDirection, selectedItems: new Set(selectedItems),
       yankItems: [...yankItems], sidebarWasExpanded
     };
   }
@@ -17231,7 +17234,6 @@
     originalTabIndex = state.originalTabIndex;
     originalTab = state.originalTab;
     browseDirection = state.browseDirection;
-    browseVirtualOrigin = state.browseVirtualOrigin ?? null;
     selectedItems = new Set(state.selectedItems);
     yankItems = [...state.yankItems];
     sidebarWasExpanded = state.sidebarWasExpanded;
@@ -17289,7 +17291,6 @@
     originalTabIndex = -1;
     originalTab = null;
     browseDirection = null;
-    browseVirtualOrigin = null;
     browseGPending = false;
     clearTimeout(browseGTimeout);
     browseGTimeout = null;
