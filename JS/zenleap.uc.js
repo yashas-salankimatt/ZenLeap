@@ -2899,8 +2899,8 @@
   // - Plugins run once per browser window. Their data (enabled flag, storage, settings)
   //   is shared by all windows: every window keeps the merged state in memory, changes
   //   are broadcast to the other windows and written atomically to
-  //   zenleap-plugin-data.json. In private windows storage/settings writes stay in
-  //   memory for that window only (never persisted).
+  //   zenleap-plugin-data.json. In private windows storage writes stay in memory for
+  //   that window only (never persisted); settings (configuration) are saved.
   // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
   //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
   //   asynchronously; browser.getSelectedText() returns a Promise; tabs.getAll()/findBy*
@@ -2991,7 +2991,7 @@
   let _pluginDataLoaded = false;          // true once the file was read (or found missing/quarantined)
   const _pluginDirty = new Map();         // pluginId -> Set of changed paths (see pluginPath())
   const _pendingRemotePluginChanges = []; // broadcasts received before our own load finished
-  const _pluginPrivateOverlay = new Map(); // private windows: pluginId -> { storage: Map, settings: Map }
+  const _pluginPrivateOverlay = new Map(); // private windows: pluginId -> { storage: Map } (settings persist)
 
   function _isPlainObject(v) {
     return v != null && typeof v === 'object' && !Array.isArray(v);
@@ -3186,11 +3186,13 @@
   }
 
   // Scoped key/value store for a plugin field ('storage' or 'settings'). In private
-  // windows writes go to a per-window overlay that is never persisted.
+  // windows 'storage' writes (plugin data, which may hold URLs) go to a per-window
+  // overlay that is never persisted; 'settings' are configuration and are saved
+  // (REV-LCMDS-06).
   function pluginStore(pluginId, field) {
-    const priv = isPrivateWindow();
+    const priv = field === 'storage' && isPrivateWindow();
     const overlay = () => {
-      if (!_pluginPrivateOverlay.has(pluginId)) _pluginPrivateOverlay.set(pluginId, { storage: new Map(), settings: new Map() });
+      if (!_pluginPrivateOverlay.has(pluginId)) _pluginPrivateOverlay.set(pluginId, { storage: new Map() });
       return _pluginPrivateOverlay.get(pluginId)[field];
     };
     const DELETED = Symbol.for('zenleap.plugin.deleted');

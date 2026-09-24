@@ -2,8 +2,19 @@ var ZenLeapPlugin = {
   init(api) {
     api.ui.log('Readwise Reader plugin loaded');
 
+    // The token is configuration: it lives in the plugin's settings, which are
+    // saved from private windows too. Older versions kept it in storage.
     function getToken() {
-      return api.storage.get('access_token', '');
+      var token = api.settings.getOwn('access_token', '');
+      if (!token) {
+        var legacy = api.storage.get('access_token', '');
+        if (legacy) {
+          api.settings.setOwn('access_token', legacy);
+          api.storage.remove('access_token');
+          token = legacy;
+        }
+      }
+      return token || '';
     }
 
     function hasToken() {
@@ -64,6 +75,7 @@ var ZenLeapPlugin = {
             if (existing) {
               var clear = await api.ui.showConfirm('Clear Token', 'Remove your saved Readwise access token?');
               if (clear) {
+                api.settings.setOwn('access_token', '');
                 api.storage.remove('access_token');
                 api.ui.showToast('Readwise token cleared');
               }
@@ -75,7 +87,8 @@ var ZenLeapPlugin = {
           try {
             var valid = await validateToken(token);
             if (valid) {
-              api.storage.set('access_token', token);
+              api.settings.setOwn('access_token', token);
+              api.storage.remove('access_token');
               api.ui.showToast('Readwise token saved');
             } else {
               api.ui.showToast('Invalid token — check your access token');
