@@ -1021,8 +1021,29 @@
           wsBtn.classList.toggle('active', S['display.searchAllWorkspaces']);
         }
       }
-      if (settingsMode && !settingsRecordingId) renderSettingsContent();
+      // Only for settings the view shows (the update check writes hidden keys)
+      if (settingsMode && !settingsRecordingId && changed.some(id => !SETTINGS_SCHEMA[id]?.hidden)) {
+        refreshSettingsViewWhenIdle();
+      }
     } catch (e) { reportError('Applying settings changed in another window failed', e); }
+  }
+
+  // Re-render the open Settings view, but not under a field being edited: that
+  // would throw away what is being typed (number/text fields commit on change).
+  // Wait until the field loses focus instead (REV-LCMDS-08).
+  let _settingsRefreshField = null; // the field whose blur will re-render
+  function refreshSettingsViewWhenIdle() {
+    const field = document.activeElement;
+    const editing = !!field?.closest?.('#zenleap-settings-body') &&
+      !!field.matches?.('input:not([type="checkbox"]), textarea, select');
+    if (!editing) { renderSettingsContent(); return; }
+    if (_settingsRefreshField === field) return;
+    _settingsRefreshField = field;
+    field.addEventListener('blur', () => {
+      if (_settingsRefreshField !== field) return;
+      _settingsRefreshField = null;
+      if (settingsMode && !settingsRecordingId) renderSettingsContent();
+    }, { once: true });
   }
 
   // Window-lifetime resources of the settings / plugins / updater code (pref and
