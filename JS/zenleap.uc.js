@@ -5004,8 +5004,9 @@
   function getStaticCommands() {
     return [
       // --- Tab Management ---
-      // Same as Zen's Ctrl+T (may open Zen's floating URL bar instead of a blank tab)
-      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { BrowserCommands.openTab(); } },
+      // A real, selected new tab through Firefox's standard path (focuses the URL bar).
+      // Zen's floating URL bar that replaces new tabs stays on Ctrl+T.
+      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { openTrustedLinkIn(BROWSER_NEW_TAB_URL, 'tab'); } },
       { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove', 'del', 'rm', 'cl'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
       // Bulk closes: confirm step (counts, Cancel first) when more than one tab would close;
       // removeTabs() closes them as one batch (one "Reopen closed tabs" restores them all)
