@@ -7808,9 +7808,8 @@
 
   // Verify restored layout matches saved order by checking the sidebar DOM.
   // Loops until order is confirmed correct or max attempts reached, because
-  // Zen may asynchronously reorder tabs after our DOM moves.
-  // Uses waitFor() instead of fixed delays so verification completes as soon
-  // as Zen's async reorders finish.
+  // Zen may asynchronously reorder tabs after our DOM moves; each attempt ends
+  // as soon as the order is right.
   async function verifyRestoredLayout(layout, openedTabs) {
     const MAX_ATTEMPTS = 5;
     const ATTEMPT_TIMEOUT_MS = 500;
@@ -7822,68 +7821,42 @@
       const normalContainer = wsElement.tabsContainer;
       if (!normalContainer) return;
 
-      // Build expected tab ref order from layout.
-      // We compare by element reference (not URL) because tabs haven't loaded
-      // yet — currentURI.spec is still about:blank right after addTab().
+      // The restored unpinned tabs, in saved order. Compared by element, not URL: the
+      // same URL can be saved more than once.
       const expectedTabRefs = [];
-      const tabRefToUrl = new Map(); // for debug logging
       for (const { item, tab } of openedTabs) {
-        if (!item.pinned && !item.essential && tab && !tab.closing) {
-          expectedTabRefs.push(tab);
-          tabRefToUrl.set(tab, item.url);
-        }
+        if (!item.pinned && !item.essential && tab && !tab.closing) expectedTabRefs.push(tab);
       }
       if (expectedTabRefs.length === 0) {
         log('Verify: no normal tabs to verify');
         return;
       }
+      const expectedSet = new Set(expectedTabRefs);
 
-      const shorten = u => { try { return new URL(u).hostname + new URL(u).pathname.slice(0, 30); } catch (e) { return (u || '').slice(0, 50); } };
-
-      // Helper: read current DOM order and check against expected
-      function checkOrder() {
-        const actualTabRefs = [];
-        for (const child of normalContainer.children) {
-          if (!gBrowser.isTab(child)) continue;
-          if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
-          actualTabRefs.push(child);
-        }
-        if (actualTabRefs.length < expectedTabRefs.length) return { correct: false, actualTabRefs, firstMismatchIdx: -1 };
-        for (let i = 0; i < expectedTabRefs.length; i++) {
-          if (actualTabRefs[i] !== expectedTabRefs[i]) return { correct: false, actualTabRefs, firstMismatchIdx: i };
-        }
-        return { correct: true, actualTabRefs, firstMismatchIdx: -1 };
+      // Only the restored tabs' relative order matters: Replace's placeholder tab and
+      // old tabs that are still closing share the container for a moment.
+      function firstMismatch() {
+        const actual = [...normalContainer.children].filter(c => expectedSet.has(c));
+        if (actual.length < expectedTabRefs.length) return actual.length;
+        return expectedTabRefs.findIndex((tab, i) => actual[i] !== tab);
       }
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         // Wait for order to become correct (exits early if Zen finishes reorder)
-        const settled = await waitFor(() => checkOrder().correct, { timeout: ATTEMPT_TIMEOUT_MS });
+        const settled = await waitFor(() => firstMismatch() === -1, { timeout: ATTEMPT_TIMEOUT_MS });
         if (settled) {
           log(`Verify: order confirmed correct on attempt ${attempt}`);
           return;
         }
-
-        const { actualTabRefs, firstMismatchIdx } = checkOrder();
-
-        // Debug: show expected vs actual
-        log(`Verify: attempt ${attempt} — expected ${expectedTabRefs.length} tabs, DOM has ${actualTabRefs.length}, first mismatch at index ${firstMismatchIdx}`);
-        const debugLen = Math.max(expectedTabRefs.length, actualTabRefs.length);
-        for (let i = 0; i < Math.min(debugLen, 15); i++) {
-          const exp = tabRefToUrl.get(expectedTabRefs[i]) || '(none)';
-          const act = tabRefToUrl.get(actualTabRefs[i]) || `(unknown: ${actualTabRefs[i]?.linkedBrowser?.currentURI?.spec || '?'})`;
-          const marker = expectedTabRefs[i] === actualTabRefs[i] ? '  ' : '>>';
-          log(`  ${marker} [${i}] expected: ${shorten(exp)}  |  actual: ${shorten(act)}`);
-        }
-
-        // Reorder by moving each expected tab to correct position
+        log(`Verify: attempt ${attempt}: restored tab ${firstMismatch()} of ${expectedTabRefs.length} is out of place, reordering`);
         for (const tab of expectedTabRefs) {
           if (isLiveTab(tab)) moveTabToSectionEnd(normalContainer, tab);
         }
       }
 
-      log(`Verify: gave up after ${MAX_ATTEMPTS} attempts — order may still be wrong`);
+      console.warn(`[ZenLeap] Restored tabs may not be in their saved order (still different after ${MAX_ATTEMPTS} attempts)`);
     } catch (e) {
-      log(`Verify layout failed (non-fatal): ${e}`);
+      console.warn('[ZenLeap] Checking the restored tab order failed:', e);
     }
   }
 
