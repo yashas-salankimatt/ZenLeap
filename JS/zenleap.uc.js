@@ -17060,6 +17060,10 @@
     // Steal focus from content to prevent input leaking to web pages
     stealFocusFromContent();
 
+    // The update toast sits where the mode's HUD appears; the update stays available
+    // in "Check for Updates" and Settings > About
+    if (updateToast) dismissUpdateToast(false);
+
     // Show relative numbers if in "active" mode (leap/browse only)
     if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
 
