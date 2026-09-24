@@ -1,37 +1,43 @@
 var ZenLeapPlugin = {
   _intervalId: null,
+  _flushId: null,
+  _pending: null,
+  _api: null,
 
   init(api) {
     api.ui.log('Tab Timer plugin loaded');
 
     var self = this;
+    self._api = api;
+    self._pending = {};
+
+    // Count 5-second ticks in memory and persist them once a minute (and when the plugin
+    // stops). The plugin runs in every browser window: only count time in the focused
+    // one, and never record sites visited in private windows.
     self._intervalId = setInterval(function() {
+      if (!document.hasFocus() || api.browser.isPrivate()) return;
       var tab = api.tabs.getCurrent();
       if (!tab) return;
       var url = api.tabs.getUrl(tab);
       var domain;
       try { domain = new URL(url).hostname; } catch (e) { domain = '(other)'; }
       if (!domain) return;
-
-      var times = api.storage.get('domainTimes', {});
-      times[domain] = (times[domain] || 0) + 5;
-
-      var maxDomains = api.settings.getOwn('maxDomains', 200);
-      var keys = Object.keys(times);
-      if (keys.length > maxDomains) {
-        var sorted = Object.entries(times).sort(function(a, b) { return b[1] - a[1]; });
-        var pruned = {};
-        for (var i = 0; i < maxDomains; i++) pruned[sorted[i][0]] = sorted[i][1];
-        api.storage.set('domainTimes', pruned);
-      } else {
-        api.storage.set('domainTimes', times);
-      }
+      self._pending[domain] = (self._pending[domain] || 0) + 5;
     }, 5000);
+    self._flushId = setInterval(function() { self._flush(); }, 60000);
+
+    function currentTimes() {
+      var times = api.storage.get('domainTimes', {});
+      Object.keys(self._pending).forEach(function(domain) {
+        times[domain] = (times[domain] || 0) + self._pending[domain];
+      });
+      return times;
+    }
 
     return {
       commands: {
         'show-time': function() {
-          var times = api.storage.get('domainTimes', {});
+          var times = currentTimes();
           var entries = Object.entries(times).sort(function(a, b) { return b[1] - a[1]; });
           if (entries.length === 0) { api.ui.showToast('No time data yet'); return; }
 
@@ -43,7 +49,7 @@ var ZenLeapPlugin = {
             if (secs >= 3600) t = Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
             else if (secs >= 60) t = Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
             else t = secs + 's';
-            return '  ' + '\u2588'.repeat(Math.min(Math.ceil(pct / 5), 20)) + ' ' + pct + '%  ' + t + '  ' + domain;
+            return '  ' + '█'.repeat(Math.min(Math.ceil(pct / 5), 20)) + ' ' + pct + '%  ' + t + '  ' + domain;
           }).join('\n');
 
           var totalStr;
@@ -53,6 +59,7 @@ var ZenLeapPlugin = {
           api.ui.showModal('Time by Domain', 'Total tracked: ' + totalStr + '\n\n' + lines);
         },
         'reset-time': function() {
+          self._pending = {};
           api.storage.set('domainTimes', {});
           api.ui.showToast('Time tracking data reset');
         },
@@ -60,10 +67,35 @@ var ZenLeapPlugin = {
     };
   },
 
+  // Add the pending seconds to the stored totals (which may include other windows' time)
+  _flush() {
+    var api = this._api;
+    var pending = this._pending;
+    if (!api || !pending || Object.keys(pending).length === 0) return;
+    var times = api.storage.get('domainTimes', {});
+    Object.keys(pending).forEach(function(domain) {
+      times[domain] = (times[domain] || 0) + pending[domain];
+    });
+    var maxDomains = api.settings.getOwn('maxDomains', 200);
+    var sorted = Object.entries(times).sort(function(a, b) { return b[1] - a[1]; });
+    if (sorted.length > maxDomains) {
+      times = {};
+      for (var i = 0; i < maxDomains; i++) times[sorted[i][0]] = sorted[i][1];
+    }
+    api.storage.set('domainTimes', times);
+    this._pending = {};
+  },
+
   destroy(api) {
     if (this._intervalId) {
       clearInterval(this._intervalId);
       this._intervalId = null;
     }
+    if (this._flushId) {
+      clearInterval(this._flushId);
+      this._flushId = null;
+    }
+    this._flush();
+    this._api = null;
   },
 };

@@ -24,6 +24,13 @@
   // SETTINGS SYSTEM
   // ============================================
 
+  const IS_MACOS = Services.appinfo.OS === 'Darwin';
+
+  // Private windows must never persist URLs (sessions, marks, plugin data).
+  function isPrivateWindow() {
+    try { return PrivateBrowsingUtils.isWindowPrivate(window); } catch (e) { return false; }
+  }
+
   const SETTINGS_SCHEMA = {
     // --- Keybindings: Global Triggers (combo type — key + modifiers) ---
     'keys.global.leapMode':        { default: { key: ' ', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Leap Mode Toggle', description: 'Toggle leap mode on/off', category: 'Keybindings', group: 'Global Triggers' },
@@ -35,7 +42,9 @@
     'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Up',    description: 'Focus split pane above, or switch to previous tab up',    category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Right', description: 'Focus split pane right, or switch to next workspace',     category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitResize':     { default: { key: ' ', code: 'Space', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Resize (gTile)', description: 'Open gTile-like grid overlay to resize/move tabs in split view (Alt+Space)', category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
+    // Shadows the native "reopen closed tab" shortcut (Cmd+Shift+T on macOS, Ctrl+Shift+T elsewhere);
+    // falls through to it when there is no recent folder deletion to undo.
+    'keys.global.undoFolderDelete': { default: { key: 't', code: 'KeyT', ctrl: !IS_MACOS, shift: true, alt: false, meta: IS_MACOS }, type: 'combo', label: 'Undo Folder Delete', description: `Undo the last folder deletion (${IS_MACOS ? 'Cmd' : 'Ctrl'}+Shift+T)`, category: 'Keybindings', group: 'Global Triggers' },
     'keys.physicalAltFallback':    { default: false, type: 'toggle', label: 'Match Option Shortcuts by Physical Key (macOS)', description: 'On macOS, Option+letter types a character on many layouts (e.g. @ or ł). Off: Option shortcuts only fire when the key types no real character, so those characters can still be typed. On: always match the physical key.', category: 'Keybindings', group: 'Keyboard Layout' },
 
     // --- Keybindings: Leap Mode ---
@@ -178,69 +187,69 @@
   // THEME ENGINE
   // ============================================
 
-  const BUILTIN_THEMES = {
+  // Values shared by every built-in theme
+  const THEME_DEFAULTS = {
+    rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
+    fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+  };
+
+  // A complete built-in theme from its palette: shared defaults, plus the values a theme
+  // derives unless it sets them (accent tints, gTile regions, browse-mode colors).
+  function completeThemePalette(palette) {
+    const t = { ...THEME_DEFAULTS, ...palette };
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(t.accent.slice(i, i + 2), 16));
+    const tint = alpha => `rgba(${r},${g},${b},${alpha})`;
+    return {
+      accentDim: tint('0.10'), accentMid: tint('0.20'), accentGlow: tint('0.35'), accentBorder: tint('0.30'),
+      regionBlue: t.blue, regionPurple: t.purple, regionGreen: t.green, regionGold: t.gold,
+      highlight: t.accent, mark: t.red, currentBadgeBg: t.accent, currentBadgeColor: t.bgBase,
+      badgeColor: t.textPrimary, upBg: t.blue, downBg: t.green,
+      ...t,
+    };
+  }
+
+  const BUILTIN_THEME_PALETTES = {
     // ── Meridian: Warm amber accent, deep navy surfaces ──
     'meridian': {
       name: 'Meridian',
       // Backgrounds
       bgVoid: '#080a0f', bgDeep: '#0c0f15', bgBase: '#10141c',
       bgSurface: '#161b25', bgRaised: '#1c222e', bgElevated: '#242b39', bgHover: '#2a3244',
-      // Accent (warm amber)
+      // Accent (warm amber); the accent tints are derived from it
       accent: '#d4965a', accentBright: '#e8a96d',
-      accentDim: 'rgba(212,150,90,0.10)', accentMid: 'rgba(212,150,90,0.20)',
-      accentGlow: 'rgba(212,150,90,0.35)', accentBorder: 'rgba(212,150,90,0.30)',
-      // Semantic
+      // Semantic (also the gTile region colors)
       blue: '#5b9fe8', purple: '#a78bdb', green: '#6ec47d',
       red: '#e06b6b', cyan: '#5bbfd7', gold: '#d4b85c',
-      // gTile regions
-      regionBlue: '#5b9fe8', regionPurple: '#a78bdb', regionGreen: '#6ec47d', regionGold: '#d4b85c',
       // Text
       textPrimary: '#dfe3eb', textSecondary: '#7d8694', textTertiary: '#525b6b', textMuted: '#3c4352',
       // Borders
       borderSubtle: 'rgba(255,255,255,0.04)', borderDefault: 'rgba(255,255,255,0.07)', borderStrong: 'rgba(255,255,255,0.12)',
-      // Radii
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      // Fonts
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       // Shadows
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
       // Effects
       noiseOpacity: '0.018', backdropBlur: '12px', panelAlpha: '0.98',
-      // Browse mode (derived from palette)
-      highlight: '#d4965a', selected: '#5bbfd7', mark: '#e06b6b',
-      currentBadgeBg: '#d4965a', currentBadgeColor: '#10141c',
-      badgeBg: '#3d4a5c', badgeColor: '#dfe3eb',
-      upBg: '#5b9fe8', downBg: '#6ec47d',
+      // Browse mode (highlight/mark/badges are derived from the palette unless set)
+      selected: '#5bbfd7', badgeBg: '#3d4a5c',
     },
 
     // ── Meridian Transparent: Same palette, translucent panels ──
     'meridian-transparent': {
       name: 'Meridian Transparent',
       bgVoid: '#080a0f', bgDeep: '#0c0f15', bgBase: '#10141c',
-      bgSurface: 'rgba(22,27,37,0.88)', bgRaised: 'rgba(28,34,46,0.88)',
-      bgElevated: 'rgba(36,43,57,0.88)', bgHover: 'rgba(42,50,68,0.88)',
+      bgSurface: 'rgba(22,27,37,0.88)', bgRaised: 'rgba(28,34,46,0.88)', bgElevated: 'rgba(36,43,57,0.88)', bgHover: 'rgba(42,50,68,0.88)',
       accent: '#d4965a', accentBright: '#e8a96d',
-      accentDim: 'rgba(212,150,90,0.10)', accentMid: 'rgba(212,150,90,0.20)',
-      accentGlow: 'rgba(212,150,90,0.35)', accentBorder: 'rgba(212,150,90,0.30)',
       blue: '#5b9fe8', purple: '#a78bdb', green: '#6ec47d',
       red: '#e06b6b', cyan: '#5bbfd7', gold: '#d4b85c',
-      regionBlue: '#5b9fe8', regionPurple: '#a78bdb', regionGreen: '#6ec47d', regionGold: '#d4b85c',
       textPrimary: '#dfe3eb', textSecondary: '#7d8694', textTertiary: '#525b6b', textMuted: '#3c4352',
       borderSubtle: 'rgba(255,255,255,0.05)', borderDefault: 'rgba(255,255,255,0.08)', borderStrong: 'rgba(255,255,255,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
       noiseOpacity: '0.022', backdropBlur: '20px', panelAlpha: '0.88',
-      highlight: '#d4965a', selected: '#5bbfd7', mark: '#e06b6b',
-      currentBadgeBg: '#d4965a', currentBadgeColor: '#10141c',
-      badgeBg: 'rgba(61,74,92,0.92)', badgeColor: '#dfe3eb',
-      upBg: '#5b9fe8', downBg: '#6ec47d',
+      selected: '#5bbfd7', badgeBg: 'rgba(61,74,92,0.92)',
     },
 
     // ── Dracula: Classic purple-accent dark theme ──
@@ -250,24 +259,15 @@
       bgVoid: '#1e1f29', bgDeep: '#21222c', bgBase: '#282a36',
       bgSurface: '#2d2f3d', bgRaised: '#343746', bgElevated: '#3c3f58', bgHover: '#44475a',
       accent: '#bd93f9', accentBright: '#d4b0ff',
-      accentDim: 'rgba(189,147,249,0.10)', accentMid: 'rgba(189,147,249,0.20)',
-      accentGlow: 'rgba(189,147,249,0.35)', accentBorder: 'rgba(189,147,249,0.30)',
       blue: '#8be9fd', purple: '#bd93f9', green: '#50fa7b',
       red: '#ff5555', cyan: '#8be9fd', gold: '#f1fa8c',
-      regionBlue: '#8be9fd', regionPurple: '#bd93f9', regionGreen: '#50fa7b', regionGold: '#f1fa8c',
       textPrimary: '#f8f8f2', textSecondary: '#bfbfbf', textTertiary: '#6272a4', textMuted: '#44475a',
       borderSubtle: 'rgba(255,255,255,0.04)', borderDefault: 'rgba(255,255,255,0.08)', borderStrong: 'rgba(255,255,255,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#bd93f9', selected: '#8be9fd', mark: '#ff5555',
-      currentBadgeBg: '#bd93f9', currentBadgeColor: '#282a36',
-      badgeBg: '#565a72', badgeColor: '#f8f8f2',
-      upBg: '#8be9fd', downBg: '#50fa7b',
+      selected: '#8be9fd', badgeBg: '#565a72',
     },
 
     // ── Gruvbox Dark: Warm retro palette ──
@@ -277,24 +277,15 @@
       bgVoid: '#1d2021', bgDeep: '#202324', bgBase: '#282828',
       bgSurface: '#32302f', bgRaised: '#3c3836', bgElevated: '#504945', bgHover: '#665c54',
       accent: '#fabd2f', accentBright: '#ffe066',
-      accentDim: 'rgba(250,189,47,0.10)', accentMid: 'rgba(250,189,47,0.20)',
-      accentGlow: 'rgba(250,189,47,0.35)', accentBorder: 'rgba(250,189,47,0.30)',
       blue: '#83a598', purple: '#d3869b', green: '#b8bb26',
       red: '#fb4934', cyan: '#8ec07c', gold: '#fabd2f',
-      regionBlue: '#83a598', regionPurple: '#d3869b', regionGreen: '#b8bb26', regionGold: '#fabd2f',
       textPrimary: '#ebdbb2', textSecondary: '#a89984', textTertiary: '#7c6f64', textMuted: '#504945',
       borderSubtle: 'rgba(235,219,178,0.04)', borderDefault: 'rgba(235,219,178,0.08)', borderStrong: 'rgba(235,219,178,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(235,219,178,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(235,219,178,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#fabd2f', selected: '#83a598', mark: '#fb4934',
-      currentBadgeBg: '#fabd2f', currentBadgeColor: '#282828',
-      badgeBg: '#665c54', badgeColor: '#ebdbb2',
-      upBg: '#83a598', downBg: '#b8bb26',
+      selected: '#83a598', badgeBg: '#665c54',
     },
 
     // ── Nord: Clean arctic aesthetic ──
@@ -304,24 +295,15 @@
       bgVoid: '#242933', bgDeep: '#272c36', bgBase: '#2e3440',
       bgSurface: '#343a48', bgRaised: '#3b4252', bgElevated: '#434c5e', bgHover: '#4c566a',
       accent: '#88c0d0', accentBright: '#a3d4e2',
-      accentDim: 'rgba(136,192,208,0.10)', accentMid: 'rgba(136,192,208,0.20)',
-      accentGlow: 'rgba(136,192,208,0.35)', accentBorder: 'rgba(136,192,208,0.30)',
       blue: '#81a1c1', purple: '#b48ead', green: '#a3be8c',
       red: '#bf616a', cyan: '#88c0d0', gold: '#ebcb8b',
-      regionBlue: '#81a1c1', regionPurple: '#b48ead', regionGreen: '#a3be8c', regionGold: '#ebcb8b',
       textPrimary: '#eceff4', textSecondary: '#d8dee9', textTertiary: '#7b88a1', textMuted: '#4c566a',
       borderSubtle: 'rgba(236,239,244,0.04)', borderDefault: 'rgba(236,239,244,0.07)', borderStrong: 'rgba(236,239,244,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(236,239,244,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.35)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(236,239,244,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#88c0d0', selected: '#ebcb8b', mark: '#bf616a',
-      currentBadgeBg: '#88c0d0', currentBadgeColor: '#2e3440',
-      badgeBg: '#5a6580', badgeColor: '#eceff4',
-      upBg: '#81a1c1', downBg: '#a3be8c',
+      selected: '#ebcb8b', badgeBg: '#5a6580',
     },
 
     // ── Catppuccin Mocha: Soothing pastel theme ──
@@ -331,24 +313,15 @@
       bgVoid: '#181825', bgDeep: '#1a1a2e', bgBase: '#1e1e2e',
       bgSurface: '#262637', bgRaised: '#313244', bgElevated: '#3b3b52', bgHover: '#45475a',
       accent: '#cba6f7', accentBright: '#dbbfff',
-      accentDim: 'rgba(203,166,247,0.10)', accentMid: 'rgba(203,166,247,0.20)',
-      accentGlow: 'rgba(203,166,247,0.35)', accentBorder: 'rgba(203,166,247,0.30)',
       blue: '#89b4fa', purple: '#cba6f7', green: '#a6e3a1',
       red: '#f38ba8', cyan: '#94e2d5', gold: '#f9e2af',
-      regionBlue: '#89b4fa', regionPurple: '#cba6f7', regionGreen: '#a6e3a1', regionGold: '#f9e2af',
       textPrimary: '#cdd6f4', textSecondary: '#a6adc8', textTertiary: '#6c7086', textMuted: '#45475a',
       borderSubtle: 'rgba(205,214,244,0.04)', borderDefault: 'rgba(205,214,244,0.07)', borderStrong: 'rgba(205,214,244,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(205,214,244,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(205,214,244,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#cba6f7', selected: '#94e2d5', mark: '#f38ba8',
-      currentBadgeBg: '#cba6f7', currentBadgeColor: '#1e1e2e',
-      badgeBg: '#585b72', badgeColor: '#cdd6f4',
-      upBg: '#89b4fa', downBg: '#a6e3a1',
+      selected: '#94e2d5', badgeBg: '#585b72',
     },
 
     // ── Tokyo Night: Modern VS Code-popular dark theme ──
@@ -358,24 +331,15 @@
       bgVoid: '#16161e', bgDeep: '#1a1a24', bgBase: '#1a1b26',
       bgSurface: '#1f2030', bgRaised: '#24283b', bgElevated: '#2f3349', bgHover: '#3b3d57',
       accent: '#7aa2f7', accentBright: '#9ab8ff',
-      accentDim: 'rgba(122,162,247,0.10)', accentMid: 'rgba(122,162,247,0.20)',
-      accentGlow: 'rgba(122,162,247,0.35)', accentBorder: 'rgba(122,162,247,0.30)',
       blue: '#7aa2f7', purple: '#bb9af7', green: '#9ece6a',
       red: '#f7768e', cyan: '#7dcfff', gold: '#e0af68',
-      regionBlue: '#7aa2f7', regionPurple: '#bb9af7', regionGreen: '#9ece6a', regionGold: '#e0af68',
       textPrimary: '#c0caf5', textSecondary: '#9aa5ce', textTertiary: '#565f89', textMuted: '#3b4261',
       borderSubtle: 'rgba(192,202,245,0.04)', borderDefault: 'rgba(192,202,245,0.07)', borderStrong: 'rgba(192,202,245,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(192,202,245,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(192,202,245,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#7aa2f7', selected: '#e0af68', mark: '#f7768e',
-      currentBadgeBg: '#7aa2f7', currentBadgeColor: '#1a1b26',
-      badgeBg: '#515475', badgeColor: '#c0caf5',
-      upBg: '#7dcfff', downBg: '#9ece6a',
+      selected: '#e0af68', badgeBg: '#515475', upBg: '#7dcfff',
     },
 
     // ── Monokai Pro: Classic syntax-highlighting-inspired theme ──
@@ -385,24 +349,15 @@
       bgVoid: '#1a1a1a', bgDeep: '#1e1f1c', bgBase: '#272822',
       bgSurface: '#2d2e27', bgRaised: '#3e3d32', bgElevated: '#49483e', bgHover: '#585840',
       accent: '#a6e22e', accentBright: '#b8f240',
-      accentDim: 'rgba(166,226,46,0.10)', accentMid: 'rgba(166,226,46,0.20)',
-      accentGlow: 'rgba(166,226,46,0.35)', accentBorder: 'rgba(166,226,46,0.30)',
       blue: '#66d9ef', purple: '#ae81ff', green: '#a6e22e',
       red: '#f92672', cyan: '#66d9ef', gold: '#e6db74',
-      regionBlue: '#66d9ef', regionPurple: '#ae81ff', regionGreen: '#a6e22e', regionGold: '#e6db74',
       textPrimary: '#f8f8f2', textSecondary: '#b8b8a8', textTertiary: '#75715e', textMuted: '#49483e',
       borderSubtle: 'rgba(248,248,242,0.04)', borderDefault: 'rgba(248,248,242,0.08)', borderStrong: 'rgba(248,248,242,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(248,248,242,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(248,248,242,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#a6e22e', selected: '#66d9ef', mark: '#f92672',
-      currentBadgeBg: '#a6e22e', currentBadgeColor: '#272822',
-      badgeBg: '#585840', badgeColor: '#f8f8f2',
-      upBg: '#66d9ef', downBg: '#ae81ff',
+      selected: '#66d9ef', badgeBg: '#585840', downBg: '#ae81ff',
     },
 
     // ── One Dark Pro: Atom's iconic One Dark ──
@@ -412,24 +367,15 @@
       bgVoid: '#1b1d23', bgDeep: '#1e2027', bgBase: '#282c34',
       bgSurface: '#2c313a', bgRaised: '#333842', bgElevated: '#3b4048', bgHover: '#434852',
       accent: '#61afef', accentBright: '#7bc4ff',
-      accentDim: 'rgba(97,175,239,0.10)', accentMid: 'rgba(97,175,239,0.20)',
-      accentGlow: 'rgba(97,175,239,0.35)', accentBorder: 'rgba(97,175,239,0.30)',
       blue: '#61afef', purple: '#c678dd', green: '#98c379',
       red: '#e06c75', cyan: '#56b6c2', gold: '#e5c07b',
-      regionBlue: '#61afef', regionPurple: '#c678dd', regionGreen: '#98c379', regionGold: '#e5c07b',
       textPrimary: '#abb2bf', textSecondary: '#7f848e', textTertiary: '#5c6370', textMuted: '#3e4452',
       borderSubtle: 'rgba(171,178,191,0.04)', borderDefault: 'rgba(171,178,191,0.08)', borderStrong: 'rgba(171,178,191,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(171,178,191,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(171,178,191,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#61afef', selected: '#c678dd', mark: '#e06c75',
-      currentBadgeBg: '#61afef', currentBadgeColor: '#282c34',
-      badgeBg: '#4b5263', badgeColor: '#abb2bf',
-      upBg: '#56b6c2', downBg: '#98c379',
+      selected: '#c678dd', badgeBg: '#4b5263', upBg: '#56b6c2',
     },
 
     // ── Solarized Dark: Ethan Schoonover's precision-crafted palette ──
@@ -439,24 +385,15 @@
       bgVoid: '#001e26', bgDeep: '#00212b', bgBase: '#002b36',
       bgSurface: '#073642', bgRaised: '#0a4050', bgElevated: '#0d4e5e', bgHover: '#1a5c6c',
       accent: '#268bd2', accentBright: '#3d9ee5',
-      accentDim: 'rgba(38,139,210,0.10)', accentMid: 'rgba(38,139,210,0.20)',
-      accentGlow: 'rgba(38,139,210,0.35)', accentBorder: 'rgba(38,139,210,0.30)',
       blue: '#268bd2', purple: '#6c71c4', green: '#859900',
       red: '#dc322f', cyan: '#2aa198', gold: '#b58900',
-      regionBlue: '#268bd2', regionPurple: '#6c71c4', regionGreen: '#859900', regionGold: '#b58900',
       textPrimary: '#93a1a1', textSecondary: '#839496', textTertiary: '#586e75', textMuted: '#405b62',
       borderSubtle: 'rgba(147,161,161,0.04)', borderDefault: 'rgba(147,161,161,0.08)', borderStrong: 'rgba(147,161,161,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(147,161,161,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(147,161,161,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#268bd2', selected: '#2aa198', mark: '#dc322f',
-      currentBadgeBg: '#268bd2', currentBadgeColor: '#002b36',
-      badgeBg: '#1a5c6c', badgeColor: '#93a1a1',
-      upBg: '#6c71c4', downBg: '#859900',
+      selected: '#2aa198', badgeBg: '#1a5c6c', upBg: '#6c71c4',
     },
 
     // ── GitHub Dark: GitHub's official dark theme ──
@@ -466,24 +403,15 @@
       bgVoid: '#0a0c10', bgDeep: '#0d1117', bgBase: '#161b22',
       bgSurface: '#1c2128', bgRaised: '#21262d', bgElevated: '#282e36', bgHover: '#30363d',
       accent: '#58a6ff', accentBright: '#79c0ff',
-      accentDim: 'rgba(88,166,255,0.10)', accentMid: 'rgba(88,166,255,0.20)',
-      accentGlow: 'rgba(88,166,255,0.35)', accentBorder: 'rgba(88,166,255,0.30)',
       blue: '#58a6ff', purple: '#d2a8ff', green: '#3fb950',
       red: '#f85149', cyan: '#56d4dd', gold: '#d29922',
-      regionBlue: '#58a6ff', regionPurple: '#d2a8ff', regionGreen: '#3fb950', regionGold: '#d29922',
       textPrimary: '#c9d1d9', textSecondary: '#8b949e', textTertiary: '#6e7681', textMuted: '#484f58',
       borderSubtle: 'rgba(201,209,217,0.04)', borderDefault: 'rgba(201,209,217,0.08)', borderStrong: 'rgba(201,209,217,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(201,209,217,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(201,209,217,0.06)',
       noiseOpacity: '0.010', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#58a6ff', selected: '#d2a8ff', mark: '#f85149',
-      currentBadgeBg: '#58a6ff', currentBadgeColor: '#0d1117',
-      badgeBg: '#30363d', badgeColor: '#c9d1d9',
-      upBg: '#56d4dd', downBg: '#3fb950',
+      selected: '#d2a8ff', badgeBg: '#30363d', currentBadgeColor: '#0d1117', upBg: '#56d4dd',
     },
 
     // ── Material Palenight: Material Theme's most popular variant ──
@@ -493,24 +421,15 @@
       bgVoid: '#1b1e2b', bgDeep: '#1e2132', bgBase: '#292d3e',
       bgSurface: '#2f3344', bgRaised: '#34384a', bgElevated: '#3c4056', bgHover: '#444862',
       accent: '#82aaff', accentBright: '#9fc0ff',
-      accentDim: 'rgba(130,170,255,0.10)', accentMid: 'rgba(130,170,255,0.20)',
-      accentGlow: 'rgba(130,170,255,0.35)', accentBorder: 'rgba(130,170,255,0.30)',
       blue: '#82aaff', purple: '#c792ea', green: '#c3e88d',
       red: '#f07178', cyan: '#89ddff', gold: '#ffcb6b',
-      regionBlue: '#82aaff', regionPurple: '#c792ea', regionGreen: '#c3e88d', regionGold: '#ffcb6b',
       textPrimary: '#a6accd', textSecondary: '#7982a9', textTertiary: '#5c6590', textMuted: '#3c4056',
       borderSubtle: 'rgba(166,172,205,0.04)', borderDefault: 'rgba(166,172,205,0.08)', borderStrong: 'rgba(166,172,205,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(166,172,205,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(166,172,205,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#82aaff', selected: '#c792ea', mark: '#f07178',
-      currentBadgeBg: '#82aaff', currentBadgeColor: '#292d3e',
-      badgeBg: '#444862', badgeColor: '#a6accd',
-      upBg: '#89ddff', downBg: '#c3e88d',
+      selected: '#c792ea', badgeBg: '#444862', upBg: '#89ddff',
     },
 
     // ── Ayu Dark: Clean minimal dark from Ayu family ──
@@ -520,24 +439,15 @@
       bgVoid: '#0a0e14', bgDeep: '#0b0f15', bgBase: '#0d1017',
       bgSurface: '#131721', bgRaised: '#191f2b', bgElevated: '#1f2735', bgHover: '#272f3e',
       accent: '#e6b450', accentBright: '#f0c565',
-      accentDim: 'rgba(230,180,80,0.10)', accentMid: 'rgba(230,180,80,0.20)',
-      accentGlow: 'rgba(230,180,80,0.35)', accentBorder: 'rgba(230,180,80,0.30)',
       blue: '#39bae6', purple: '#d2a6ff', green: '#7fd962',
       red: '#f07178', cyan: '#95e6cb', gold: '#e6b450',
-      regionBlue: '#39bae6', regionPurple: '#d2a6ff', regionGreen: '#7fd962', regionGold: '#e6b450',
       textPrimary: '#bfbdb6', textSecondary: '#7b7d80', textTertiary: '#565b66', textMuted: '#3d424d',
       borderSubtle: 'rgba(191,189,182,0.04)', borderDefault: 'rgba(191,189,182,0.07)', borderStrong: 'rgba(191,189,182,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.65), 0 0 0 1px rgba(191,189,182,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(191,189,182,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#e6b450', selected: '#39bae6', mark: '#f07178',
-      currentBadgeBg: '#e6b450', currentBadgeColor: '#0d1017',
-      badgeBg: '#272f3e', badgeColor: '#bfbdb6',
-      upBg: '#39bae6', downBg: '#7fd962',
+      selected: '#39bae6', badgeBg: '#272f3e',
     },
 
     // ── Ayu Mirage: Softer mid-tone variant of Ayu ──
@@ -546,24 +456,15 @@
       bgVoid: '#171b24', bgDeep: '#1a1e27', bgBase: '#1f2430',
       bgSurface: '#242936', bgRaised: '#2a2f3c', bgElevated: '#323845', bgHover: '#3a4050',
       accent: '#ffcc66', accentBright: '#ffd980',
-      accentDim: 'rgba(255,204,102,0.10)', accentMid: 'rgba(255,204,102,0.20)',
-      accentGlow: 'rgba(255,204,102,0.35)', accentBorder: 'rgba(255,204,102,0.30)',
       blue: '#73d0ff', purple: '#d4bfff', green: '#bae67e',
       red: '#f28779', cyan: '#95e6cb', gold: '#ffcc66',
-      regionBlue: '#73d0ff', regionPurple: '#d4bfff', regionGreen: '#bae67e', regionGold: '#ffcc66',
       textPrimary: '#cbccc6', textSecondary: '#8a8d93', textTertiary: '#5c6070', textMuted: '#3a4050',
       borderSubtle: 'rgba(203,204,198,0.04)', borderDefault: 'rgba(203,204,198,0.07)', borderStrong: 'rgba(203,204,198,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(203,204,198,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(203,204,198,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#ffcc66', selected: '#73d0ff', mark: '#f28779',
-      currentBadgeBg: '#ffcc66', currentBadgeColor: '#1f2430',
-      badgeBg: '#3a4050', badgeColor: '#cbccc6',
-      upBg: '#73d0ff', downBg: '#bae67e',
+      selected: '#73d0ff', badgeBg: '#3a4050',
     },
 
     // ── Synthwave '84: Retro-futuristic neon ──
@@ -573,24 +474,15 @@
       bgVoid: '#1a1028', bgDeep: '#1e1336', bgBase: '#262335',
       bgSurface: '#2d2844', bgRaised: '#342e50', bgElevated: '#3e375e', bgHover: '#4a4370',
       accent: '#ff7edb', accentBright: '#ff9de6',
-      accentDim: 'rgba(255,126,219,0.10)', accentMid: 'rgba(255,126,219,0.20)',
-      accentGlow: 'rgba(255,126,219,0.35)', accentBorder: 'rgba(255,126,219,0.30)',
       blue: '#36f9f6', purple: '#ff7edb', green: '#72f1b8',
       red: '#fe4450', cyan: '#36f9f6', gold: '#fede5d',
-      regionBlue: '#36f9f6', regionPurple: '#ff7edb', regionGreen: '#72f1b8', regionGold: '#fede5d',
       textPrimary: '#e0d0ff', textSecondary: '#a599c4', textTertiary: '#6e5e8e', textMuted: '#4a4370',
       borderSubtle: 'rgba(224,208,255,0.04)', borderDefault: 'rgba(224,208,255,0.08)', borderStrong: 'rgba(224,208,255,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(224,208,255,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(224,208,255,0.06)',
       noiseOpacity: '0.015', backdropBlur: '14px', panelAlpha: '0.97',
-      highlight: '#ff7edb', selected: '#36f9f6', mark: '#fe4450',
-      currentBadgeBg: '#ff7edb', currentBadgeColor: '#262335',
-      badgeBg: '#4a4370', badgeColor: '#e0d0ff',
-      upBg: '#36f9f6', downBg: '#72f1b8',
+      selected: '#36f9f6', badgeBg: '#4a4370',
     },
 
     // ── Everforest Dark: Comfortable green-toned theme ──
@@ -600,24 +492,15 @@
       bgVoid: '#242b2a', bgDeep: '#272e2d', bgBase: '#2d353b',
       bgSurface: '#343e44', bgRaised: '#3d484d', bgElevated: '#475258', bgHover: '#505c62',
       accent: '#a7c080', accentBright: '#b8d294',
-      accentDim: 'rgba(167,192,128,0.10)', accentMid: 'rgba(167,192,128,0.20)',
-      accentGlow: 'rgba(167,192,128,0.35)', accentBorder: 'rgba(167,192,128,0.30)',
       blue: '#7fbbb3', purple: '#d699b6', green: '#a7c080',
       red: '#e67e80', cyan: '#83c092', gold: '#dbbc7f',
-      regionBlue: '#7fbbb3', regionPurple: '#d699b6', regionGreen: '#a7c080', regionGold: '#dbbc7f',
       textPrimary: '#d3c6aa', textSecondary: '#9da9a0', textTertiary: '#7a8478', textMuted: '#505c62',
       borderSubtle: 'rgba(211,198,170,0.04)', borderDefault: 'rgba(211,198,170,0.07)', borderStrong: 'rgba(211,198,170,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(211,198,170,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.35)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(211,198,170,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#a7c080', selected: '#7fbbb3', mark: '#e67e80',
-      currentBadgeBg: '#a7c080', currentBadgeColor: '#2d353b',
-      badgeBg: '#505c62', badgeColor: '#d3c6aa',
-      upBg: '#7fbbb3', downBg: '#83c092',
+      selected: '#7fbbb3', badgeBg: '#505c62', downBg: '#83c092',
     },
 
     // ── Kanagawa: Inspired by Katsushika Hokusai's The Great Wave ──
@@ -627,24 +510,15 @@
       bgVoid: '#16161d', bgDeep: '#181820', bgBase: '#1f1f28',
       bgSurface: '#252530', bgRaised: '#2a2a37', bgElevated: '#363646', bgHover: '#3e3e52',
       accent: '#7e9cd8', accentBright: '#9ab4ec',
-      accentDim: 'rgba(126,156,216,0.10)', accentMid: 'rgba(126,156,216,0.20)',
-      accentGlow: 'rgba(126,156,216,0.35)', accentBorder: 'rgba(126,156,216,0.30)',
       blue: '#7e9cd8', purple: '#957fb8', green: '#76946a',
       red: '#c34043', cyan: '#7aa89f', gold: '#dca561',
-      regionBlue: '#7e9cd8', regionPurple: '#957fb8', regionGreen: '#76946a', regionGold: '#dca561',
       textPrimary: '#dcd7ba', textSecondary: '#9a978a', textTertiary: '#727169', textMuted: '#3e3e52',
       borderSubtle: 'rgba(220,215,186,0.04)', borderDefault: 'rgba(220,215,186,0.07)', borderStrong: 'rgba(220,215,186,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(220,215,186,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(220,215,186,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#7e9cd8', selected: '#dca561', mark: '#c34043',
-      currentBadgeBg: '#7e9cd8', currentBadgeColor: '#1f1f28',
-      badgeBg: '#3e3e52', badgeColor: '#dcd7ba',
-      upBg: '#7aa89f', downBg: '#76946a',
+      selected: '#dca561', badgeBg: '#3e3e52', upBg: '#7aa89f',
     },
 
     // ── Rosé Pine: All natural pine, faux fur, and a bit of soho vibes ──
@@ -654,24 +528,15 @@
       bgVoid: '#14121c', bgDeep: '#17151f', bgBase: '#191724',
       bgSurface: '#1f1d2e', bgRaised: '#26233a', bgElevated: '#2e2b42', bgHover: '#38354c',
       accent: '#c4a7e7', accentBright: '#d4bbf5',
-      accentDim: 'rgba(196,167,231,0.10)', accentMid: 'rgba(196,167,231,0.20)',
-      accentGlow: 'rgba(196,167,231,0.35)', accentBorder: 'rgba(196,167,231,0.30)',
       blue: '#9ccfd8', purple: '#c4a7e7', green: '#31748f',
       red: '#eb6f92', cyan: '#9ccfd8', gold: '#f6c177',
-      regionBlue: '#9ccfd8', regionPurple: '#c4a7e7', regionGreen: '#31748f', regionGold: '#f6c177',
       textPrimary: '#e0def4', textSecondary: '#908caa', textTertiary: '#6e6a86', textMuted: '#403d52',
       borderSubtle: 'rgba(224,222,244,0.04)', borderDefault: 'rgba(224,222,244,0.07)', borderStrong: 'rgba(224,222,244,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(224,222,244,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(224,222,244,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#c4a7e7', selected: '#9ccfd8', mark: '#eb6f92',
-      currentBadgeBg: '#c4a7e7', currentBadgeColor: '#191724',
-      badgeBg: '#38354c', badgeColor: '#e0def4',
-      upBg: '#9ccfd8', downBg: '#31748f',
+      selected: '#9ccfd8', badgeBg: '#38354c',
     },
 
     // ── Vesper: Warm dark theme with orange accents ──
@@ -681,24 +546,15 @@
       bgVoid: '#0e0e0e', bgDeep: '#101010', bgBase: '#141414',
       bgSurface: '#1b1b1b', bgRaised: '#222222', bgElevated: '#2a2a2a', bgHover: '#333333',
       accent: '#ffc799', accentBright: '#ffd4b0',
-      accentDim: 'rgba(255,199,153,0.10)', accentMid: 'rgba(255,199,153,0.20)',
-      accentGlow: 'rgba(255,199,153,0.35)', accentBorder: 'rgba(255,199,153,0.30)',
       blue: '#8eb8e4', purple: '#d5a8e0', green: '#7fb98f',
       red: '#f5a191', cyan: '#8eb8e4', gold: '#ffc799',
-      regionBlue: '#8eb8e4', regionPurple: '#d5a8e0', regionGreen: '#7fb98f', regionGold: '#ffc799',
       textPrimary: '#b8b8b8', textSecondary: '#7b7b7b', textTertiary: '#555555', textMuted: '#333333',
       borderSubtle: 'rgba(184,184,184,0.04)', borderDefault: 'rgba(184,184,184,0.07)', borderStrong: 'rgba(184,184,184,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(184,184,184,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.5)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(184,184,184,0.06)',
       noiseOpacity: '0.018', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#ffc799', selected: '#8eb8e4', mark: '#f5a191',
-      currentBadgeBg: '#ffc799', currentBadgeColor: '#141414',
-      badgeBg: '#333333', badgeColor: '#b8b8b8',
-      upBg: '#8eb8e4', downBg: '#7fb98f',
+      selected: '#8eb8e4', badgeBg: '#333333',
     },
 
     // ── Poimandres: Minimal, dark teal-accented ──
@@ -708,24 +564,15 @@
       bgVoid: '#1a1c2a', bgDeep: '#1b1e2e', bgBase: '#1b2031',
       bgSurface: '#212738', bgRaised: '#272d40', bgElevated: '#303648', bgHover: '#3a4055',
       accent: '#add7ff', accentBright: '#c5e4ff',
-      accentDim: 'rgba(173,215,255,0.10)', accentMid: 'rgba(173,215,255,0.20)',
-      accentGlow: 'rgba(173,215,255,0.35)', accentBorder: 'rgba(173,215,255,0.30)',
       blue: '#add7ff', purple: '#a6accd', green: '#5de4c7',
       red: '#d0679d', cyan: '#89ddff', gold: '#fffac2',
-      regionBlue: '#add7ff', regionPurple: '#a6accd', regionGreen: '#5de4c7', regionGold: '#fffac2',
       textPrimary: '#a6accd', textSecondary: '#767c9d', textTertiary: '#506477', textMuted: '#3a4055',
       borderSubtle: 'rgba(166,172,205,0.04)', borderDefault: 'rgba(166,172,205,0.07)', borderStrong: 'rgba(166,172,205,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(166,172,205,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(166,172,205,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#add7ff', selected: '#5de4c7', mark: '#d0679d',
-      currentBadgeBg: '#add7ff', currentBadgeColor: '#1b2031',
-      badgeBg: '#3a4055', badgeColor: '#a6accd',
-      upBg: '#89ddff', downBg: '#5de4c7',
+      selected: '#5de4c7', badgeBg: '#3a4055', upBg: '#89ddff',
     },
 
     // ── Moonlight: Soft purple VS Code theme ──
@@ -735,24 +582,15 @@
       bgVoid: '#1a1c2e', bgDeep: '#1c1e32', bgBase: '#1e2030',
       bgSurface: '#222436', bgRaised: '#2a2c40', bgElevated: '#32344a', bgHover: '#3c3e56',
       accent: '#82aaff', accentBright: '#a0c4ff',
-      accentDim: 'rgba(130,170,255,0.10)', accentMid: 'rgba(130,170,255,0.20)',
-      accentGlow: 'rgba(130,170,255,0.35)', accentBorder: 'rgba(130,170,255,0.30)',
       blue: '#82aaff', purple: '#c099ff', green: '#c3e88d',
       red: '#ff757f', cyan: '#86e1fc', gold: '#ffc777',
-      regionBlue: '#82aaff', regionPurple: '#c099ff', regionGreen: '#c3e88d', regionGold: '#ffc777',
       textPrimary: '#c8d3f5', textSecondary: '#8f98b0', textTertiary: '#636da6', textMuted: '#3c3e56',
       borderSubtle: 'rgba(200,211,245,0.04)', borderDefault: 'rgba(200,211,245,0.07)', borderStrong: 'rgba(200,211,245,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(200,211,245,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(200,211,245,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#82aaff', selected: '#c099ff', mark: '#ff757f',
-      currentBadgeBg: '#82aaff', currentBadgeColor: '#1e2030',
-      badgeBg: '#3c3e56', badgeColor: '#c8d3f5',
-      upBg: '#86e1fc', downBg: '#c3e88d',
+      selected: '#c099ff', badgeBg: '#3c3e56', upBg: '#86e1fc',
     },
 
     // ── Andromeda: Bold, colorful dark theme ──
@@ -762,24 +600,15 @@
       bgVoid: '#1a1a24', bgDeep: '#1e1e2a', bgBase: '#23262e',
       bgSurface: '#292c36', bgRaised: '#2f323e', bgElevated: '#383c4a', bgHover: '#414558',
       accent: '#ffe66d', accentBright: '#fff08a',
-      accentDim: 'rgba(255,230,109,0.10)', accentMid: 'rgba(255,230,109,0.20)',
-      accentGlow: 'rgba(255,230,109,0.35)', accentBorder: 'rgba(255,230,109,0.30)',
       blue: '#6ec1e4', purple: '#c74ded', green: '#96e072',
       red: '#ee5d43', cyan: '#00e8c6', gold: '#ffe66d',
-      regionBlue: '#6ec1e4', regionPurple: '#c74ded', regionGreen: '#96e072', regionGold: '#ffe66d',
       textPrimary: '#d5ced9', textSecondary: '#9a929e', textTertiary: '#6b6370', textMuted: '#414558',
       borderSubtle: 'rgba(213,206,217,0.04)', borderDefault: 'rgba(213,206,217,0.08)', borderStrong: 'rgba(213,206,217,0.14)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(213,206,217,0.08)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(213,206,217,0.06)',
       noiseOpacity: '0.012', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#ffe66d', selected: '#00e8c6', mark: '#ee5d43',
-      currentBadgeBg: '#ffe66d', currentBadgeColor: '#23262e',
-      badgeBg: '#414558', badgeColor: '#d5ced9',
-      upBg: '#6ec1e4', downBg: '#96e072',
+      selected: '#00e8c6', badgeBg: '#414558',
     },
 
     // ── Nightfox: Cool-toned Neovim-born theme ──
@@ -789,24 +618,15 @@
       bgVoid: '#131a24', bgDeep: '#152028', bgBase: '#192330',
       bgSurface: '#1e2a38', bgRaised: '#243140', bgElevated: '#29394a', bgHover: '#324456',
       accent: '#719cd6', accentBright: '#8db4e8',
-      accentDim: 'rgba(113,156,214,0.10)', accentMid: 'rgba(113,156,214,0.20)',
-      accentGlow: 'rgba(113,156,214,0.35)', accentBorder: 'rgba(113,156,214,0.30)',
       blue: '#719cd6', purple: '#9d79d6', green: '#81b29a',
       red: '#c94f6d', cyan: '#63cdcf', gold: '#dbc074',
-      regionBlue: '#719cd6', regionPurple: '#9d79d6', regionGreen: '#81b29a', regionGold: '#dbc074',
       textPrimary: '#cdcecf', textSecondary: '#93949a', textTertiary: '#6b6e75', textMuted: '#3d4b5c',
       borderSubtle: 'rgba(205,206,207,0.04)', borderDefault: 'rgba(205,206,207,0.07)', borderStrong: 'rgba(205,206,207,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(205,206,207,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.4)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.4), inset 0 1px 0 rgba(205,206,207,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#719cd6', selected: '#dbc074', mark: '#c94f6d',
-      currentBadgeBg: '#719cd6', currentBadgeColor: '#192330',
-      badgeBg: '#324456', badgeColor: '#cdcecf',
-      upBg: '#63cdcf', downBg: '#81b29a',
+      selected: '#dbc074', badgeBg: '#324456', upBg: '#63cdcf',
     },
 
     // ── Vitesse Dark: Elegant minimal by Anthony Fu ──
@@ -816,26 +636,21 @@
       bgVoid: '#171717', bgDeep: '#1a1a1a', bgBase: '#1e1e1e',
       bgSurface: '#252525', bgRaised: '#2b2b2b', bgElevated: '#333333', bgHover: '#3a3a3a',
       accent: '#4d9375', accentBright: '#5da888',
-      accentDim: 'rgba(77,147,117,0.10)', accentMid: 'rgba(77,147,117,0.20)',
-      accentGlow: 'rgba(77,147,117,0.35)', accentBorder: 'rgba(77,147,117,0.30)',
       blue: '#4c9a91', purple: '#b38bdb', green: '#4d9375',
       red: '#cb7676', cyan: '#5eaab5', gold: '#d4976c',
-      regionBlue: '#4c9a91', regionPurple: '#b38bdb', regionGreen: '#4d9375', regionGold: '#d4976c',
       textPrimary: '#dbd7ca', textSecondary: '#9a958c', textTertiary: '#6b675d', textMuted: '#3a3a3a',
       borderSubtle: 'rgba(219,215,202,0.04)', borderDefault: 'rgba(219,215,202,0.07)', borderStrong: 'rgba(219,215,202,0.12)',
-      rSm: '6px', rMd: '10px', rLg: '14px', rXl: '20px',
-      fontUi: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      fontMono: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
       shadowModal: '0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(219,215,202,0.07)',
       shadowElevated: '0 8px 32px rgba(0,0,0,0.45)',
       shadowKbd: '0 1px 2px rgba(0,0,0,0.45), inset 0 1px 0 rgba(219,215,202,0.06)',
       noiseOpacity: '0.015', backdropBlur: '12px', panelAlpha: '0.98',
-      highlight: '#4d9375', selected: '#4c9a91', mark: '#cb7676',
-      currentBadgeBg: '#4d9375', currentBadgeColor: '#1e1e1e',
-      badgeBg: '#3a3a3a', badgeColor: '#dbd7ca',
-      upBg: '#5eaab5', downBg: '#4d9375',
+      selected: '#4c9a91', badgeBg: '#3a3a3a', upBg: '#5eaab5',
     },
   };
+
+  const BUILTIN_THEMES = Object.fromEntries(
+    Object.entries(BUILTIN_THEME_PALETTES).map(([id, palette]) => [id, completeThemePalette(palette)])
+  );
 
   // Mutable themes map: built-ins + user overrides (populated by loadUserThemes)
   let themes = { ...BUILTIN_THEMES };
@@ -845,8 +660,43 @@
     return Object.entries(themes).map(([value, t]) => ({ value, label: t.name || value }));
   }
 
+  // Normalize a user-supplied theme color to #rrggbb / rgba(), which every consumer
+  // (CSS vars, the hex math in applyTheme, the browser theme) understands. Named and
+  // hsl() colors would otherwise turn black. Returns null for unparseable values.
+  function normalizeThemeColor(value) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    let rgba = null;
+    try { rgba = InspectorUtils.colorToRGBA(value.trim()); } catch (e) { rgba = null; }
+    if (!rgba) return null;
+    const hex = n => Math.round(n).toString(16).padStart(2, '0');
+    if (rgba.a >= 1) return `#${hex(rgba.r)}${hex(rgba.g)}${hex(rgba.b)}`;
+    return `rgba(${Math.round(rgba.r)},${Math.round(rgba.g)},${Math.round(rgba.b)},${+rgba.a.toFixed(3)})`;
+  }
+
+  // Validate a user theme definition: known color keys must parse as CSS colors
+  // (normalized), other values must be strings/numbers. Invalid keys are dropped
+  // (with a warning) so the base theme's value applies.
+  function sanitizeUserTheme(key, def) {
+    const out = {};
+    for (const [prop, value] of Object.entries(def)) {
+      if (prop === 'extends') continue;
+      const type = THEME_EDITOR_SCHEMA[prop]?.type;
+      if (type === 'color' || type === 'rgba') {
+        const color = normalizeThemeColor(value);
+        if (color) out[prop] = color;
+        else console.warn(`[ZenLeap] Theme "${key}": ignoring invalid color for "${prop}":`, value);
+      } else if (typeof value === 'string' || typeof value === 'number') {
+        out[prop] = String(value);
+      } else {
+        console.warn(`[ZenLeap] Theme "${key}": ignoring non-string value for "${prop}"`);
+      }
+    }
+    return out;
+  }
+
   // Load user-defined themes from {profile}/chrome/zenleap-themes.json
-  // Supports "extends" to inherit from a built-in or other user theme.
+  // Supports "extends" to inherit from a built-in or other user theme; themes without
+  // "extends" inherit Meridian, so every CSS variable always has a value.
   // Uses topological resolution so extends-chain order doesn't matter.
   async function loadUserThemes() {
     // Reset to built-ins before merging (handles deletions on reload)
@@ -855,7 +705,10 @@
     try {
       const content = await IOUtils.readUTF8(themesPath);
       const userThemes = JSON.parse(content);
-      const entries = Object.entries(userThemes).filter(([k, v]) => typeof v === 'object' && v && !k.startsWith('_'));
+      if (!userThemes || typeof userThemes !== 'object' || Array.isArray(userThemes)) {
+        throw new Error('zenleap-themes.json must contain a JSON object');
+      }
+      const entries = Object.entries(userThemes).filter(([k, v]) => typeof v === 'object' && v && !Array.isArray(v) && !k.startsWith('_'));
       const resolved = new Set();
       const resolving = new Set(); // cycle detection
 
@@ -864,7 +717,7 @@
         if (resolving.has(key)) { console.warn(`[ZenLeap] Circular extends detected for theme "${key}", skipping`); return; }
         resolving.add(key);
 
-        let base = {};
+        let base = BUILTIN_THEMES.meridian;
         if (def.extends) {
           if (BUILTIN_THEMES[def.extends]) {
             base = BUILTIN_THEMES[def.extends];
@@ -872,14 +725,15 @@
             const parentEntry = entries.find(([k]) => k === def.extends);
             if (parentEntry) {
               resolve(parentEntry[0], parentEntry[1]);
-              base = themes[def.extends] || {};
+              base = themes[def.extends] || base;
+            } else {
+              console.warn(`[ZenLeap] Theme "${key}" extends unknown theme "${def.extends}"; using Meridian`);
             }
           }
         }
 
-        const { extends: _, ...rest } = def;
-        themes[key] = { ...base, ...rest };
-        if (!themes[key].name) themes[key].name = key;
+        themes[key] = { ...BUILTIN_THEMES.meridian, ...base, ...sanitizeUserTheme(key, def) };
+        if (!themes[key].name || typeof themes[key].name !== 'string') themes[key].name = key;
         resolving.delete(key);
         resolved.add(key);
       }
@@ -887,9 +741,9 @@
       for (const [key, def] of entries) resolve(key, def);
       log(`Loaded ${entries.length} user theme(s) from zenleap-themes.json`);
     } catch (e) {
-      // Silently ignore missing file — it's optional
+      // A missing file is fine — it's optional
       if (e.name !== 'NotFoundError' && (!e.result || e.result !== 0x80520012)) {
-        console.warn('[ZenLeap] Error loading user themes:', e);
+        reportError('Error loading user themes from zenleap-themes.json', e);
       }
     }
   }
@@ -902,7 +756,7 @@
     } catch (e) {
       // File doesn't exist — create template
       const template = JSON.stringify({
-        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme. Run :reload-themes after editing.",
+        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme (themes without it start from Meridian). After editing, run 'Reload Themes' from the ZenLeap command palette (type > in tab search).",
         "example-custom": {
           name: "Example Custom",
           extends: "meridian",
@@ -986,78 +840,225 @@
     'Effects':         { desc: 'Noise texture, backdrop blur, panel transparency' },
   };
 
-  // Command palette group definitions (for section headers when input is empty)
+  // Command palette groups, in display order (section headers when the input is empty).
+  // Commands name their group (see getStaticCommands); one group per enabled plugin is
+  // appended at runtime by syncPluginCommandGroups().
   const COMMAND_GROUPS = [
-    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}', keys: ['new-tab','close-tab','close-other-tabs','close-tabs-right','close-tabs-left','duplicate-tab','pin-unpin-tab','add-to-essentials','remove-from-essentials','rename-tab','edit-tab-icon','reset-pinned-tab','replace-pinned-url','mute-unmute-tab','find-playing-tab','unload-tab','reload-tab','bookmark-tab','reopen-closed-tab','select-all-tabs','select-matching-tabs','deduplicate-tabs','move-tab-to-top','move-tab-to-bottom','sort-tabs','group-by-domain'] },
-    { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}', keys: ['go-first-tab','go-last-tab','browse-mode-down','browse-mode-up','open-tab-search'] },
-    { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}', keys: ['toggle-fullscreen','toggle-sidebar','zoom-in','zoom-out','zoom-reset'] },
-    { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
-    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace','reorganize-workspaces'] },
-    { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
-    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','switch-theme','reload-themes','open-themes-file'] },
-    { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
+    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}' },
+    { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}' },
+    { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}' },
+    { id: 'split', label: 'Split View', icon: '\u25EB' },
+    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}' },
+    { id: 'folders', label: 'Folders', icon: '\u{1F4C1}' },
+    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1' },
+    { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}' },
+    { id: 'plugins', label: 'Plugins', icon: '\u{1F9E9}' },
   ];
+  const STATIC_COMMAND_GROUP_COUNT = COMMAND_GROUPS.length;
 
-  // Build reverse lookup: command key → group id
+  // Command key → group id for the commands currently listed (read by the renderer)
   const _commandGroupMap = new Map();
-  for (const g of COMMAND_GROUPS) {
-    for (const k of g.keys) _commandGroupMap.set(k, g.id);
-  }
 
   // Current settings (defaults + saved overrides)
   const S = {};
 
-  function loadSettings() {
-    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
-    }
-    try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.settings') === Services.prefs.PREF_STRING) {
-        try {
-          const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.settings'));
-          for (const [id, value] of Object.entries(saved)) {
-            if (SETTINGS_SCHEMA[id]) S[id] = value;
-          }
-        } catch (parseErr) { /* corrupt JSON in saved settings, using defaults */ }
-      }
-      // Migrate legacy prefs
-      if (Services?.prefs?.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
-        S['advanced.debug'] = Services.prefs.getBoolPref('uc.zenleap.debug');
-      }
-      if (Services?.prefs?.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
-        const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
-        if (ind) S['display.currentTabIndicator'] = ind;
-      }
-      // Migrate showRelativeNumbers from boolean to select string
-      if (typeof S['display.showRelativeNumbers'] === 'boolean') {
-        S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
-        saveSettings();
-      }
-      // Clear dismissed version when installed version changes (e.g. fresh install)
-      if (S['updates.lastInstalledVersion'] !== VERSION) {
-        S['updates.dismissedVersion'] = '';
-        S['updates.lastInstalledVersion'] = VERSION;
-        saveSettings();
-      }
-    } catch (e) { /* Services not available */ }
+  // The pref is the single source of truth for settings shared by every window.
+  // Writes are key-level read-merge-write (only keys this window changed), so two
+  // windows never revert each other's changes; the other windows pick changes up
+  // through a pref observer. NOTE: loadSettings() runs before CONFIG/log() exist,
+  // so nothing on the load path may call log() or saveSettings().
+  const SETTINGS_PREF = 'uc.zenleap.settings';
+  const _settingsSynced = {};     // id -> JSON of the value last read from / written to the pref
+  let _settingsSelfWrite = false;
+  let _settingsCorruptBackedUp = false;
+
+  function cloneSettingValue(value) {
+    return (value && typeof value === 'object') ? JSON.parse(JSON.stringify(value)) : value;
   }
 
-  function saveSettings() {
-    const overrides = {};
-    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      if (JSON.stringify(S[id]) !== JSON.stringify(schema.default)) {
-        overrides[id] = S[id];
+  // Parse the settings pref. Returns {} when unset; on corrupt JSON keeps a copy of the
+  // raw string in a sibling pref (once per session) instead of silently discarding it.
+  function readSettingsOverrides() {
+    let raw = '';
+    try {
+      if (Services.prefs.getPrefType(SETTINGS_PREF) !== Services.prefs.PREF_STRING) return {};
+      raw = Services.prefs.getStringPref(SETTINGS_PREF, '');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      throw new Error('settings pref is not a JSON object');
+    } catch (e) {
+      if (!_settingsCorruptBackedUp && raw) {
+        _settingsCorruptBackedUp = true;
+        const backup = `${SETTINGS_PREF}.corrupt-${Date.now()}`;
+        try { Services.prefs.setStringPref(backup, raw); } catch (_) {}
+        console.warn(`[ZenLeap] Saved settings are corrupt; using defaults. The original value was copied to about:config "${backup}".`, e);
       }
+      return {};
     }
-    try { Services.prefs.setStringPref('uc.zenleap.settings', JSON.stringify(overrides)); } catch (e) {}
+  }
+
+  // Resolve one setting from saved overrides: migrate old formats, validate against
+  // the schema, fall back to the default per key.
+  function resolveSettingValue(id, schema, overrides, invalidIds) {
+    if (Object.prototype.hasOwnProperty.call(overrides, id)) {
+      let value = overrides[id];
+      // Migrate showRelativeNumbers from boolean to select string (pre-3.x format)
+      if (id === 'display.showRelativeNumbers' && typeof value === 'boolean') value = value ? 'always' : 'off';
+      if (isValidSettingValue(value, schema)) return cloneSettingValue(value);
+      console.warn(`[ZenLeap] Ignoring invalid saved value for setting "${id}":`, overrides[id]);
+      invalidIds?.push(id);
+    }
+    return cloneSettingValue(schema.default);
+  }
+
+  // Persist the given keys from S (read-merge-write; keys equal to their default are removed).
+  function writeSettingsKeys(ids) {
+    if (!ids.length) return;
+    const overrides = readSettingsOverrides();
+    for (const id of ids) {
+      const schema = SETTINGS_SCHEMA[id];
+      if (!schema) continue;
+      const json = JSON.stringify(S[id]);
+      if (json === JSON.stringify(schema.default)) delete overrides[id];
+      else overrides[id] = cloneSettingValue(S[id]);
+      _settingsSynced[id] = json;
+    }
+    _settingsSelfWrite = true;
+    try { Services.prefs.setStringPref(SETTINGS_PREF, JSON.stringify(overrides)); }
+    catch (e) { reportError('Saving settings failed', e); }
+    finally { _settingsSelfWrite = false; }
+  }
+
+  // Legacy prefs (pre-settings-modal, also exposed by old Sine preferences.json):
+  // migrate once into the settings pref, then clear them so they stop overriding it.
+  // A legacy pref holding its default value carries no user intent and is just cleared.
+  function migrateLegacyPrefs() {
+    const changed = [];
+    try {
+      if (Services.prefs.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
+        if (Services.prefs.getBoolPref('uc.zenleap.debug')) { S['advanced.debug'] = true; changed.push('advanced.debug'); }
+        Services.prefs.clearUserPref('uc.zenleap.debug');
+      }
+      if (Services.prefs.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
+        const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
+        const schema = SETTINGS_SCHEMA['display.currentTabIndicator'];
+        if (ind && ind !== schema.default && isValidSettingValue(ind, schema)) {
+          S['display.currentTabIndicator'] = ind;
+          changed.push('display.currentTabIndicator');
+        }
+        Services.prefs.clearUserPref('uc.zenleap.current_indicator');
+      }
+    } catch (e) { console.warn('[ZenLeap] Legacy pref migration failed:', e); }
+    return changed;
+  }
+
+  function loadSettings() {
+    const overrides = readSettingsOverrides();
+    const invalidIds = [];
+    const toWrite = [];
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      S[id] = resolveSettingValue(id, schema, overrides, invalidIds);
+      _settingsSynced[id] = JSON.stringify(Object.prototype.hasOwnProperty.call(overrides, id) && !invalidIds.includes(id) ? overrides[id] : schema.default);
+      // Rewrite migrated values (e.g. boolean showRelativeNumbers) in their current format
+      if (JSON.stringify(S[id]) !== _settingsSynced[id]) toWrite.push(id);
+    }
+    toWrite.push(...invalidIds, ...migrateLegacyPrefs());
+    // Clear dismissed version when installed version changes (e.g. fresh install)
+    if (S['updates.lastInstalledVersion'] !== VERSION) {
+      S['updates.dismissedVersion'] = '';
+      S['updates.lastInstalledVersion'] = VERSION;
+      toWrite.push('updates.dismissedVersion', 'updates.lastInstalledVersion');
+    }
+    try { writeSettingsKeys([...new Set(toWrite)]); } catch (e) { console.warn('[ZenLeap] Could not persist migrated settings:', e); }
+  }
+
+  // Persist every setting this window changed since it last synced with the pref.
+  // Callers keep the "mutate S, then saveSettings()" pattern; only changed keys are written.
+  function saveSettings() {
+    const changed = [];
+    for (const id of Object.keys(SETTINGS_SCHEMA)) {
+      // The theme picker's live preview mutates S['appearance.theme'] transiently; never persist it
+      if (id === 'appearance.theme' && _themePreviewOriginal !== null) continue;
+      if (JSON.stringify(S[id]) !== _settingsSynced[id]) changed.push(id);
+    }
+    writeSettingsKeys(changed);
+  }
+
+  // Another window (or about:config) changed the settings pref: adopt the changed keys.
+  function reloadSettingsFromPref() {
+    const overrides = readSettingsOverrides();
+    const changed = [];
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      const value = resolveSettingValue(id, schema, overrides);
+      const json = JSON.stringify(value);
+      if (json === _settingsSynced[id]) continue;
+      _settingsSynced[id] = json;
+      if (id === 'appearance.theme' && _themePreviewOriginal !== null) {
+        _themePreviewOriginal = value; // keep previewing; Escape restores the new value
+        continue;
+      }
+      S[id] = value;
+      changed.push(id);
+    }
+    if (changed.length === 0) return;
+    log(`Settings changed in another window: ${changed.join(', ')}`);
+    try {
+      if (changed.some(id => id.startsWith('appearance.'))) applyTheme();
+      if (changed.some(id => id.startsWith('display.') || id.startsWith('keys.'))) updateRelativeNumbers();
+      if (changed.includes('display.browsePreview') && !S['display.browsePreview']) hidePreviewPanel(true);
+      if (changed.includes('display.searchAllWorkspaces')) {
+        const wsBtn = document.getElementById('zenleap-search-ws-toggle');
+        if (wsBtn) {
+          wsBtn.textContent = S['display.searchAllWorkspaces'] ? 'All' : 'WS';
+          wsBtn.classList.toggle('active', S['display.searchAllWorkspaces']);
+        }
+      }
+      if (settingsMode && !settingsRecordingId) renderSettingsContent();
+    } catch (e) { reportError('Applying settings changed in another window failed', e); }
+  }
+
+  // Window-lifetime resources of the settings / plugins / updater code (pref and
+  // observer-service observers, the dialog key router, the plugin system). They are
+  // released once: on window unload, or earlier when the core teardown() (Sine
+  // hot-unload) calls teardownPluginSystem(). Registrations happen at script load,
+  // before the core's teardown registry is initialized, hence this separate list.
+  const _regionTeardown = [];
+  let _regionTornDown = false;
+
+  function onRegionTeardown(fn) {
+    _regionTeardown.push(fn);
+  }
+
+  function teardownCommandsRegion() {
+    if (_regionTornDown) return;
+    _regionTornDown = true;
+    window.removeEventListener('unload', teardownCommandsRegion);
+    for (const fn of _regionTeardown.splice(0).reverse()) {
+      try { fn(); } catch (e) { reportError('Teardown step failed', e); }
+    }
+  }
+  window.addEventListener('unload', teardownCommandsRegion, { once: true });
+
+  const _settingsPrefObserver = {
+    observe() {
+      if (_settingsSelfWrite) return;
+      reloadSettingsFromPref();
+    },
+  };
+
+  // Follow settings changes made by other windows (registered at script load).
+  function watchSettingsPref() {
+    Services.prefs.addObserver(SETTINGS_PREF, _settingsPrefObserver);
+    onRegionTeardown(() => Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver));
   }
 
   function resetSetting(id) {
     const schema = SETTINGS_SCHEMA[id];
     if (!schema) return;
-    S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+    S[id] = cloneSettingValue(schema.default);
     saveSettings();
-    if (id === 'appearance.theme') applyTheme();
+    if (id === 'appearance.theme' || id === 'appearance.applyToBrowser') applyTheme();
     if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
     if (id === 'display.persistEssentialMarks') {
       if (S[id]) saveEssentialMarks();
@@ -1067,7 +1068,7 @@
 
   function resetAllSettings() {
     for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+      S[id] = cloneSettingValue(schema.default);
     }
     saveSettings();
     applyTheme();
@@ -1111,10 +1112,10 @@
         }
         const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const filePath = PathUtils.join(downloadsDir, `zenleap-settings-${ts}.json`);
-        await IOUtils.write(filePath, new TextEncoder().encode(json));
+        await IOUtils.writeUTF8(filePath, json, { tmpPath: `${filePath}.tmp` });
         showSettingsToast('success', 'Settings exported to Downloads');
       } catch (e) {
-        log(`Export failed: ${e}`);
+        reportError('Exporting settings failed', e);
         showSettingsToast('error', 'Export failed');
       }
     })();
@@ -1140,7 +1141,7 @@
             const text = new TextDecoder().decode(bytes);
             processImportedJSON(text);
           } catch (e) {
-            log(`Import read failed: ${e}`);
+            reportError('Reading the settings file failed', e);
             showSettingsToast('error', 'Failed to read file');
           }
         }
@@ -1174,13 +1175,18 @@
     switch (schema.type) {
       case 'toggle': return typeof value === 'boolean';
       case 'number':
-        if (typeof value !== 'number' || isNaN(value)) return false;
+        if (typeof value !== 'number' || !Number.isFinite(value)) return false;
         if (schema.min !== undefined && value < schema.min) return false;
         if (schema.max !== undefined && value > schema.max) return false;
         return true;
-      case 'text': case 'color': case 'key': return typeof value === 'string';
+      case 'text': case 'color': return typeof value === 'string';
+      case 'key': return typeof value === 'string' && value.length > 0;
       case 'select': return typeof value === 'string' && (!schema.options || schema.options.some(o => o.value === value));
-      case 'combo': return typeof value === 'object' && value !== null && typeof value.key === 'string';
+      case 'combo':
+        return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+          typeof value.key === 'string' && value.key.length > 0 &&
+          (value.code === undefined || typeof value.code === 'string') &&
+          ['ctrl', 'shift', 'alt', 'meta'].every(m => value[m] === undefined || typeof value[m] === 'boolean');
       default: return true;
     }
   }
@@ -1207,9 +1213,11 @@
     // Build diff of changes (only valid values)
     const changes = [];
     const validIncoming = {};
-    for (const [id, newVal] of Object.entries(incoming)) {
+    for (let [id, newVal] of Object.entries(incoming)) {
       const schema = SETTINGS_SCHEMA[id];
       if (!schema || schema.hidden) continue;
+      // Old exports stored showRelativeNumbers as a boolean
+      if (id === 'display.showRelativeNumbers' && typeof newVal === 'boolean') newVal = newVal ? 'always' : 'off';
       if (!isValidSettingValue(newVal, schema)) continue;
       validIncoming[id] = newVal;
       if (JSON.stringify(S[id]) !== JSON.stringify(newVal)) {
@@ -1229,14 +1237,10 @@
     for (const [id, value] of Object.entries(incoming)) {
       const schema = SETTINGS_SCHEMA[id];
       if (!schema || schema.hidden) continue;
-      S[id] = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
-    }
-    // Migrate boolean showRelativeNumbers from old exports
-    if (typeof S['display.showRelativeNumbers'] === 'boolean') {
-      S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
+      S[id] = cloneSettingValue(value);
     }
     saveSettings();
-    applyThemeColors();
+    applyTheme();
     updateRelativeNumbers();
     if (S['display.persistEssentialMarks']) saveEssentialMarks();
     else try { Services.prefs.clearUserPref('uc.zenleap.essentialMarks'); } catch(e) {}
@@ -1488,10 +1492,11 @@
 
   function formatSingleKey(key) {
     const map = { ' ': 'Space', 'arrowdown': '↓', 'arrowup': '↑', 'arrowleft': '←', 'arrowright': '→', 'enter': 'Enter', 'escape': 'Esc', 'tab': 'Tab', 'backspace': '⌫', "'": "'", '`': '`' };
-    return map[key] || (key?.length === 1 ? key : key);
+    return map[key] || key;
   }
 
   loadSettings();
+  watchSettingsPref();
 
   // Legacy CONFIG compat — thin wrapper around S for any remaining references
   const CONFIG = {
@@ -1547,7 +1552,6 @@
 
   // Input interception: prevent keyboard events from leaking to web page content
   let contentFocusStolen = false;
-  let quickNavInterceptedUntil = 0;  // Suppress keyup events until this timestamp
   let quickNavRestoreTimer = null;   // Timer to restore focus after Alt+HJKL
 
   // Jump list (like vim's Ctrl+O / Ctrl+I)
@@ -1692,7 +1696,7 @@
     if (jumpList.length === 0) return;
     const currentEntry = (jumpListIndex >= 0 && jumpListIndex < jumpList.length)
       ? jumpList[jumpListIndex] : null;
-    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    jumpList = jumpList.filter(isLiveTab);
     if (currentEntry) {
       const newIndex = jumpList.indexOf(currentEntry);
       jumpListIndex = newIndex >= 0 ? newIndex : Math.min(jumpListIndex, jumpList.length - 1);
@@ -1704,6 +1708,8 @@
   // Record a jump to the jump list
   function recordJump(tab) {
     if (!recordingJumps || !tab) return;
+    // A Glance preview is recorded as its parent tab
+    try { tab = window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab; } catch (e) { /* keep tab */ }
 
     // Clean up any closed tabs from the list
     filterJumpList();
@@ -1721,13 +1727,46 @@
     jumpList.push(tab);
     jumpListIndex = jumpList.length - 1;
 
-    // Trim if too long
-    if (jumpList.length > S['display.maxJumpListSize']) {
-      jumpList.shift();
-      jumpListIndex--;
+    // Trim if too long (the limit may have been lowered in settings since the last jump)
+    const excess = jumpList.length - S['display.maxJumpListSize'];
+    if (excess > 0) {
+      jumpList.splice(0, excess);
+      jumpListIndex -= excess;
     }
 
     log(`Recorded jump, list size: ${jumpList.length}, index: ${jumpListIndex}`);
+  }
+
+  // Select a tab that may live in another workspace. With record=true the jump list
+  // gets exactly origin -> target. Recording is paused while Zen switches workspace,
+  // because Zen first selects the target workspace's last-selected tab, which must not
+  // become a jump entry. changeWorkspaceWithID() never rejects (Zen catches internally),
+  // so success is verified afterwards. Resolves to true if the tab ended up selected.
+  async function switchToTabAcrossWorkspaces(tab, { record = true } = {}) {
+    if (!tab || tab.closing || !tab.isConnected) return false;
+    const origin = currentTab();
+    const wsId = tab.getAttribute('zen-workspace-id');
+    const needsSwitch = !!(wsId && window.gZenWorkspaces && !tab.hasAttribute('zen-essential') &&
+      wsId !== gZenWorkspaces.activeWorkspace);
+    if (tab === origin && !needsSwitch) return true;
+    if (record) recordJump(origin);
+    const wasRecording = recordingJumps;
+    recordingJumps = false;
+    try {
+      if (needsSwitch) {
+        await gZenWorkspaces.changeWorkspaceWithID(wsId);
+        if (gZenWorkspaces.activeWorkspace !== wsId) {
+          reportError('Switching workspace failed', new Error(`workspace ${wsId} did not become active`));
+          return false;
+        }
+        if (tab.closing || !tab.isConnected) return false;
+      }
+      gBrowser.selectedTab = tab;
+    } finally {
+      recordingJumps = wasRecording;
+    }
+    if (record) recordJump(tab);
+    return true;
   }
 
   // Jump backward in the jump list (like vim Ctrl+O)
@@ -1743,41 +1782,12 @@
     }
 
     // If we haven't recorded current position yet, do it now
-    if (jumpListIndex === jumpList.length - 1 && gBrowser.selectedTab !== jumpList[jumpListIndex]) {
-      recordJump(gBrowser.selectedTab);
+    if (jumpListIndex === jumpList.length - 1 && currentTab() !== jumpList[jumpListIndex]) {
+      recordJump(currentTab());
     }
 
     if (jumpListIndex > 0) {
-      const prevIndex = jumpListIndex;
-      jumpListIndex--;
-      recordingJumps = false;  // Don't record this navigation
-      const backTab = jumpList[jumpListIndex];
-      const backWsId = backTab.getAttribute('zen-workspace-id');
-      if (backWsId && window.gZenWorkspaces && backWsId !== gZenWorkspaces.activeWorkspace && !backTab.hasAttribute('zen-essential')) {
-        _jumpSwitchInProgress = true;
-        gZenWorkspaces.changeWorkspaceWithID(backWsId).then(() => {
-          if (backTab.closing || !backTab.parentNode) {
-            jumpListIndex = prevIndex;
-            log('Target tab closed during workspace switch in jumpBack');
-            return;
-          }
-          gBrowser.selectedTab = backTab;
-          log(`Jumped back to index ${jumpListIndex}`);
-        }).catch((e) => {
-          jumpListIndex = prevIndex;
-          log(`Workspace switch failed during jumpBack: ${e}`);
-        }).finally(() => {
-          recordingJumps = true;
-          _jumpSwitchInProgress = false;
-        });
-      } else {
-        try {
-          gBrowser.selectedTab = backTab;
-        } finally {
-          recordingJumps = true;
-        }
-        log(`Jumped back to index ${jumpListIndex}`);
-      }
+      jumpToListIndex(jumpListIndex - 1, 'back');
       return true;
     }
 
@@ -1792,41 +1802,34 @@
     filterJumpList();
 
     if (jumpListIndex < jumpList.length - 1) {
-      const prevIndex = jumpListIndex;
-      jumpListIndex++;
-      recordingJumps = false;  // Don't record this navigation
-      const fwdTab = jumpList[jumpListIndex];
-      const fwdWsId = fwdTab.getAttribute('zen-workspace-id');
-      if (fwdWsId && window.gZenWorkspaces && fwdWsId !== gZenWorkspaces.activeWorkspace && !fwdTab.hasAttribute('zen-essential')) {
-        _jumpSwitchInProgress = true;
-        gZenWorkspaces.changeWorkspaceWithID(fwdWsId).then(() => {
-          if (fwdTab.closing || !fwdTab.parentNode) {
-            jumpListIndex = prevIndex;
-            log('Target tab closed during workspace switch in jumpForward');
-            return;
-          }
-          gBrowser.selectedTab = fwdTab;
-          log(`Jumped forward to index ${jumpListIndex}`);
-        }).catch((e) => {
-          jumpListIndex = prevIndex;
-          log(`Workspace switch failed during jumpForward: ${e}`);
-        }).finally(() => {
-          recordingJumps = true;
-          _jumpSwitchInProgress = false;
-        });
-      } else {
-        try {
-          gBrowser.selectedTab = fwdTab;
-        } finally {
-          recordingJumps = true;
-        }
-        log(`Jumped forward to index ${jumpListIndex}`);
-      }
+      jumpToListIndex(jumpListIndex + 1, 'forward');
       return true;
     }
 
     log('Already at end of jump list');
     return false;
+  }
+
+  // Move the jump-list cursor to newIndex and select that entry without recording it.
+  // Same-workspace targets are selected synchronously; the cursor is restored if the
+  // switch fails (closed tab, workspace switch did not happen).
+  function jumpToListIndex(newIndex, direction) {
+    const prevIndex = jumpListIndex;
+    jumpListIndex = newIndex;
+    _jumpSwitchInProgress = true;
+    switchToTabAcrossWorkspaces(jumpList[newIndex], { record: false }).then((ok) => {
+      if (ok) {
+        log(`Jumped ${direction} to index ${jumpListIndex}`);
+      } else {
+        jumpListIndex = prevIndex;
+        log(`Jump ${direction} failed (tab closed or workspace switch failed)`);
+      }
+    }).catch((e) => {
+      jumpListIndex = prevIndex;
+      reportError(`Jump ${direction} failed`, e);
+    }).finally(() => {
+      _jumpSwitchInProgress = false;
+    });
   }
 
   // ============================================
@@ -1835,7 +1838,7 @@
 
   // Set a mark on the current tab (or toggle off if same mark on same tab)
   function setMark(char, tab) {
-    if (!tab) tab = gBrowser.selectedTab;
+    if (!tab) tab = currentTab();
 
     // Check if this exact mark is already on this tab - if so, toggle it off
     if (marks.get(char) === tab) {
@@ -1877,27 +1880,53 @@
   }
 
   // ── Persistent essential tab marks ──
+  // Marks are per window; marks on essential tabs are also persisted (by URL) in a pref
+  // shared by all windows. Writes are key-level: a window only rewrites the characters
+  // it marks itself, and only deletes an entry while the pref still holds the URL that
+  // this window wrote/restored, so windows never clobber each other's marks.
+
+  const ESSENTIAL_MARKS_PREF = 'uc.zenleap.essentialMarks';
+  const _essentialMarksOwned = new Map(); // char -> URL this window last wrote to / restored from the pref
+
+  function readEssentialMarksPref() {
+    try {
+      if (Services.prefs.getPrefType(ESSENTIAL_MARKS_PREF) !== Services.prefs.PREF_STRING) return {};
+      const saved = JSON.parse(Services.prefs.getStringPref(ESSENTIAL_MARKS_PREF));
+      return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+    } catch (e) {
+      console.warn('[ZenLeap] Ignoring corrupt essential marks pref:', e);
+      return {};
+    }
+  }
 
   function saveEssentialMarks() {
     if (!S['display.persistEssentialMarks']) return;
-    const saved = {};
-    for (const [char, tab] of marks) {
-      if (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential')) {
-        const url = tab.linkedBrowser?.currentURI?.spec;
-        if (url && url !== 'about:blank') saved[char] = url;
+    if (isPrivateWindow()) return; // never persist URLs from private windows
+    const saved = readEssentialMarksPref();
+    let changed = false;
+    for (const char of new Set([...marks.keys(), ..._essentialMarksOwned.keys()])) {
+      const tab = marks.get(char);
+      const url = (isLiveTab(tab) && tab.hasAttribute('zen-essential'))
+        ? tab.linkedBrowser?.currentURI?.spec : null;
+      if (url && url !== 'about:blank') {
+        if (saved[char] !== url) { saved[char] = url; changed = true; }
+        _essentialMarksOwned.set(char, url);
+      } else if (_essentialMarksOwned.has(char)) {
+        // Only remove what this window put there; another window may have re-used the char since
+        if (saved[char] === _essentialMarksOwned.get(char)) { delete saved[char]; changed = true; }
+        _essentialMarksOwned.delete(char);
       }
     }
+    if (!changed) return;
     try {
-      Services.prefs.setStringPref('uc.zenleap.essentialMarks', JSON.stringify(saved));
-    } catch (e) { log(`Failed to save essential marks: ${e}`); }
+      Services.prefs.setStringPref(ESSENTIAL_MARKS_PREF, JSON.stringify(saved));
+    } catch (e) { reportError('Saving essential tab marks failed', e); }
   }
 
   function restoreEssentialMarks(retriesLeft = 5) {
     if (!S['display.persistEssentialMarks']) return;
     try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.essentialMarks') !== Services.prefs.PREF_STRING) return;
-      const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.essentialMarks'));
-      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+      const saved = readEssentialMarksPref();
 
       // Build a URL → tab lookup for essential tabs only (consume matched tabs to handle duplicates)
       const essentialByUrl = new Map();
@@ -1918,6 +1947,7 @@
         const tabs = essentialByUrl.get(url);
         if (tabs && tabs.length > 0) {
           marks.set(char, tabs.shift()); // Consume the first matching tab
+          _essentialMarksOwned.set(char, url);
           restored++;
         } else {
           unmatched[char] = url;
@@ -1933,7 +1963,7 @@
         log(`${Object.keys(unmatched).length} essential mark(s) unmatched, retrying in 1s (${retriesLeft} left)`);
         setTimeout(() => restoreEssentialMarks(retriesLeft - 1), 1000);
       }
-    } catch (e) { log(`Failed to restore essential marks: ${e}`); }
+    } catch (e) { reportError('Restoring essential tab marks failed', e); }
   }
 
   // Go to a marked tab
@@ -1952,50 +1982,18 @@
       return false;
     }
 
-    // Switch workspace if needed (essential tabs are global, no switch needed)
-    const tabWsId = tab.getAttribute('zen-workspace-id');
-    if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace && !tab.hasAttribute('zen-essential')) {
-      // Save jump list state so we can revert on failure
-      const savedJumpList = [...jumpList];
-      const savedJumpIndex = jumpListIndex;
-      recordJump(gBrowser.selectedTab);
-      gZenWorkspaces.changeWorkspaceWithID(tabWsId).then(() => {
-        if (tab.closing || !tab.parentNode) {
-          marks.delete(char);
-          saveEssentialMarks();
-          jumpList = savedJumpList;
-          jumpListIndex = savedJumpIndex;
-          log(`Mark '${char}' tab closed during workspace switch, removing mark`);
-          return;
-        }
-        gBrowser.selectedTab = tab;
-        recordJump(tab);
+    // Essential tabs are global, so no workspace switch is needed for them
+    switchToTabAcrossWorkspaces(tab).then((ok) => {
+      if (ok) {
         _pluginEventBus.emit('mark:jumped', { char, tab });
         log(`Jumped to mark '${char}'`);
-      }).catch((e) => {
-        // Revert the jump list since we never actually navigated
-        jumpList = savedJumpList;
-        jumpListIndex = savedJumpIndex;
-        log(`Workspace switch failed during goToMark: ${e}`);
-      });
-    } else {
-      recordJump(gBrowser.selectedTab);
-      gBrowser.selectedTab = tab;
-      recordJump(tab);
-      _pluginEventBus.emit('mark:jumped', { char, tab });
-      log(`Jumped to mark '${char}'`);
-    }
-    return true;
-  }
-
-  // Get mark character for a tab (if it has one)
-  function getMarkForTab(tab) {
-    for (const [char, markedTab] of marks) {
-      if (markedTab === tab) {
-        return char;
+      } else if (tab.closing || !tab.isConnected) {
+        marks.delete(char);
+        saveEssentialMarks();
+        log(`Mark '${char}' tab closed during workspace switch, removing mark`);
       }
-    }
-    return null;
+    }).catch(e => reportError('Jump to mark failed', e));
+    return true;
   }
 
   // Clean up marks for closed tabs
@@ -2015,12 +2013,25 @@
   // TAB SEARCH FUNCTIONS
   // ============================================
 
+  // Lowercase without changing the string length, so match indices computed on the
+  // lowered string stay valid for the original (e.g. 'İ'.toLowerCase() is 2 units long).
+  function lowerSameLength(text) {
+    const lower = text.toLowerCase();
+    if (lower.length === text.length) return lower;
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i].toLowerCase();
+      out += c.length === 1 ? c : c[0];
+    }
+    return out;
+  }
+
   // Fuzzy match algorithm for a single term - returns { score, indices } or null if no match
   function fuzzyMatchSingle(query, text) {
     if (!query || !text) return null;
 
-    const queryLower = query.toLowerCase();
-    const textLower = text.toLowerCase();
+    const queryLower = lowerSameLength(query);
+    const textLower = lowerSameLength(text);
     const queryLen = queryLower.length;
     const textLen = textLower.length;
 
@@ -2092,15 +2103,17 @@
     return { score, indices };
   }
 
-  // Score, filter, and sort picker results by fuzzy match relevance
+  // Score, filter, and sort picker results by fuzzy match relevance.
+  // Matched characters inside the label are returned as labelIndices for highlighting.
   function fuzzyFilterAndSort(results, query) {
     if (!query) return results;
     const scored = [];
     for (const r of results) {
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      const match = fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+      const match = fuzzyMatchSingle(query, target);
       if (match) {
-        scored.push({ ...r, score: match.score });
+        const labelLen = r.label.length;
+        scored.push({ ...r, score: match.score, labelIndices: match.indices.filter(i => i < labelLen) });
       }
     }
     scored.sort((a, b) => b.score - a.score);
@@ -2109,8 +2122,11 @@
 
   // Parse search query into exact terms (quoted) and fuzzy terms (unquoted)
   // Example: '"YouTube" test "GitHub"' → { exactTerms: ["YouTube", "GitHub"], fuzzyTerms: ["test"] }
+  let _parsedQueryCache = { query: null, parsed: null };
   function parseSearchQuery(query) {
     if (!query) return { exactTerms: [], fuzzyTerms: [] };
+    // fuzzyMatch() runs once per tab per keystroke with the same query; parse it once
+    if (_parsedQueryCache.query === query) return _parsedQueryCache.parsed;
 
     const exactTerms = [];
     // Match double-quoted strings as exact match terms
@@ -2120,15 +2136,17 @@
     });
 
     const fuzzyTerms = remaining.trim().split(/\s+/).filter(w => w.length > 0);
-    return { exactTerms, fuzzyTerms };
+    const parsed = { exactTerms, fuzzyTerms };
+    _parsedQueryCache = { query, parsed };
+    return parsed;
   }
 
   // Exact match - finds all occurrences of term in text (case-insensitive)
   // Returns array of character indices where the term matches
   function exactMatchIndices(term, text) {
     if (!term || !text) return null;
-    const termLower = term.toLowerCase();
-    const textLower = text.toLowerCase();
+    const termLower = lowerSameLength(term);
+    const textLower = lowerSameLength(text);
     const idx = textLower.indexOf(termLower);
     if (idx === -1) return null;
 
@@ -2274,12 +2292,12 @@
   // Combines fuzzy match score with recency bonus for ranking
   // Omits the current tab from results (you don't need to search for where you already are)
   function searchTabs(query, { includeCurrent = false } = {}) {
-    const currentTab = gBrowser.selectedTab;
+    const current = currentTab();
 
     // Get searchable tabs (respects cross-workspace setting), optionally excluding current
     const tabs = includeCurrent
       ? getSearchableTabs()
-      : getSearchableTabs().filter(tab => tab !== currentTab);
+      : getSearchableTabs().filter(tab => tab !== current);
 
     // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
@@ -2530,10 +2548,8 @@
 
       #zenleap-search-results {
         max-height: 60vh; overflow-y: auto;
+        scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent;
       }
-      #zenleap-search-results::-webkit-scrollbar { width: 6px; }
-      #zenleap-search-results::-webkit-scrollbar-track { background: transparent; }
-      #zenleap-search-results::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
 
       .zenleap-search-result {
         display: flex; align-items: center; padding: 10px 20px; gap: 12px;
@@ -2807,25 +2823,30 @@
     log('Search modal created');
   }
 
-  // Highlight matched characters in text
+  // Highlight matched characters in text. Consecutive matches share one span, and a
+  // match on either half of a surrogate pair (emoji) highlights the whole character.
   function highlightMatches(text, indices) {
     if (!indices || indices.length === 0) return escapeHtml(text);
 
-    let result = '';
-    let lastIdx = 0;
-
+    const isHigh = (i) => { const c = text.charCodeAt(i); return c >= 0xD800 && c <= 0xDBFF; };
+    const isLow = (i) => { const c = text.charCodeAt(i); return c >= 0xDC00 && c <= 0xDFFF; };
+    const marked = new Set();
     for (const idx of indices) {
-      if (idx > lastIdx) {
-        result += escapeHtml(text.slice(lastIdx, idx));
-      }
-      result += `<span class="match">${escapeHtml(text[idx])}</span>`;
-      lastIdx = idx + 1;
+      if (idx < 0 || idx >= text.length) continue;
+      marked.add(idx);
+      if (isHigh(idx) && isLow(idx + 1)) marked.add(idx + 1);
+      if (isLow(idx) && idx > 0 && isHigh(idx - 1)) marked.add(idx - 1);
     }
 
-    if (lastIdx < text.length) {
-      result += escapeHtml(text.slice(lastIdx));
+    let result = '';
+    let i = 0;
+    while (i < text.length) {
+      const start = i;
+      const inMatch = marked.has(i);
+      while (i < text.length && marked.has(i) === inMatch) i++;
+      const chunk = escapeHtml(text.slice(start, i));
+      result += inMatch ? `<span class="match">${chunk}</span>` : chunk;
     }
-
     return result;
   }
 
@@ -2844,19 +2865,49 @@
   // ============================================
   // PLUGIN SYSTEM
   // ============================================
+  //
+  // External plugins live in <profile>/chrome/zenleap-plugins/<id>/{manifest.json,plugin.js}.
+  // - plugin.js runs with full chrome privileges (same trust level as chrome/JS), each
+  //   plugin in its own system-principal sandbox whose prototype is the browser window,
+  //   so window globals (gBrowser, Services, document, timers) resolve as before.
+  //   Disabling/uninstalling calls the plugin's destroy hook and nukes the sandbox.
+  // - The manifest is validated and the enabled flag checked BEFORE plugin.js is read;
+  //   newly discovered plugins start disabled until enabled in the Plugin Manager.
+  // - Plugins run once per browser window. Their data (enabled flag, storage, settings)
+  //   is shared by all windows: every window keeps the merged state in memory, changes
+  //   are broadcast to the other windows and written atomically to
+  //   zenleap-plugin-data.json. In private windows storage/settings writes stay in
+  //   memory for that window only (never persisted).
+  // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
+  //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
+  //   asynchronously; browser.getSelectedText() returns a Promise; tabs.getAll()/findBy*
+  //   cover the active workspace unless called with { allWorkspaces: true }. While a
+  //   Glance is open, tabs.getCurrent() (and the tabs.* default tab) is the Glance's
+  //   parent tab; browser.* acts on the page on screen (the Glance).
 
   // ── Plugin State ──
-  let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, instance }
-  let _pluginData = {};                  // Persisted state (enabled/disabled, settings, storage)
+  let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, loaded, instance, exports, sandbox, error, _dynamicCommands }
+  let _pluginData = {};                  // pluginId -> { enabled, isNew?, storage, settings } — shared (persisted) state
   let _pluginManagerMode = false;
   let _pluginManagerModal = null;
   let _pluginManagerView = 'list';       // 'list' | 'detail'
   let _pluginManagerDetailId = null;
+  let _pluginManagerFocus = 0;           // keyboard-focused card in the list view
+
+  const PLUGIN_ID_RE = /^[a-zA-Z0-9_-]+$/;
+  const PLUGIN_COMMAND_KEY_RE = /^[\w.:-]+$/;
+
+  function safePluginText(value, fallback = '', maxLength = 200) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : fallback;
+  }
 
   // ── Plugin Event Bus ──
+  // Handlers are called asynchronously (next task) so a slow plugin can never delay
+  // tab switching or other ZenLeap work.
   const _pluginEventBus = {
     _listeners: new Map(),
     on(event, callback, pluginId) {
+      if (typeof callback !== 'function') return;
       if (!this._listeners.has(event)) this._listeners.set(event, new Set());
       this._listeners.get(event).add({ callback, pluginId });
     },
@@ -2877,105 +2928,229 @@
       };
       this.on(event, wrapper, pluginId);
     },
+    _lastWorkspaceId: null,
     emit(event, data) {
+      if (event === 'workspace:changed') {
+        // More than one part of ZenLeap may listen to Zen's workspace changes; plugins
+        // get one event per actual change, always with workspaceId.
+        const workspaceId = data?.workspaceId || data?.workspace?.uuid || null;
+        if (workspaceId && workspaceId === this._lastWorkspaceId) return;
+        this._lastWorkspaceId = workspaceId;
+        data = { workspaceId, workspace: data?.workspace || null };
+      }
       const set = this._listeners.get(event);
       if (!set || set.size === 0) return;
-      for (const { callback } of [...set]) {
-        try { callback(data); }
-        catch (e) { console.error(`[ZenLeap] Plugin event handler error (${event}):`, e); }
-      }
+      const entries = [...set];
+      setTimeout(() => {
+        for (const entry of entries) {
+          if (!set.has(entry)) continue; // removed meanwhile
+          try { entry.callback(data); }
+          catch (e) { console.error(`[ZenLeap] Plugin "${entry.pluginId}" event handler error (${event}):`, e); }
+        }
+      }, 0);
     },
     removeAllForPlugin(pluginId) {
       for (const [, set] of this._listeners) {
-        const toRemove = [];
-        for (const entry of set) {
-          if (entry.pluginId === pluginId) toRemove.push(entry);
+        for (const entry of [...set]) {
+          if (entry.pluginId === pluginId) set.delete(entry);
         }
-        for (const entry of toRemove) set.delete(entry);
       }
     },
   };
 
   // ── Plugin Data Persistence ──
   const _pluginDataPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugin-data.json');
+  const PLUGIN_DATA_TOPIC = 'zenleap-plugin-data-changed';
+  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+  const _windowUid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let _pluginSaveTimer = null;
   let _pluginSavePromise = Promise.resolve();
-  let _pluginDataLoaded = false;
-  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+  let _pluginDataLoaded = false;          // true once the file was read (or found missing/quarantined)
+  const _pluginDirty = new Map();         // pluginId -> Set of changed paths (see pluginPath())
+  const _pendingRemotePluginChanges = []; // broadcasts received before our own load finished
+  const _pluginPrivateOverlay = new Map(); // private windows: pluginId -> { storage: Map, settings: Map }
 
   function _isPlainObject(v) {
     return v != null && typeof v === 'object' && !Array.isArray(v);
   }
 
-  async function loadPluginData() {
-    // Try loading from file first
-    try {
-      const loaded = await IOUtils.readJSON(_pluginDataPath);
-      if (_isPlainObject(loaded)) {
-        Object.assign(_pluginData, loaded);
-        _pluginDataLoaded = true;
-        return;
-      }
-      console.warn('[ZenLeap] Plugin data file contained invalid data, ignoring');
-    } catch (e) {
-      if (e?.name !== 'NotFoundError') {
-        console.warn('[ZenLeap] Plugin data file corrupt or unreadable, checking for pref migration:', e);
-      }
-    }
-
-    // Migrate from old pref-based storage
-    try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
-        const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
-        if (_isPlainObject(parsed)) {
-          Object.assign(_pluginData, parsed);
-          await IOUtils.writeJSON(_pluginDataPath, _pluginData);
-          Services.prefs.clearUserPref('uc.zenleap.plugins');
-          log('Migrated plugin data from prefs to file');
-        }
-      }
-    } catch (e) {
-      console.warn('[ZenLeap] Pref migration failed:', e);
-    }
-
-    _pluginDataLoaded = true;
+  function clonePluginValue(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   }
 
-  function _doWritePluginData() {
-    _pluginSavePromise = _pluginSavePromise.then(
-      () => IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
-        console.error('[ZenLeap] Failed to save plugin data:', e);
-      })
-    );
+  // Dirty paths: '*' (whole entry), 'enabled', 'isNew', 'storage'/'settings' (whole object),
+  // or 'storage\0<key>' / 'settings\0<key>' (storage keys may contain dots).
+  function pluginPath(field, key) {
+    return key === undefined ? field : `${field}\0${key}`;
+  }
+
+  function markPluginDataDirty(pluginId, path) {
+    if (!_pluginDirty.has(pluginId)) _pluginDirty.set(pluginId, new Set());
+    _pluginDirty.get(pluginId).add(path);
+    savePluginData();
+  }
+
+  function copyPluginDataPath(src, dst, path) {
+    if (path === '*') {
+      for (const k of Object.keys(dst)) delete dst[k];
+      Object.assign(dst, clonePluginValue(src) || {});
+      return;
+    }
+    const [field, key] = path.split('\0');
+    if (key === undefined) {
+      if (src && src[field] !== undefined) dst[field] = clonePluginValue(src[field]);
+      else delete dst[field];
+      return;
+    }
+    if (!_isPlainObject(dst[field])) dst[field] = {};
+    if (src && _isPlainObject(src[field]) && Object.prototype.hasOwnProperty.call(src[field], key)) {
+      dst[field][key] = clonePluginValue(src[field][key]);
+    } else {
+      delete dst[field][key];
+    }
+  }
+
+  // Move an unparseable data file aside (instead of silently overwriting it later).
+  async function quarantineCorruptPluginData(error) {
+    const aside = _pluginDataPath.replace(/\.json$/, `.corrupt-${Date.now()}.json`);
+    try {
+      await IOUtils.move(_pluginDataPath, aside);
+      console.error(`[ZenLeap] Plugin data file was corrupt and has been moved to ${aside}; starting with empty plugin data.`, error);
+      return true;
+    } catch (e) {
+      reportError('Plugin data file is corrupt and could not be moved aside; plugin data will not be saved this session', e);
+      return false;
+    }
+  }
+
+  async function loadPluginData() {
+    let loaded = null;
+    let usable = true;
+    try {
+      const text = await IOUtils.readUTF8(_pluginDataPath);
+      try {
+        loaded = JSON.parse(text);
+        if (!_isPlainObject(loaded)) throw new Error('top level is not an object');
+      } catch (parseError) {
+        loaded = null;
+        usable = await quarantineCorruptPluginData(parseError);
+      }
+    } catch (e) {
+      if (e?.name !== 'NotFoundError') {
+        usable = false;
+        reportError('Reading plugin data failed; plugin data will not be saved this session', e);
+      }
+    }
+
+    if (loaded) {
+      for (const [id, entry] of Object.entries(loaded)) {
+        if (PLUGIN_ID_RE.test(id) && _isPlainObject(entry)) _pluginData[id] = entry;
+      }
+    } else if (usable) {
+      // Migrate from old pref-based storage
+      try {
+        if (Services.prefs.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
+          const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
+          if (_isPlainObject(parsed)) {
+            for (const [id, entry] of Object.entries(parsed)) {
+              if (PLUGIN_ID_RE.test(id) && _isPlainObject(entry)) {
+                _pluginData[id] = entry;
+                markPluginDataDirty(id, '*');
+              }
+            }
+            Services.prefs.clearUserPref('uc.zenleap.plugins');
+            log('Migrated plugin data from prefs to file');
+          }
+        }
+      } catch (e) {
+        console.warn('[ZenLeap] Plugin pref migration failed:', e);
+      }
+    }
+
+    _pluginDataLoaded = usable;
+    // Changes other windows broadcast while we were reading are newer than the file
+    for (const changed of _pendingRemotePluginChanges.splice(0)) applyRemotePluginChanges(changed);
+  }
+
+  // Write the shared plugin state now: broadcast the changed entries to the other
+  // windows (synchronously, so any later write from any window includes them), then
+  // write the whole file atomically. IOUtils runs writes in order on one queue.
+  function flushPluginData() {
+    if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
+    if (!_pluginDataLoaded || _pluginDirty.size === 0) return _pluginSavePromise;
+    const changed = {};
+    for (const id of _pluginDirty.keys()) changed[id] = _pluginData[id] ? clonePluginValue(_pluginData[id]) : null;
+    _pluginDirty.clear();
+    const json = JSON.stringify(_pluginData);
+    try {
+      Services.obs.notifyObservers(null, PLUGIN_DATA_TOPIC, JSON.stringify({ sender: _windowUid, changed }));
+    } catch (e) { reportError('Broadcasting plugin data change failed', e); }
+    _pluginSavePromise = _pluginSavePromise
+      .then(() => IOUtils.writeUTF8(_pluginDataPath, json, { tmpPath: `${_pluginDataPath}.tmp` }))
+      .catch(e => reportError('Saving plugin data failed', e));
+    return _pluginSavePromise;
   }
 
   function savePluginData() {
     if (_pluginSaveTimer) return;
     _pluginSaveTimer = setTimeout(() => {
       _pluginSaveTimer = null;
-      _doWritePluginData();
+      flushPluginData();
     }, 500);
   }
 
-  function savePluginDataImmediate() {
-    if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
-    _doWritePluginData();
+  // Another window changed plugin data: adopt its entries, but keep the keys this
+  // window changed and has not flushed yet (they are newer).
+  function applyRemotePluginChanges(changed) {
+    for (const [id, remote] of Object.entries(changed || {})) {
+      if (!PLUGIN_ID_RE.test(id)) continue;
+      const localDirty = _pluginDirty.get(id);
+      if (remote === null || !_isPlainObject(remote)) {
+        if (!localDirty) delete _pluginData[id];
+      } else {
+        const merged = clonePluginValue(remote);
+        if (localDirty && _pluginData[id]) {
+          for (const path of localDirty) copyPluginDataPath(_pluginData[id], merged, path);
+        }
+        _pluginData[id] = merged;
+      }
+      reconcilePluginWithData(id);
+    }
   }
 
-  // Plugin data is saved eagerly during normal operation (debounced 500ms writes).
-  // We previously used a profileBeforeChange blocker for a final flush, but both
-  // setTimeout and IOUtils.writeJSON hang during that shutdown phase, causing the
-  // browser to freeze on quit (issue #48).  Removing the blocker entirely — the
-  // worst case is losing <500ms of unsaved plugin data on quit, which is acceptable.
-  //
-  // Flush synchronously in the window unload handler instead (see destroy()), which
-  // fires earlier in the shutdown sequence when I/O is still alive.
+  function _onPluginDataBroadcast(subject, topic, data) {
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) { return; }
+    if (!msg || msg.sender === _windowUid) return;
+    if (!_pluginDataLoaded) { _pendingRemotePluginChanges.push(msg.changed); return; }
+    applyRemotePluginChanges(msg.changed);
+  }
 
-  function checkStorageQuota(pluginId) {
-    const data = _pluginData[pluginId]?.storage;
-    if (!data) return true;
+  // Keep this window's plugin registry in line with the shared enabled flags
+  // (another window enabled/disabled/uninstalled a plugin).
+  function reconcilePluginWithData(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry) return;
+    const data = _pluginData[pluginId];
+    if (!data) {
+      if (!entry.manifest.builtIn) unregisterPlugin(pluginId, { persist: false });
+      return;
+    }
+    const wantEnabled = isPluginEnabledInData(entry.manifest);
+    if (wantEnabled && !entry.enabled) enablePlugin(pluginId, { persist: false });
+    else if (!wantEnabled && entry.enabled) disablePlugin(pluginId, { persist: false });
+    else if (_pluginManagerMode) renderPluginManagerContent();
+  }
+
+  function isPluginEnabledInData(manifest) {
+    const data = _pluginData[manifest.id];
+    // Built-in plugins are on unless disabled; external ones only when explicitly enabled
+    return manifest.builtIn ? data?.enabled !== false : data?.enabled === true;
+  }
+
+  function checkStorageQuota(storage, pluginId) {
     try {
-      const size = JSON.stringify(data).length;
+      const size = JSON.stringify(storage).length;
       if (size > PLUGIN_STORAGE_QUOTA) {
         console.warn(`[ZenLeap] Plugin "${pluginId}" storage exceeds quota (${Math.round(size / 1024)}KB / ${PLUGIN_STORAGE_QUOTA / 1024}KB)`);
         return false;
@@ -2987,95 +3162,167 @@
     return true;
   }
 
+  // Scoped key/value store for a plugin field ('storage' or 'settings'). In private
+  // windows writes go to a per-window overlay that is never persisted.
+  function pluginStore(pluginId, field) {
+    const priv = isPrivateWindow();
+    const overlay = () => {
+      if (!_pluginPrivateOverlay.has(pluginId)) _pluginPrivateOverlay.set(pluginId, { storage: new Map(), settings: new Map() });
+      return _pluginPrivateOverlay.get(pluginId)[field];
+    };
+    const DELETED = Symbol.for('zenleap.plugin.deleted');
+    const persisted = () => _pluginData[pluginId]?.[field] || {};
+    const getAll = () => {
+      const all = { ...persisted() };
+      if (priv) {
+        for (const [k, v] of overlay()) {
+          if (v === DELETED) delete all[k]; else all[k] = v;
+        }
+      }
+      return all;
+    };
+    return {
+      has(key) { return Object.prototype.hasOwnProperty.call(getAll(), key); },
+      // Copies: a plugin mutating a returned object must not change the shared state
+      // behind the store's back (it would never be marked for saving)
+      get(key) { return clonePluginValue(getAll()[key]); },
+      getAll: () => clonePluginValue(getAll()),
+      set(key, value) {
+        const stored = clonePluginValue(value);
+        if (field === 'storage' && !checkStorageQuota({ ...getAll(), [key]: stored }, pluginId)) return false;
+        if (priv) { overlay().set(key, stored); return true; }
+        if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
+        if (!_isPlainObject(_pluginData[pluginId][field])) _pluginData[pluginId][field] = {};
+        _pluginData[pluginId][field][key] = stored;
+        markPluginDataDirty(pluginId, pluginPath(field, key));
+        return true;
+      },
+      remove(key) {
+        if (priv) { overlay().set(key, DELETED); return; }
+        if (_pluginData[pluginId]?.[field] && key in _pluginData[pluginId][field]) {
+          delete _pluginData[pluginId][field][key];
+          markPluginDataDirty(pluginId, pluginPath(field, key));
+        }
+      },
+      clear() {
+        if (priv) {
+          for (const k of Object.keys(getAll())) overlay().set(k, DELETED);
+          return;
+        }
+        if (!_pluginData[pluginId]) return;
+        _pluginData[pluginId][field] = {};
+        markPluginDataDirty(pluginId, field);
+      },
+    };
+  }
+
   // ── Scoped Plugin API Factory ──
   // Each plugin gets its own API instance with storage/events scoped to its ID
   function createScopedPluginAPI(pluginId) {
+    const liveTab = (tab) => isLiveTab(tab) ? tab : null;
+    const allTabs = ({ allWorkspaces = false } = {}) => {
+      let tabs = null;
+      if (allWorkspaces) { try { tabs = window.gZenWorkspaces?.allStoredTabs; } catch (e) { tabs = null; } }
+      if (!tabs?.length) tabs = gBrowser.tabs;
+      return Array.from(tabs).filter(t => !t.hidden && !t.closing && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab'));
+    };
+    // Bulk close like Firefox's own "close other/left/right tabs": one undo batch, and the
+    // standard warning dialog when that many tabs could not all be restored.
+    const closeTabsWithWarning = (tabs, closingEnum) => TabOps.close(tabs, { warn: closingEnum });
+    const workspaceIdOf = (wsOrId) => typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+    const resolveTheme = () => themes[S['appearance.theme']] || themes.meridian;
+    const storage = pluginStore(pluginId, 'storage');
+    const ownSettings = pluginStore(pluginId, 'settings');
+
     return {
       // ─── Tab Operations ───
       tabs: {
-        getCurrent: () => gBrowser.selectedTab,
-        getAll: () => Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing),
+        // The tab in the tab list (a Glance's parent); browser.* acts on the page on screen
+        getCurrent: () => currentTab(),
+        // Active workspace (+ essentials) by default; { allWorkspaces: true } for every workspace
+        getAll: (opts) => allTabs(opts),
         getVisible: () => getVisibleTabs(),
         getByIndex: (i) => {
           const tabs = getVisibleTabs();
           return (i >= 0 && i < tabs.length) ? tabs[i] : null;
         },
-        findByUrl: (pattern) => {
-          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+        findByUrl: (pattern, opts) => {
+          const tabs = allTabs(opts);
           if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.linkedBrowser?.currentURI?.spec || ''));
           return tabs.filter(t => (t.linkedBrowser?.currentURI?.spec || '').includes(pattern));
         },
-        findByTitle: (pattern) => {
-          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+        findByTitle: (pattern, opts) => {
+          const tabs = allTabs(opts);
           if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.label || ''));
-          return tabs.filter(t => (t.label || '').toLowerCase().includes(pattern.toLowerCase()));
+          return tabs.filter(t => (t.label || '').toLowerCase().includes(String(pattern).toLowerCase()));
         },
-        select: (tab) => { if (tab) gBrowser.selectedTab = tab; },
-        close: (tab) => { if (tab) gBrowser.removeTab(tab); },
-        closeTabs: (tabs) => {
-          if (!tabs?.length) return;
-          try { gBrowser.removeTabs(tabs, { animate: true, suppressTabbedBrowserSessionStoreUpdate: false }); }
-          catch (e) { for (const t of tabs) { try { gBrowser.removeTab(t); } catch (_) {} } }
-        },
+        select: (tab) => { if (liveTab(tab)) return switchToTabAcrossWorkspaces(tab); return Promise.resolve(false); },
+        close: (tab) => { if (liveTab(tab)) gBrowser.removeTab(tab); },
+        closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), gBrowser.closingTabsEnum.MULTI_SELECTED),
         closeOthers: (keepTab) => {
-          const keep = keepTab || gBrowser.selectedTab;
-          const tabs = getVisibleTabs().filter(t => t !== keep && !t.pinned);
-          for (const t of tabs) gBrowser.removeTab(t);
+          const keep = keepTab || currentTab();
+          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned), gBrowser.closingTabsEnum.OTHER);
         },
         closeToRight: (fromTab) => {
           const tabs = getVisibleTabs();
-          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
-          if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+          const idx = tabs.indexOf(fromTab || currentTab());
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_END);
         },
         closeToLeft: (fromTab) => {
           const tabs = getVisibleTabs();
-          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
-          if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+          const idx = tabs.indexOf(fromTab || currentTab());
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_START);
         },
-        create: (url) => gBrowser.addTab(url || 'about:newtab', {
+        // User-intent tab creation: Zen's Space Routing rules apply unless { skipRoute: true }
+        create: (url, opts = {}) => gBrowser.addTab(url || 'about:newtab', {
           triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
+          skipRoute: !!opts.skipRoute,
         }),
-        duplicate: (tab) => gBrowser.duplicateTab(tab || gBrowser.selectedTab),
+        duplicate: (tab) => {
+          const t = tab || currentTab();
+          return gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
+        },
         move: (tab, toIndex) => {
           const tabs = getVisibleTabs();
-          if (toIndex >= 0 && toIndex < tabs.length) {
-            const target = tabs[toIndex];
-            if (target) gBrowser.moveTabBefore(tab, target);
+          if (liveTab(tab) && toIndex >= 0 && toIndex < tabs.length && tabs[toIndex] !== tab) {
+            gBrowser.moveTabBefore(tab, tabs[toIndex]);
           }
         },
-        pin: (tab) => gBrowser.pinTab(tab || gBrowser.selectedTab),
-        unpin: (tab) => gBrowser.unpinTab(tab || gBrowser.selectedTab),
-        isPinned: (tab) => (tab || gBrowser.selectedTab).pinned,
-        mute: (tab) => { const t = tab || gBrowser.selectedTab; if (!t.hasAttribute('muted')) t.toggleMuteAudio(); },
-        unmute: (tab) => { const t = tab || gBrowser.selectedTab; if (t.hasAttribute('muted')) t.toggleMuteAudio(); },
-        toggleMute: (tab) => (tab || gBrowser.selectedTab).toggleMuteAudio(),
-        isMuted: (tab) => (tab || gBrowser.selectedTab).hasAttribute('muted'),
-        reload: (tab) => gBrowser.reloadTab(tab || gBrowser.selectedTab),
-        unload: (tab) => {
-          const t = tab || gBrowser.selectedTab;
-          if (t !== gBrowser.selectedTab) { gBrowser.discardBrowser(t); return; }
-          const others = Array.from(gBrowser.tabs).filter(x => x !== t && !x.hidden && !x.hasAttribute('pending'));
-          others.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-          if (others[0]) gBrowser.selectedTab = others[0];
-          setTimeout(() => gBrowser.discardBrowser(t), 500);
-        },
-        getUrl: (tab) => (tab || gBrowser.selectedTab).linkedBrowser?.currentURI?.spec || '',
-        getTitle: (tab) => (tab || gBrowser.selectedTab).label || '',
-        getLastAccessed: (tab) => getTabLastAccessed(tab || gBrowser.selectedTab),
-        getFavicon: (tab) => (tab || gBrowser.selectedTab).image || '',
-        isLoading: (tab) => (tab || gBrowser.selectedTab).hasAttribute('busy'),
-        isPending: (tab) => (tab || gBrowser.selectedTab).hasAttribute('pending'),
-        isEssential: (tab) => (tab || gBrowser.selectedTab).hasAttribute('zen-essential'),
+        pin: (tab) => gBrowser.pinTab(tab || currentTab()),
+        unpin: (tab) => gBrowser.unpinTab(tab || currentTab()),
+        isPinned: (tab) => (tab || currentTab()).pinned,
+        mute: (tab) => { const t = tab || currentTab(); if (!t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        unmute: (tab) => { const t = tab || currentTab(); if (t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        toggleMute: (tab) => (tab || currentTab()).toggleMuteAudio(),
+        isMuted: (tab) => (tab || currentTab()).hasAttribute('muted'),
+        reload: (tab) => gBrowser.reloadTab(tab || currentTab()),
+        // Firefox picks another tab to select first when unloading the selected one
+        unload: (tab) => TabOps.unload([tab || currentTab()]),
+        getUrl: (tab) => (tab || currentTab()).linkedBrowser?.currentURI?.spec || '',
+        getTitle: (tab) => (tab || currentTab()).label || '',
+        getLastAccessed: (tab) => getTabLastAccessed(tab || currentTab()),
+        getFavicon: (tab) => (tab || currentTab()).image || '',
+        isLoading: (tab) => (tab || currentTab()).hasAttribute('busy'),
+        isPending: (tab) => (tab || currentTab()).hasAttribute('pending'),
+        isEssential: (tab) => (tab || currentTab()).hasAttribute('zen-essential'),
+        // Returns false when Zen refuses (essentials limit, container-specific essentials)
         addToEssentials: (tab) => {
-          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.addToEssentials(tab || gBrowser.selectedTab); }
-          catch (e) {}
+          const t = tab || currentTab();
+          try {
+            if (!window.gZenPinnedTabManager?.canEssentialBeAdded(t)) return false;
+            return gZenPinnedTabManager.addToEssentials(t) !== false;
+          } catch (e) { reportError(`Plugin "${pluginId}": addToEssentials failed`, e); return false; }
         },
         removeFromEssentials: (tab) => {
-          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.removeEssentials(tab || gBrowser.selectedTab); }
-          catch (e) {}
+          try { window.gZenPinnedTabManager?.removeEssentials(tab || currentTab()); }
+          catch (e) { reportError(`Plugin "${pluginId}": removeFromEssentials failed`, e); }
         },
         bookmark: (tab) => {
-          try { PlacesCommandHook.bookmarkPage(); } catch (e) {}
+          try {
+            const t = tab || currentTab();
+            if (t === gBrowser.selectedTab) PlacesCommandHook.bookmarkPage();
+            else PlacesCommandHook.bookmarkTabs([t]);
+          } catch (e) { reportError(`Plugin "${pluginId}": bookmark failed`, e); }
         },
       },
 
@@ -3096,86 +3343,82 @@
         getByName: (name) => {
           try {
             const all = window.gZenWorkspaces?.getWorkspaces() || [];
-            return all.find(ws => ws.name?.toLowerCase() === name.toLowerCase()) || null;
+            return all.find(ws => ws.name?.toLowerCase() === String(name).toLowerCase()) || null;
           } catch (e) { return null; }
         },
-        switchTo: (wsOrId) => {
-          try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id) window.gZenWorkspaces.changeWorkspaceWithID(id);
-          } catch (e) {}
+        switchTo: async (wsOrId) => {
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
+          await gZenWorkspaces.changeWorkspaceWithID(id);
+          return gZenWorkspaces.activeWorkspace === id;
         },
-        create: async (name) => {
+        // Returns the new workspace's data ({ uuid, name, ... }) or null.
+        // options: { icon, switchTo = false }
+        create: async (name, options = {}) => {
           try {
             if (!window.gZenWorkspaces) return null;
-            const ws = { name: name || 'New Workspace' };
-            await gZenWorkspaces.createAndSaveWorkspace(ws);
-            return ws;
-          } catch (e) { return null; }
+            return await gZenWorkspaces.createAndSaveWorkspace(
+              safePluginText(name, 'New Workspace', 100),
+              typeof options.icon === 'string' ? options.icon : undefined,
+              /* dontChange */ !options.switchTo,
+            ) || null;
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.create failed`, e); return null; }
         },
-        delete: async (wsOrId) => {
+        // Deletes the workspace AND closes all of its tabs, pinned tabs and folders
+        // (Zen >= 1.19.4b semantics). Resolves true when Zen confirms, false on timeout.
+        delete: async (wsOrId, { timeoutMs = 5000 } = {}) => {
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
           try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id && window.gZenWorkspaces) {
-              if (typeof gZenWorkspaces.removeWorkspace === 'function') await gZenWorkspaces.removeWorkspace(id);
-              else if (typeof gZenWorkspaces.deleteWorkspace === 'function') await gZenWorkspaces.deleteWorkspace(id);
-            }
-          } catch (e) {}
+            return await removeWorkspaceWithTimeout(id, timeoutMs);
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.delete failed`, e); return false; }
         },
         rename: async (wsOrId, newName) => {
           try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            const all = window.gZenWorkspaces?.getWorkspaces() || [];
-            const ws = all.find(w => w.uuid === id);
-            if (ws) { ws.name = newName; await gZenWorkspaces.saveWorkspace(ws); }
-          } catch (e) {}
+            const id = workspaceIdOf(wsOrId);
+            const ws = (window.gZenWorkspaces?.getWorkspaces() || []).find(w => w.uuid === id);
+            if (!ws) return false;
+            ws.name = safePluginText(newName, ws.name, 100);
+            await gZenWorkspaces.saveWorkspace(ws);
+            return true;
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.rename failed`, e); return false; }
         },
         moveTabTo: (tab, wsOrId) => {
-          try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id && window.gZenWorkspaces) gZenWorkspaces.moveTabToWorkspace(tab || gBrowser.selectedTab, id);
-          } catch (e) {}
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
+          return TabOps.moveToWorkspace([tab || gBrowser.selectedTab], id) > 0;
         },
       },
 
       // ─── Folder Operations ───
       folders: {
         getAll: () => {
-          try {
-            return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder'));
-          } catch (e) { return []; }
+          try { return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')); } catch (e) { return []; }
         },
         getByName: (name) => {
           try {
-            const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-            for (const f of folders) {
-              if ((f.label || f.getAttribute('zen-folder-name') || '').toLowerCase() === name.toLowerCase()) return f;
-            }
-          } catch (e) {}
-          return null;
+            const wanted = String(name).toLowerCase();
+            return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).find(f => (f.label || '').toLowerCase() === wanted) || null;
+          } catch (e) { return null; }
         },
         create: (tabs, name) => {
           try {
             if (!window.gZenFolders) return null;
-            const validTabs = (tabs || [gBrowser.selectedTab]).filter(t => t && !t.closing && t.parentNode);
+            const validTabs = (tabs || [gBrowser.selectedTab]).filter(t => liveTab(t));
             if (validTabs.length === 0) return null;
-            gZenFolders.createFolder(validTabs, { label: name || 'New Folder', renameFolder: !name });
-            return true;
-          } catch (e) { return null; }
+            return gZenFolders.createFolder(validTabs, { label: safePluginText(name, 'New Folder', 100), renameFolder: !name });
+          } catch (e) { reportError(`Plugin "${pluginId}": folders.create failed`, e); return null; }
         },
-        delete: (folder) => {
-          try {
-            if (typeof folder.delete === 'function') folder.delete();
-            else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
-          } catch (e) {}
+        // Deletes the folder and closes its tabs (restorable from recently closed)
+        delete: async (folder) => {
+          try { if (folder?.isZenFolder) { await folder.delete(); return true; } }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.delete failed`, e); }
+          return false;
         },
         rename: (folder, newName) => {
-          try {
-            if (folder && newName) {
-              folder.label = newName;
-              folder.setAttribute('zen-folder-name', newName);
-            }
-          } catch (e) {}
+          if (!folder?.isZenFolder || !newName) return false;
+          folder.name = safePluginText(newName, folder.label, 100); // fires ZenFolderRenamed
+          return true;
         },
         getTabs: (folder) => {
           try { return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || []; }
@@ -3183,26 +3426,23 @@
         },
         addTab: (folder, tab) => {
           try {
-            if (folder && tab && window.gZenFolders) {
-              if (gZenFolders.canDropElement && !gZenFolders.canDropElement(folder, tab)) return false;
-              gBrowser.moveTabAfter(tab, folder.tabs?.[folder.tabs.length - 1] || tab);
-              return true;
-            }
-          } catch (e) {}
-          return false;
+            if (!folder?.isZenFolder || !liveTab(tab)) return false;
+            if (!window.gZenFolders?.canDropElement(folder, tab)) return false;
+            folder.addTabs([tab]);
+            return true;
+          } catch (e) { reportError(`Plugin "${pluginId}": folders.addTab failed`, e); return false; }
         },
         removeTab: (tab) => {
-          try {
-            if (tab && window.gZenFolders) gZenFolders.ungroupTabsFromActiveGroups([tab]);
-          } catch (e) {}
+          try { if (liveTab(tab) && tab.group) gBrowser.ungroupTab(tab); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.removeTab failed`, e); }
         },
         setIcon: (folder) => {
-          try { if (folder && window.gZenFolders) gZenFolders.changeFolderUserIcon(folder); }
-          catch (e) {}
+          try { if (folder?.isZenFolder) gZenFolders.changeFolderUserIcon(folder); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.setIcon failed`, e); }
         },
         createSubfolder: (folder) => {
-          try { if (folder && window.gZenFolders) gZenFolders.createSubfolder(folder); }
-          catch (e) {}
+          try { if (folder?.isZenFolder) folder.createSubfolder(); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.createSubfolder failed`, e); }
         },
       },
 
@@ -3217,12 +3457,12 @@
               gZenViewSplitter.splitTabs(tabs.slice(0, 4));
               return true;
             }
-          } catch (e) {}
+          } catch (e) { reportError(`Plugin "${pluginId}": splitView.split failed`, e); }
           return false;
         },
         unsplit: () => {
           try { if (window.gZenViewSplitter?.splitViewActive) gZenViewSplitter.unsplitCurrentView(); }
-          catch (e) {}
+          catch (e) { reportError(`Plugin "${pluginId}": splitView.unsplit failed`, e); }
         },
         getLayout: () => {
           try {
@@ -3232,7 +3472,7 @@
           } catch (e) { return null; }
         },
         rotate: () => {
-          try { rotateSplitLayout(); } catch (e) {}
+          try { rotateSplitLayout(); } catch (e) { reportError(`Plugin "${pluginId}": splitView.rotate failed`, e); }
         },
       },
 
@@ -3262,22 +3502,18 @@
           // Register dynamic commands for this plugin
           const entry = _pluginRegistry.get(pluginId);
           if (!entry) return;
-          if (!entry._dynamicCommands) entry._dynamicCommands = [];
-          const toAdd = Array.isArray(cmds) ? cmds : [cmds];
-          for (const cmd of toAdd) {
-            entry._dynamicCommands.push(cmd);
-          }
+          const toAdd = (Array.isArray(cmds) ? cmds : [cmds]).map(c => sanitizePluginCommand(c, pluginId)).filter(Boolean);
+          entry._dynamicCommands.push(...toAdd);
           invalidateCommandCache();
         },
         unregister: (cmdKey) => {
           const entry = _pluginRegistry.get(pluginId);
-          if (!entry?._dynamicCommands) return;
+          if (!entry) return;
           entry._dynamicCommands = entry._dynamicCommands.filter(c => c.key !== cmdKey);
           invalidateCommandCache();
         },
         execute: (cmdKey) => {
-          const all = getAllCommands();
-          const cmd = all.find(c => c.key === cmdKey);
+          const cmd = getAllCommands().find(c => c.key === cmdKey);
           if (cmd) executeCommand(cmd);
         },
         getAll: () => getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon })),
@@ -3285,14 +3521,17 @@
 
       // ─── Browser ───
       browser: {
-        openUrl: (url, options) => {
+        // User-intent navigation: Zen's Space Routing applies unless { skipRoute: true }
+        openUrl: (url, options = {}) => {
           const principal = Services.scriptSecurityManager.createNullPrincipal({});
-          if (options?.newTab !== false) {
-            return gBrowser.addTab(url, { triggeringPrincipal: principal });
+          if (options.newTab !== false) {
+            return gBrowser.addTab(url, { triggeringPrincipal: principal, skipRoute: !!options.skipRoute });
           }
           gBrowser.selectedBrowser.loadURI(Services.io.newURI(url), { triggeringPrincipal: principal });
+          return gBrowser.selectedTab;
         },
         getCurrentUrl: () => gBrowser.selectedBrowser?.currentURI?.spec || '',
+        isPrivate: () => isPrivateWindow(),
         goBack: () => { try { gBrowser.selectedBrowser.goBack(); } catch (e) {} },
         goForward: () => { try { gBrowser.selectedBrowser.goForward(); } catch (e) {} },
         reload: () => { try { gBrowser.reloadTab(gBrowser.selectedTab); } catch (e) {} },
@@ -3304,15 +3543,20 @@
         copyToClipboard: (text) => {
           try {
             const cb = Cc['@mozilla.org/widget/clipboardhelper;1'].getService(Ci.nsIClipboardHelper);
-            cb.copyString(text);
-          } catch (e) {}
+            cb.copyString(String(text));
+          } catch (e) { reportError(`Plugin "${pluginId}": copyToClipboard failed`, e); }
         },
         toggleFullscreen: () => { try { BrowserCommands.fullScreen(); } catch (e) {} },
-        getSelectedText: () => {
+        // Async (content lives in another process). Returns the selection in the focused
+        // chrome input (e.g. the URL bar) if any, otherwise the page selection.
+        getSelectedText: async () => {
           try {
-            const focusedWindow = document.commandDispatcher.focusedWindow;
-            const sel = focusedWindow?.getSelection();
-            return sel ? sel.toString() : '';
+            const focused = document.commandDispatcher.focusedElement;
+            if (focused && typeof focused.selectionStart === 'number' && focused.selectionEnd > focused.selectionStart) {
+              return focused.value.slice(focused.selectionStart, focused.selectionEnd);
+            }
+            const result = await gBrowser.selectedBrowser.finder.getInitialSelection();
+            return result?.selectedText || '';
           } catch (e) { return ''; }
         },
         getPageTitle: () => {
@@ -3341,52 +3585,34 @@
 
       // ─── UI ───
       ui: {
-        showToast: (message, duration) => _pluginShowToast(message, duration),
+        showToast: (message, duration) => showZenLeapToast(message, duration),
         showModal: (title, content) => _pluginShowStatsModal(title, content),
         showConfirm: (title, message) => _pluginShowConfirm(title, message),
-        showPrompt: (title, placeholder, defaultValue) => _pluginShowPrompt(title, placeholder, defaultValue),
+        showPrompt: (title, placeholder, defaultValue, options) => _pluginShowPrompt(title, placeholder, defaultValue, options),
         log: (msg) => { if (CONFIG.debug) console.log(`[ZenLeap:${pluginId}] ${msg}`); },
-        getAccentColor: () => S['appearance.accentColor'],
-        getThemeColors: () => ({
-          accent: S['appearance.accentColor'],
-          currentTabBg: S['appearance.currentTabBg'],
-          currentTabColor: S['appearance.currentTabColor'],
-          badgeBg: S['appearance.badgeBg'],
-          badgeColor: S['appearance.badgeColor'],
-          markColor: S['appearance.markColor'],
-          highlightBorder: S['appearance.highlightBorder'],
-          selectedBorder: S['appearance.selectedBorder'],
-        }),
+        getAccentColor: () => resolveTheme().accent,
+        getThemeColors: () => {
+          const t = resolveTheme();
+          return {
+            accent: t.accent, accentBright: t.accentBright,
+            currentTabBg: t.currentBadgeBg, currentTabColor: t.currentBadgeColor,
+            badgeBg: t.badgeBg, badgeColor: t.badgeColor,
+            markColor: t.mark, highlightBorder: t.highlight, selectedBorder: t.selected,
+            background: t.bgBase, surface: t.bgSurface, text: t.textPrimary, textSecondary: t.textSecondary,
+            border: t.borderDefault, success: t.green, error: t.red, warning: t.gold,
+          };
+        },
       },
 
       // ─── Scoped Storage ───
       storage: {
-        get: (key, defaultValue) => {
-          const pd = _pluginData[pluginId];
-          return pd?.storage?.[key] ?? defaultValue;
-        },
+        get: (key, defaultValue) => storage.get(key) ?? defaultValue,
         set: (key, value) => {
-          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
-          if (!_pluginData[pluginId].storage) _pluginData[pluginId].storage = {};
-          _pluginData[pluginId].storage[key] = value;
-          if (!checkStorageQuota(pluginId)) {
-            delete _pluginData[pluginId].storage[key];
-            log(`Plugin "${pluginId}" storage.set rejected: quota exceeded`);
-            return;
-          }
-          savePluginData();
+          if (!storage.set(key, value)) log(`Plugin "${pluginId}" storage.set rejected: quota exceeded`);
         },
-        remove: (key) => {
-          if (_pluginData[pluginId]?.storage) {
-            delete _pluginData[pluginId].storage[key];
-            savePluginData();
-          }
-        },
-        getAll: () => _pluginData[pluginId]?.storage ? { ..._pluginData[pluginId].storage } : {},
-        clear: () => {
-          if (_pluginData[pluginId]) _pluginData[pluginId].storage = {};
-          savePluginData();
-        },
+        remove: (key) => storage.remove(key),
+        getAll: () => storage.getAll(),
+        clear: () => storage.clear(),
       },
 
       // ─── Scoped Events ───
@@ -3398,39 +3624,25 @@
 
       // ─── Plugin Settings (plugin's own settings from manifest) ───
       settings: {
-        get: (key) => S[key], // Read ZenLeap settings (read-only)
+        get: (key) => cloneSettingValue(S[key]), // Read ZenLeap settings (read-only)
         getOwn: (key, defaultValue) => {
-          const pd = _pluginData[pluginId];
-          if (pd?.settings?.[key] !== undefined) return pd.settings[key];
+          if (ownSettings.has(key)) return ownSettings.get(key);
           // Fall back to manifest default
-          const entry = _pluginRegistry.get(pluginId);
-          const schema = entry?.manifest?.settings?.[key];
+          const schema = _pluginRegistry.get(pluginId)?.manifest?.settings?.[key];
           return schema?.default ?? defaultValue;
         },
         setOwn: (key, value) => {
-          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
-          if (!_pluginData[pluginId].settings) _pluginData[pluginId].settings = {};
-          _pluginData[pluginId].settings[key] = value;
-          savePluginData();
+          ownSettings.set(key, value);
           _pluginEventBus.emit('plugin:settingChanged', { pluginId, key, value });
         },
-        getOwnSchema: () => {
-          const entry = _pluginRegistry.get(pluginId);
-          return entry?.manifest?.settings || {};
-        },
+        getOwnSchema: () => _pluginRegistry.get(pluginId)?.manifest?.settings || {},
       },
 
-      // ─── File I/O (sandboxed to plugin data directory) ───
+      // ─── File I/O (convenience helpers rooted at the plugin's data directory) ───
+      // Not a security boundary: plugins run with full chrome privileges anyway.
       fs: (() => {
         const pluginDataDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins', pluginId, 'data');
-        const resolvePath = (rel) => {
-          const resolved = PathUtils.join(pluginDataDir, rel);
-          // Prevent path traversal: resolved path must start with pluginDataDir
-          if (!resolved.startsWith(pluginDataDir)) {
-            throw new Error('Path traversal not allowed');
-          }
-          return resolved;
-        };
+        const resolvePath = (rel) => PathUtils.join(pluginDataDir, ...(rel ? [rel] : [])); // PathUtils rejects '..' and absolute segments
         return {
           readText: async (rel) => {
             try { return await IOUtils.readUTF8(resolvePath(rel)); } catch (e) { return null; }
@@ -3439,7 +3651,7 @@
             try {
               const p = resolvePath(rel);
               await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
-              await IOUtils.writeUTF8(p, content);
+              await IOUtils.writeUTF8(p, content, { tmpPath: `${p}.tmp` });
               return true;
             } catch (e) { return false; }
           },
@@ -3450,7 +3662,7 @@
             try {
               const p = resolvePath(rel);
               await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
-              await IOUtils.writeUTF8(p, JSON.stringify(data));
+              await IOUtils.writeUTF8(p, JSON.stringify(data), { tmpPath: `${p}.tmp` });
               return true;
             } catch (e) { return false; }
           },
@@ -3462,8 +3674,8 @@
           },
           listDir: async (rel) => {
             try {
-              const abs = await IOUtils.getChildren(resolvePath(rel || '.'));
-              return abs.map(p => p.split('/').pop().split('\\').pop());
+              const abs = await IOUtils.getChildren(resolvePath(rel));
+              return abs.map(p => PathUtils.filename(p));
             } catch (e) { return []; }
           },
           remove: async (rel) => {
@@ -3479,347 +3691,473 @@
     };
   }
 
-  // ── Plugin Toast ──
-  let _pluginToastTimer = null;
-  function _pluginShowToast(message, duration = 3000) {
-    let toast = document.getElementById('zenleap-plugin-toast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'zenleap-plugin-toast';
-      document.documentElement.appendChild(toast);
-    }
-    toast.textContent = message;
-    toast.style.cssText = `
-      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-      background: rgba(30, 30, 35, 0.95); color: #e0e0e0; padding: 10px 20px;
-      border-radius: 8px; font-size: 13px; z-index: 100010;
-      border: 1px solid rgba(97, 175, 239, 0.3);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-      animation: zenleap-toast-in 0.2s ease-out;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-    toast.style.display = 'block';
-    clearTimeout(_pluginToastTimer);
-    _pluginToastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+  // ── Dialog stack (plugin dialogs, settings import) ──
+  // Keys for ZenLeap's small modal dialogs are routed here BEFORE the main keydown
+  // handler: this listener is registered at script load, i.e. before init() registers
+  // handleKeyDown, and consumes the keys it handles, so Escape/Enter act on the top
+  // dialog only (not also on the view underneath). It also gives the Plugin Manager
+  // keyboard navigation.
+  const _dialogStack = []; // [{ el, onKey(event) -> handled }]
+
+  function pushDialog(el, onKey) {
+    const dialog = { el, onKey };
+    _dialogStack.push(dialog);
+    return () => {
+      const i = _dialogStack.indexOf(dialog);
+      if (i >= 0) _dialogStack.splice(i, 1);
+    };
   }
 
-  // ── Confirm Dialog ──
+  function _routeDialogKeys(event) {
+    while (_dialogStack.length && !_dialogStack[_dialogStack.length - 1].el.isConnected) _dialogStack.pop();
+    // A ZenLeap view opened on top of a dialog (palette, settings, ...) gets the keys
+    if (searchMode || settingsMode || helpMode || reorgMode || gtileMode || updateMode || leapMode || folderDeleteMode) return;
+    const top = _dialogStack[_dialogStack.length - 1];
+    let handled = false;
+    try {
+      if (top) handled = !!top.onKey(event);
+      else if (_pluginManagerMode) handled = handlePluginManagerKey(event);
+    } catch (e) { reportError('Dialog key handling failed', e); }
+    if (handled) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }
+
+  window.addEventListener('keydown', _routeDialogKeys, true);
+  onRegionTeardown(() => window.removeEventListener('keydown', _routeDialogKeys, true));
+
+  // ── Plugin dialog styles (themed; injected once) ──
+  function ensurePluginUiStyles() {
+    if (document.getElementById('zenleap-plugin-ui-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'zenleap-plugin-ui-styles';
+    style.textContent = `
+      @keyframes zenleap-pm-appear {
+        from { opacity: 0; transform: scale(0.97) translateY(-6px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      .zenleap-plugin-dialog {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100010; display: flex; justify-content: center; align-items: center; padding: 20px;
+        box-sizing: border-box;
+      }
+      .zenleap-plugin-dialog-backdrop {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: var(--zl-backdrop); backdrop-filter: var(--zl-blur);
+      }
+      .zenleap-plugin-dialog-card {
+        position: relative; width: 90%; max-width: 420px; max-height: 70vh;
+        background: var(--zl-bg-surface); border-radius: var(--zl-r-lg);
+        box-shadow: var(--zl-shadow-modal); display: flex; flex-direction: column; overflow: hidden;
+        font-family: var(--zl-font-ui); animation: zenleap-pm-appear 0.2s ease-out;
+      }
+      .zenleap-plugin-dialog-card.wide { max-width: 520px; }
+      .zenleap-plugin-dialog-header {
+        padding: 18px 22px 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      }
+      .zenleap-plugin-dialog-card.wide .zenleap-plugin-dialog-header { border-bottom: 1px solid var(--zl-border-subtle); }
+      .zenleap-plugin-dialog-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--zl-accent); }
+      .zenleap-plugin-dialog-message { margin: 0 22px 18px; font-size: 13px; color: var(--zl-text-secondary); line-height: 1.5; white-space: pre-wrap; }
+      .zenleap-plugin-dialog-body {
+        padding: 16px 22px; overflow-y: auto; flex: 1; font-size: 13px; color: var(--zl-text-secondary);
+        white-space: pre-wrap; font-family: var(--zl-font-mono); line-height: 1.6;
+        scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent;
+      }
+      .zenleap-plugin-dialog-input {
+        margin: 0 22px 18px; padding: 10px 14px; box-sizing: border-box; width: calc(100% - 44px);
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong);
+        border-radius: var(--zl-r-sm); color: var(--zl-text-primary); font-size: 14px; outline: none; font-family: inherit;
+      }
+      .zenleap-plugin-dialog-input:focus { border-color: var(--zl-accent); }
+      .zenleap-plugin-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 22px 18px; }
+      .zenleap-plugin-dialog-footer {
+        padding: 10px 22px; border-top: 1px solid var(--zl-border-subtle); text-align: center;
+        font-size: 11px; color: var(--zl-text-muted);
+      }
+      .zenleap-plugin-btn {
+        padding: 6px 16px; border-radius: var(--zl-r-sm); cursor: pointer; font-size: 13px; font-family: inherit;
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong); color: var(--zl-text-secondary);
+      }
+      .zenleap-plugin-btn:hover, .zenleap-plugin-btn:focus-visible { border-color: var(--zl-accent-border); color: var(--zl-text-primary); }
+      .zenleap-plugin-btn.primary { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); color: var(--zl-accent-bright); font-weight: 600; }
+      .zenleap-plugin-btn.icon { background: none; border: none; color: var(--zl-text-muted); font-size: 16px; padding: 4px 8px; }
+      .zenleap-plugin-btn.icon:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function buildPluginDialog({ title, wide = false }) {
+    ensurePluginUiStyles();
+    const modal = document.createElement('div');
+    modal.className = 'zenleap-plugin-dialog';
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zenleap-plugin-dialog-backdrop';
+    const card = document.createElement('div');
+    card.className = `zenleap-plugin-dialog-card${wide ? ' wide' : ''}`;
+    const header = document.createElement('div');
+    header.className = 'zenleap-plugin-dialog-header';
+    const h = document.createElement('h3');
+    h.className = 'zenleap-plugin-dialog-title';
+    h.textContent = String(title ?? '');
+    header.appendChild(h);
+    card.appendChild(header);
+    modal.appendChild(backdrop);
+    modal.appendChild(card);
+    return { modal, backdrop, card, header };
+  }
+
+  function makePluginButton(label, className = '') {
+    const btn = document.createElement('button');
+    btn.className = `zenleap-plugin-btn ${className}`.trim();
+    btn.textContent = label;
+    return btn;
+  }
+
+  // ── Confirm Dialog ── (Enter = confirm, Escape = cancel)
   function _pluginShowConfirm(title, message) {
     return new Promise((resolve) => {
-      const modal = document.createElement('div');
-      modal.style.cssText = `
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        z-index: 100010; display: flex; justify-content: center; align-items: center;
-      `;
-      const backdrop = document.createElement('div');
-      backdrop.style.cssText = `
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
-      `;
-      const card = document.createElement('div');
-      card.style.cssText = `
-        position: relative; width: 90%; max-width: 400px;
-        background: rgba(25,25,30,0.98); border-radius: 14px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      const h = document.createElement('h3');
-      h.textContent = title;
-      h.style.cssText = 'margin: 0 0 12px; font-size: 16px; color: #61afef;';
+      const { modal, backdrop, card } = buildPluginDialog({ title });
       const p = document.createElement('p');
-      p.textContent = message;
-      p.style.cssText = 'margin: 0 0 20px; font-size: 13px; color: #ccc; line-height: 1.5;';
+      p.className = 'zenleap-plugin-dialog-message';
+      p.textContent = String(message ?? '');
       const btns = document.createElement('div');
-      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
-      const cancel = document.createElement('button');
-      cancel.textContent = 'Cancel';
-      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
-      const confirm = document.createElement('button');
-      confirm.textContent = 'Confirm';
-      confirm.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
-      const close = (result) => { modal.remove(); window.removeEventListener('keydown', esc, true); resolve(result); };
-      const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } };
-      window.addEventListener('keydown', esc, true);
+      btns.className = 'zenleap-plugin-dialog-actions';
+      const cancel = makePluginButton('Cancel');
+      const confirm = makePluginButton('Confirm', 'primary');
+      let popDialog = null;
+      const close = (result) => { popDialog?.(); modal.remove(); resolve(result); };
       backdrop.addEventListener('click', () => close(false));
       cancel.addEventListener('click', () => close(false));
       confirm.addEventListener('click', () => close(true));
       btns.appendChild(cancel);
       btns.appendChild(confirm);
-      card.appendChild(h);
       card.appendChild(p);
       card.appendChild(btns);
-      modal.appendChild(backdrop);
-      modal.appendChild(card);
       document.documentElement.appendChild(modal);
+      popDialog = pushDialog(modal, (e) => {
+        if (e.key === 'Escape') { close(false); return true; }
+        if (e.key === 'Enter') { close(document.activeElement !== cancel); return true; }
+        return false;
+      });
     });
   }
 
-  // ── Prompt Dialog ──
-  function _pluginShowPrompt(title, placeholder, defaultValue) {
+  // ── Prompt Dialog ── (Enter = OK, Escape = cancel; options.password masks the input)
+  function _pluginShowPrompt(title, placeholder, defaultValue, options = {}) {
     return new Promise((resolve) => {
-      const modal = document.createElement('div');
-      modal.style.cssText = `
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        z-index: 100010; display: flex; justify-content: center; align-items: center;
-      `;
-      const backdrop = document.createElement('div');
-      backdrop.style.cssText = `
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
-      `;
-      const card = document.createElement('div');
-      card.style.cssText = `
-        position: relative; width: 90%; max-width: 420px;
-        background: rgba(25,25,30,0.98); border-radius: 14px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      const h = document.createElement('h3');
-      h.textContent = title;
-      h.style.cssText = 'margin: 0 0 16px; font-size: 16px; color: #61afef;';
+      const { modal, backdrop, card } = buildPluginDialog({ title });
       const input = document.createElement('input');
-      input.type = 'text';
+      input.type = options?.password ? 'password' : 'text';
+      input.className = 'zenleap-plugin-dialog-input';
       input.value = defaultValue || '';
       input.placeholder = placeholder || '';
-      input.style.cssText = `
-        width: 100%; box-sizing: border-box; padding: 10px 14px; margin-bottom: 20px;
-        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
-        font-family: inherit;
-      `;
-      input.addEventListener('focus', () => { input.style.borderColor = '#61afef'; });
-      input.addEventListener('blur', () => { input.style.borderColor = 'rgba(255,255,255,0.12)'; });
       const btns = document.createElement('div');
-      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
-      const cancel = document.createElement('button');
-      cancel.textContent = 'Cancel';
-      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
-      const ok = document.createElement('button');
-      ok.textContent = 'OK';
-      ok.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
-      const close = (val) => { modal.remove(); window.removeEventListener('keydown', keyHandler, true); resolve(val); };
-      const keyHandler = (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
-        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(input.value); }
-      };
-      window.addEventListener('keydown', keyHandler, true);
+      btns.className = 'zenleap-plugin-dialog-actions';
+      const cancel = makePluginButton('Cancel');
+      const ok = makePluginButton('OK', 'primary');
+      let popDialog = null;
+      const close = (val) => { popDialog?.(); modal.remove(); resolve(val); };
       backdrop.addEventListener('click', () => close(null));
       cancel.addEventListener('click', () => close(null));
       ok.addEventListener('click', () => close(input.value));
       btns.appendChild(cancel);
       btns.appendChild(ok);
-      card.appendChild(h);
       card.appendChild(input);
       card.appendChild(btns);
-      modal.appendChild(backdrop);
-      modal.appendChild(card);
       document.documentElement.appendChild(modal);
+      popDialog = pushDialog(modal, (e) => {
+        if (e.key === 'Escape') { close(null); return true; }
+        if (e.key === 'Enter') { close(document.activeElement === cancel ? null : input.value); return true; }
+        return false;
+      });
       setTimeout(() => input.focus(), 50);
     });
   }
 
   // ── Stats/Content Modal (shared) ──
   function _pluginShowStatsModal(title, content) {
-    const existing = document.getElementById('zenleap-plugin-stats-modal');
-    if (existing) existing.remove();
+    document.getElementById('zenleap-plugin-stats-modal')?.remove(); // its dialog-stack entry is dropped once disconnected
 
-    const modal = document.createElement('div');
+    const { modal, backdrop, card, header } = buildPluginDialog({ title, wide: true });
     modal.id = 'zenleap-plugin-stats-modal';
-    modal.style.cssText = `
-      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-      z-index: 100010; display: flex; justify-content: center; align-items: center; padding: 20px;
-    `;
-    const handler = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); } };
-    const closeModal = () => { modal.remove(); window.removeEventListener('keydown', handler, true); };
-
-    const backdrop = document.createElement('div');
-    backdrop.style.cssText = `position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);`;
+    let popDialog = null;
+    const closeModal = () => { popDialog?.(); modal.remove(); };
     backdrop.addEventListener('click', closeModal);
-
-    const card = document.createElement('div');
-    card.style.cssText = `
-      position: relative; width: 90%; max-width: 520px; max-height: 70vh;
-      background: rgba(25,25,30,0.98); border-radius: 14px;
-      box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-      overflow: hidden; display: flex; flex-direction: column;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'padding: 18px 22px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;';
-    const h2 = document.createElement('h2');
-    h2.textContent = title;
-    h2.style.cssText = 'margin: 0; font-size: 18px; font-weight: 700; color: #61afef;';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '\u2715';
-    closeBtn.style.cssText = 'background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 4px;';
+    const closeBtn = makePluginButton('✕', 'icon');
     closeBtn.addEventListener('click', closeModal);
-    hdr.appendChild(h2);
-    hdr.appendChild(closeBtn);
+    header.appendChild(closeBtn);
     const body = document.createElement('div');
-    body.style.cssText = `padding: 18px 22px; overflow-y: auto; flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; line-height: 1.6;`;
-    body.textContent = content;
+    body.className = 'zenleap-plugin-dialog-body';
+    body.textContent = String(content ?? '');
     const ftr = document.createElement('div');
-    ftr.style.cssText = 'padding: 12px 22px; border-top: 1px solid rgba(255,255,255,0.08); text-align: center; font-size: 11px; color: #555;';
-    ftr.textContent = 'Press Escape or click outside to close';
-    card.appendChild(hdr);
+    ftr.className = 'zenleap-plugin-dialog-footer';
+    ftr.textContent = 'Press Escape or click outside to close · j/k to scroll';
     card.appendChild(body);
     card.appendChild(ftr);
-    modal.appendChild(backdrop);
-    modal.appendChild(card);
-    window.addEventListener('keydown', handler, true);
     document.documentElement.appendChild(modal);
+    popDialog = pushDialog(modal, (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') { closeModal(); return true; }
+      if (e.key === 'j' || e.key === 'ArrowDown') { body.scrollBy({ top: 60 }); return true; }
+      if (e.key === 'k' || e.key === 'ArrowUp') { body.scrollBy({ top: -60 }); return true; }
+      return false;
+    });
   }
 
   // ── Plugin Lifecycle ──
-  function registerPlugin(manifest) {
-    if (!manifest?.id || !manifest?.name) { log('Plugin registration failed: missing id or name'); return false; }
-    if (!/^[a-zA-Z0-9_-]+$/.test(manifest.id)) { log(`Plugin registration failed: invalid id "${manifest.id}"`); return false; }
-    if (_pluginRegistry.has(manifest.id)) { log(`Plugin "${manifest.id}" already registered`); return false; }
 
-    // Validate commands array if present
-    if (manifest.commands && Array.isArray(manifest.commands)) {
-      manifest.commands = manifest.commands.filter(cmd => {
-        if (!cmd.key || typeof cmd.key !== 'string') { log(`Plugin "${manifest.id}": skipping command with missing key`); return false; }
-        if (cmd.tags && !Array.isArray(cmd.tags)) cmd.tags = [];
-        return true;
-      });
-    } else if (manifest.commands) {
-      manifest.commands = [];
+  // Validate one command from a manifest or api.commands.register(); returns null if unusable.
+  function sanitizePluginCommand(cmd, pluginId) {
+    if (!_isPlainObject(cmd) || typeof cmd.key !== 'string' || !PLUGIN_COMMAND_KEY_RE.test(cmd.key)) {
+      console.warn(`[ZenLeap] Plugin "${pluginId}": skipping command with a missing/invalid key`, cmd?.key);
+      return null;
+    }
+    return {
+      ...cmd,
+      label: safePluginText(cmd.label, cmd.key, 120),
+      icon: cmd.icon === undefined ? undefined : safeIconText(cmd.icon, '🧩'),
+      tags: Array.isArray(cmd.tags) ? cmd.tags.filter(t => typeof t === 'string').map(t => t.slice(0, 40)) : [],
+      condition: typeof cmd.condition === 'function' ? cmd.condition : undefined,
+      command: typeof cmd.command === 'function' ? cmd.command : undefined,
+      subFlow: typeof cmd.subFlow === 'string' ? cmd.subFlow : undefined,
+    };
+  }
+
+  // Validate a manifest before any plugin code runs; returns a normalized copy or null.
+  function validatePluginManifest(raw, source) {
+    if (!_isPlainObject(raw)) { console.warn(`[ZenLeap] Skipping plugin at ${source}: manifest is not an object`); return null; }
+    if (typeof raw.id !== 'string' || !PLUGIN_ID_RE.test(raw.id)) { console.warn(`[ZenLeap] Skipping plugin at ${source}: invalid id`, raw.id); return null; }
+    if (typeof raw.name !== 'string' || !raw.name.trim()) { console.warn(`[ZenLeap] Skipping plugin "${raw.id}": missing name`); return null; }
+    if (raw.minZenLeapVersion !== undefined) {
+      const cmp = compareVersions(VERSION, raw.minZenLeapVersion);
+      if (Number.isNaN(cmp)) { console.warn(`[ZenLeap] Skipping plugin "${raw.id}": unreadable minZenLeapVersion`, raw.minZenLeapVersion); return null; }
+      if (cmp < 0) { console.warn(`[ZenLeap] Skipping plugin "${raw.name}": requires ZenLeap v${raw.minZenLeapVersion}+`); return null; }
+    }
+    const settings = {};
+    if (_isPlainObject(raw.settings)) {
+      for (const [key, schema] of Object.entries(raw.settings)) {
+        if (!_isPlainObject(schema) || !['toggle', 'number', 'text'].includes(schema.type)) continue;
+        settings[key] = {
+          ...schema,
+          label: safePluginText(schema.label, key, 100),
+          description: safePluginText(schema.description, '', 300),
+        };
+      }
+    }
+    return {
+      ...raw,
+      name: safePluginText(raw.name, raw.id, 100),
+      version: safePluginText(String(raw.version ?? ''), '1.0.0', 30),
+      description: safePluginText(raw.description, '', 500),
+      author: safePluginText(raw.author, 'Unknown', 100),
+      icon: safeIconText(raw.icon, '🧩'),
+      settings,
+      commands: (Array.isArray(raw.commands) ? raw.commands : []).map(c => sanitizePluginCommand(c, raw.id)).filter(Boolean),
+    };
+  }
+
+  // Register a plugin manifest. Built-in manifests carry init/destroy directly; external
+  // ones carry _scriptPath and their plugin.js is only evaluated when enabled.
+  function registerPlugin(rawManifest) {
+    const manifest = validatePluginManifest(rawManifest, rawManifest?._path || 'built-in');
+    if (!manifest) return false;
+    if (_pluginRegistry.has(manifest.id)) {
+      console.warn(`[ZenLeap] Plugin id "${manifest.id}" is already registered; skipping ${manifest._path || 'built-in plugin'}`);
+      return false;
     }
 
-    if (!_pluginData[manifest.id]) {
-      _pluginData[manifest.id] = { enabled: true, storage: {}, settings: {} };
-      savePluginData();
+    if (!_isPlainObject(_pluginData[manifest.id])) {
+      // First time we see this plugin: external plugins stay disabled until the user enables them
+      _pluginData[manifest.id] = manifest.builtIn
+        ? { enabled: true, storage: {}, settings: {} }
+        : { enabled: false, isNew: true, storage: {}, settings: {} };
+      markPluginDataDirty(manifest.id, '*');
+      if (!manifest.builtIn) {
+        console.info(`[ZenLeap] New plugin found: "${manifest.name}" (${manifest.id}). Enable it in Manage Plugins to run it.`);
+        showZenLeapToast(`New ZenLeap plugin found: ${manifest.name} — enable it in Manage Plugins`, 6000);
+      }
     }
 
     const entry = {
       manifest,
-      enabled: _pluginData[manifest.id].enabled !== false,
+      enabled: false,
+      loaded: !!manifest.builtIn,
+      exports: manifest.builtIn ? manifest : null,
+      sandbox: null,
       instance: null,
+      error: null,
       _dynamicCommands: [],
     };
-
     _pluginRegistry.set(manifest.id, entry);
 
-    if (entry.enabled && manifest.init) {
-      try {
-        const api = createScopedPluginAPI(manifest.id);
-        entry.instance = manifest.init(api) || {};
-        log(`Plugin "${manifest.name}" initialized`);
-      } catch (e) {
-        console.error(`[ZenLeap] Plugin "${manifest.name}" init failed:`, e);
-        entry.instance = null;
-      }
-    }
-
+    if (isPluginEnabledInData(manifest)) activatePlugin(entry);
     invalidateCommandCache();
     _pluginEventBus.emit('plugin:registered', { pluginId: manifest.id, name: manifest.name });
     return true;
   }
 
-  function unregisterPlugin(pluginId) {
+  // Evaluate an external plugin's script in its own sandbox.
+  async function loadPluginScript(entry) {
+    const { manifest } = entry;
+    const source = await IOUtils.readUTF8(manifest._scriptPath);
+    const sandbox = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), {
+      sandboxName: `ZenLeap plugin: ${manifest.id}`,
+      sandboxPrototype: window,
+      wantXrays: false,
+    });
+    try {
+      Cu.evalInSandbox(source, sandbox, 'latest', PathUtils.toFileURI(manifest._scriptPath), 1);
+      const exported = sandbox.ZenLeapPlugin;
+      if (!exported || typeof exported !== 'object') throw new Error('plugin.js must define a ZenLeapPlugin object');
+      entry.sandbox = sandbox;
+      entry.exports = exported;
+      entry.loaded = true;
+    } catch (e) {
+      Cu.nukeSandbox(sandbox);
+      throw e;
+    }
+  }
+
+  // Load (if needed) and init a plugin in this window.
+  async function activatePlugin(entry) {
+    const { manifest } = entry;
+    entry.enabled = true;
+    entry.error = null;
+    try {
+      if (!entry.loaded) await loadPluginScript(entry);
+      if (!entry.enabled || _pluginRegistry.get(manifest.id) !== entry) return; // disabled/removed while loading
+      if (typeof entry.exports.init === 'function') {
+        entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
+      }
+      log(`Plugin "${manifest.name}" initialized`);
+    } catch (e) {
+      entry.error = e?.message || String(e);
+      entry.instance = null;
+      console.error(`[ZenLeap] Plugin "${manifest.name}" failed to load:`, e);
+    }
+    invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
+  }
+
+  // Run the plugin's destroy hook (exactly one) and release its sandbox.
+  function deactivatePlugin(entry) {
+    const { manifest, instance, exports } = entry;
+    try {
+      if (instance && instance !== exports && typeof instance.destroy === 'function') instance.destroy();
+      else if (typeof exports?.destroy === 'function') exports.destroy(createScopedPluginAPI(manifest.id));
+    } catch (e) { console.error(`[ZenLeap] Plugin "${manifest.name}" destroy failed:`, e); }
+    _pluginEventBus.removeAllForPlugin(manifest.id);
+    entry.instance = null;
+    entry._dynamicCommands = [];
+    if (entry.sandbox) {
+      try { Cu.nukeSandbox(entry.sandbox); } catch (e) {}
+      entry.sandbox = null;
+      entry.exports = null;
+      entry.loaded = false;
+    }
+  }
+
+  function unregisterPlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry) return false;
 
-    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
-    if (entry.manifest.destroy) {
-      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
-    }
-
+    if (entry.enabled) deactivatePlugin(entry);
     _pluginEventBus.emit('plugin:unregistered', { pluginId });
-    _pluginEventBus.removeAllForPlugin(pluginId);
     _pluginRegistry.delete(pluginId);
-    delete _pluginData[pluginId];
-    savePluginDataImmediate();
+    _pluginPrivateOverlay.delete(pluginId);
+    if (persist) {
+      delete _pluginData[pluginId];
+      markPluginDataDirty(pluginId, '*');
+      flushPluginData();
+    }
     invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
     return true;
   }
 
-  function enablePlugin(pluginId) {
+  function enablePlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || entry.enabled) return;
 
-    entry.enabled = true;
-    _pluginData[pluginId] = _pluginData[pluginId] || {};
-    _pluginData[pluginId].enabled = true;
-    savePluginData();
-
-    if (entry.manifest.init) {
-      try {
-        const api = createScopedPluginAPI(pluginId);
-        entry.instance = entry.manifest.init(api) || {};
-      } catch (e) {
-        console.error(`[ZenLeap] Plugin "${entry.manifest.name}" init failed:`, e);
-        entry.instance = null;
-      }
+    if (persist) {
+      _pluginData[pluginId] = _pluginData[pluginId] || {};
+      _pluginData[pluginId].enabled = true;
+      delete _pluginData[pluginId].isNew;
+      markPluginDataDirty(pluginId, 'enabled');
+      markPluginDataDirty(pluginId, 'isNew');
+      flushPluginData();
     }
-
-    invalidateCommandCache();
+    activatePlugin(entry);
     _pluginEventBus.emit('plugin:enabled', { pluginId });
     log(`Plugin "${entry.manifest.name}" enabled`);
   }
 
-  function disablePlugin(pluginId) {
+  function disablePlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || !entry.enabled) return;
 
-    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
-    if (entry.manifest.destroy) {
-      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
+    _pluginEventBus.emit('plugin:disabled', { pluginId });
+    deactivatePlugin(entry);
+    entry.enabled = false;
+    entry.error = null;
+    if (persist) {
+      _pluginData[pluginId] = _pluginData[pluginId] || {};
+      _pluginData[pluginId].enabled = false;
+      markPluginDataDirty(pluginId, 'enabled');
+      flushPluginData();
     }
 
-    _pluginEventBus.emit('plugin:disabled', { pluginId });
-    _pluginEventBus.removeAllForPlugin(pluginId);
-    entry.enabled = false;
-    entry.instance = null;
-    entry._dynamicCommands = [];
-    _pluginData[pluginId] = _pluginData[pluginId] || {};
-    _pluginData[pluginId].enabled = false;
-    savePluginDataImmediate();
-
     invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
     log(`Plugin "${entry.manifest.name}" disabled`);
   }
 
   // ── Get Plugin Commands ──
+  // Plugin commands are grouped per plugin in the palette (after the built-in groups).
   function getPluginCommands() {
     const commands = [];
+    const groups = [];
     for (const [pluginId, entry] of _pluginRegistry) {
-      if (!entry.enabled) continue;
+      if (!entry.enabled || !entry.loaded) continue;
+      const groupId = `plugin:${pluginId}`;
+      groups.push({ id: groupId, label: entry.manifest.name, icon: entry.manifest.icon, keys: [] });
+      const tags = ['plugin', pluginId, entry.manifest.name.toLowerCase()];
 
-      // Commands from manifest
-      if (entry.manifest.commands) {
-        for (const cmd of entry.manifest.commands) {
-          const cmdImpl = entry.instance?.commands?.[cmd.key];
-          commands.push({
-            key: `plugin:${pluginId}:${cmd.key}`,
-            label: cmd.label,
-            icon: cmd.icon || entry.manifest.icon || '🧩',
-            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
-            group: entry.manifest.name,
-            condition: cmd.condition,
-            command: cmdImpl || cmd.command,
-            subFlow: cmd.subFlow,
-          });
-        }
+      // Commands from manifest (implementations from init()'s return value or the exports)
+      for (const cmd of entry.manifest.commands) {
+        const impl = entry.instance?.commands?.[cmd.key] || entry.exports?.commands?.[cmd.key] || cmd.command;
+        commands.push({
+          key: `plugin:${pluginId}:${cmd.key}`,
+          label: cmd.label,
+          icon: cmd.icon || entry.manifest.icon,
+          tags: [...cmd.tags, ...tags],
+          group: groupId,
+          condition: cmd.condition,
+          command: typeof impl === 'function' ? impl : undefined,
+          subFlow: cmd.subFlow,
+        });
       }
 
       // Dynamic commands registered at runtime
-      if (entry._dynamicCommands) {
-        for (const cmd of entry._dynamicCommands) {
-          commands.push({
-            key: `plugin:${pluginId}:dyn:${cmd.key}`,
-            label: cmd.label,
-            icon: cmd.icon || entry.manifest.icon || '🧩',
-            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
-            group: entry.manifest.name,
-            condition: cmd.condition,
-            command: cmd.command,
-          });
-        }
+      for (const cmd of entry._dynamicCommands) {
+        commands.push({
+          key: `plugin:${pluginId}:dyn:${cmd.key}`,
+          label: cmd.label,
+          icon: cmd.icon || entry.manifest.icon,
+          tags: [...cmd.tags, ...tags],
+          group: groupId,
+          condition: cmd.condition,
+          command: cmd.command,
+        });
       }
     }
+    syncPluginCommandGroups(groups);
     return commands;
+  }
+
+  // Give each plugin its own palette section (after the built-in groups).
+  function syncPluginCommandGroups(groups) {
+    COMMAND_GROUPS.splice(STATIC_COMMAND_GROUP_COUNT, COMMAND_GROUPS.length, ...groups);
   }
 
   function getRegisteredPlugins() {
@@ -3828,14 +4166,16 @@
       plugins.push({
         id,
         name: entry.manifest.name,
-        version: entry.manifest.version || '1.0.0',
-        description: entry.manifest.description || '',
-        author: entry.manifest.author || 'Unknown',
-        icon: entry.manifest.icon || '🧩',
+        version: entry.manifest.version,
+        description: entry.manifest.description,
+        author: entry.manifest.author,
+        icon: entry.manifest.icon,
         enabled: entry.enabled,
-        commandCount: (entry.manifest.commands?.length || 0) + (entry._dynamicCommands?.length || 0),
+        isNew: !entry.enabled && !!_pluginData[id]?.isNew,
+        error: entry.error,
+        commandCount: entry.manifest.commands.length + entry._dynamicCommands.length,
         builtIn: !!entry.manifest.builtIn,
-        hasSettings: !!(entry.manifest.settings && Object.keys(entry.manifest.settings).length > 0),
+        hasSettings: Object.keys(entry.manifest.settings).length > 0,
       });
     }
     return plugins;
@@ -3845,7 +4185,7 @@
   async function getPluginsDirectory() {
     const dir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins');
     try { await IOUtils.makeDirectory(dir, { ignoreExisting: true }); }
-    catch (e) { log(`Failed to create plugins directory: ${e}`); }
+    catch (e) { reportError('Failed to create the plugins directory', e); }
     return dir;
   }
 
@@ -3853,69 +4193,38 @@
     const dir = await getPluginsDirectory();
     let children;
     try { children = await IOUtils.getChildren(dir); }
-    catch (e) { log(`Failed to list plugins directory: ${e}`); return; }
+    catch (e) { reportError('Failed to list the plugins directory', e); return; }
 
-    for (const childPath of children) {
+    for (const childPath of children.sort()) {
       try {
         const stat = await IOUtils.stat(childPath);
         if (stat.type !== 'directory') continue;
 
-        const manifestPath = PathUtils.join(childPath, 'manifest.json');
         let manifestText;
-        try { manifestText = await IOUtils.readUTF8(manifestPath); }
+        try { manifestText = await IOUtils.readUTF8(PathUtils.join(childPath, 'manifest.json')); }
         catch (e) { continue; } // No manifest, skip
 
-        const manifest = JSON.parse(manifestText);
-        if (!manifest.id || !manifest.name) { log(`Skipping plugin at ${childPath}: missing id or name`); continue; }
+        let manifest;
+        try { manifest = JSON.parse(manifestText); }
+        catch (e) { console.warn(`[ZenLeap] Skipping plugin at ${childPath}: manifest.json is not valid JSON`, e); continue; }
 
-        // Check version compatibility
-        if (manifest.minZenLeapVersion && !versionGte(VERSION, manifest.minZenLeapVersion)) {
-          log(`Skipping plugin "${manifest.name}": requires ZenLeap v${manifest.minZenLeapVersion}+`);
+        const scriptPath = PathUtils.join(childPath, 'plugin.js');
+        if (!(await IOUtils.exists(scriptPath))) {
+          console.warn(`[ZenLeap] Skipping plugin at ${childPath}: no plugin.js found`);
           continue;
         }
 
-        // Verify plugin script exists
-        const pluginPath = PathUtils.join(childPath, 'plugin.js');
-        try { await IOUtils.stat(pluginPath); }
-        catch (e) { log(`Skipping plugin "${manifest.name}": no plugin.js found`); continue; }
-
-        // Execute plugin in a controlled scope
-        const scope = {};
-        try {
-          const fileUri = PathUtils.toFileURI(pluginPath);
-          Services.scriptloader.loadSubScript(fileUri, scope);
-        } catch (e) {
-          console.error(`[ZenLeap] Failed to load plugin "${manifest.name}":`, e);
-          continue;
+        // registerPlugin validates the manifest and only evaluates plugin.js when enabled
+        if (registerPlugin({ ...manifest, builtIn: false, _path: childPath, _scriptPath: scriptPath })) {
+          log(`Registered external plugin: ${manifest.name} v${manifest.version || '1.0.0'}`);
         }
-
-        // Merge the manifest with plugin exports
-        const pluginExport = scope.ZenLeapPlugin || {};
-        const fullManifest = {
-          ...manifest,
-          init: pluginExport.init ? pluginExport.init.bind(pluginExport) : null,
-          destroy: pluginExport.destroy ? pluginExport.destroy.bind(pluginExport) : null,
-          _path: childPath,
-        };
-
-        // Commands from manifest get their implementations from plugin exports
-        if (fullManifest.commands && pluginExport.commands) {
-          for (const cmd of fullManifest.commands) {
-            if (pluginExport.commands[cmd.key]) {
-              cmd.command = pluginExport.commands[cmd.key];
-            }
-          }
-        }
-
-        registerPlugin(fullManifest);
-        log(`Loaded external plugin: ${manifest.name} v${manifest.version || '1.0.0'}`);
       } catch (e) {
         console.error(`[ZenLeap] Error loading plugin from ${childPath}:`, e);
       }
     }
   }
 
-  // Uninstall an external plugin (remove files)
+  // Uninstall an external plugin (remove files and data)
   async function uninstallExternalPlugin(pluginId) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || entry.manifest.builtIn) return false;
@@ -3927,44 +4236,9 @@
       try {
         await IOUtils.remove(pluginPath, { recursive: true });
         log(`Removed plugin files: ${pluginPath}`);
-      } catch (e) { log(`Failed to remove plugin files: ${e}`); }
+      } catch (e) { reportError(`Failed to remove the files of plugin "${pluginId}"`, e); }
     }
     return true;
-  }
-
-  // Install a plugin from a directory path (copy to plugins dir)
-  async function installPluginFromPath(sourcePath) {
-    try {
-      const manifestText = await IOUtils.readUTF8(PathUtils.join(sourcePath, 'manifest.json'));
-      const manifest = JSON.parse(manifestText);
-      if (!manifest.id || !manifest.name) return { success: false, error: 'Invalid manifest' };
-
-      const destDir = PathUtils.join(await getPluginsDirectory(), manifest.id);
-      await IOUtils.makeDirectory(destDir, { ignoreExisting: true });
-
-      // Copy all files recursively
-      async function copyDir(src, dest) {
-        await IOUtils.makeDirectory(dest, { ignoreExisting: true });
-        const children = await IOUtils.getChildren(src);
-        for (const child of children) {
-          const stat = await IOUtils.stat(child);
-          const name = child.split('/').pop().split('\\').pop();
-          if (stat.type === 'directory') {
-            await copyDir(child, PathUtils.join(dest, name));
-          } else {
-            const content = await IOUtils.read(child);
-            await IOUtils.write(PathUtils.join(dest, name), content);
-          }
-        }
-      }
-      await copyDir(sourcePath, destDir);
-
-      // Load the plugin
-      await loadExternalPlugins();
-      return { success: true, pluginId: manifest.id, name: manifest.name };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
   }
 
   // ============================================
@@ -3973,6 +4247,7 @@
 
   function createPluginManagerModal() {
     if (_pluginManagerModal) return;
+    ensurePluginUiStyles();
 
     const modal = document.createElement('div');
     modal.id = 'zenleap-plugin-manager-modal';
@@ -3987,62 +4262,74 @@
     const style = document.createElement('style');
     style.id = 'zenleap-plugin-manager-styles';
     style.textContent = `
-      #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; }
+      #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; box-sizing: border-box; }
       #zenleap-plugin-manager-modal.active { display: flex; }
-      #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); }
-      #zenleap-plugin-manager-container { position: relative; width: 95%; max-width: 680px; max-height: 80vh; background: rgba(25,25,30,0.98); border-radius: 16px; box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1); overflow: hidden; display: flex; flex-direction: column; animation: zenleap-settings-appear 0.2s ease-out; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-      .zenleap-pm-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }
-      .zenleap-pm-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: #61afef; }
-      .zenleap-pm-subtitle { display: block; margin-top: 3px; font-size: 11px; color: #666; }
-      .zenleap-pm-close { background: none; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: all 0.15s; }
-      .zenleap-pm-close:hover { color: #e0e0e0; background: rgba(255,255,255,0.1); }
-      .zenleap-pm-body { flex: 1; overflow-y: auto; padding: 8px 0; }
-      .zenleap-pm-body::-webkit-scrollbar { width: 8px; }
-      .zenleap-pm-body::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-pm-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
-      .zenleap-pm-plugin-card { display: flex; align-items: center; gap: 14px; padding: 14px 24px; transition: background 0.12s; cursor: pointer; }
-      .zenleap-pm-plugin-card:hover { background: rgba(255,255,255,0.04); }
-      .zenleap-pm-plugin-icon { font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 10px; flex-shrink: 0; }
+      #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--zl-backdrop); backdrop-filter: var(--zl-blur); }
+      #zenleap-plugin-manager-container { position: relative; width: 95%; max-width: 680px; max-height: 80vh; background: var(--zl-bg-surface); border-radius: var(--zl-r-xl); box-shadow: var(--zl-shadow-modal); overflow: hidden; display: flex; flex-direction: column; animation: zenleap-pm-appear 0.2s ease-out; font-family: var(--zl-font-ui); color: var(--zl-text-primary); }
+      .zenleap-pm-header { padding: 20px 24px 16px; border-bottom: 1px solid var(--zl-border-subtle); display: flex; justify-content: space-between; align-items: center; }
+      .zenleap-pm-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: var(--zl-accent); }
+      .zenleap-pm-subtitle { display: block; margin-top: 3px; font-size: 11px; color: var(--zl-text-tertiary); }
+      .zenleap-pm-close { background: none; border: none; color: var(--zl-text-muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: var(--zl-r-sm); transition: all 0.15s; }
+      .zenleap-pm-close:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+      .zenleap-pm-body { flex: 1; overflow-y: auto; padding: 8px 0; scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
+      .zenleap-pm-plugin-card { display: flex; align-items: center; gap: 14px; padding: 14px 24px; transition: background 0.12s; cursor: pointer; border-left: 2px solid transparent; }
+      .zenleap-pm-plugin-card:hover { background: var(--zl-bg-raised); }
+      .zenleap-pm-plugin-card.focused { background: var(--zl-accent-dim); border-left-color: var(--zl-accent); }
+      .zenleap-pm-plugin-icon { font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: var(--zl-accent-dim); border-radius: var(--zl-r-md); flex-shrink: 0; }
+      .zenleap-pm-plugin-icon .zenleap-icon-img { width: 24px; height: 24px; }
       .zenleap-pm-plugin-info { flex: 1; min-width: 0; }
-      .zenleap-pm-plugin-name { font-size: 14px; font-weight: 600; color: #e0e0e0; display: flex; align-items: center; gap: 8px; }
+      .zenleap-pm-plugin-name { font-size: 14px; font-weight: 600; color: var(--zl-text-primary); display: flex; align-items: center; gap: 8px; }
       .zenleap-pm-badge { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-      .zenleap-pm-badge-builtin { background: rgba(97,175,239,0.15); color: #61afef; }
-      .zenleap-pm-badge-version { background: rgba(255,255,255,0.06); color: #888; }
-      .zenleap-pm-badge-external { background: rgba(152,195,121,0.15); color: #98c379; }
-      .zenleap-pm-plugin-desc { font-size: 12px; color: #888; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .zenleap-pm-plugin-meta { font-size: 11px; color: #555; margin-top: 3px; }
+      .zenleap-pm-badge-builtin { background: var(--zl-accent-dim); color: var(--zl-accent); }
+      .zenleap-pm-badge-version { background: var(--zl-bg-raised); color: var(--zl-text-tertiary); }
+      .zenleap-pm-badge-external { background: color-mix(in srgb, var(--zl-green) 15%, transparent); color: var(--zl-green); }
+      .zenleap-pm-badge-new { background: color-mix(in srgb, var(--zl-gold) 18%, transparent); color: var(--zl-gold); }
+      .zenleap-pm-badge-error { background: color-mix(in srgb, var(--zl-red) 18%, transparent); color: var(--zl-red); }
+      .zenleap-pm-plugin-desc { font-size: 12px; color: var(--zl-text-secondary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-pm-plugin-meta { font-size: 11px; color: var(--zl-text-tertiary); margin-top: 3px; }
+      .zenleap-pm-plugin-meta.error { color: var(--zl-red); }
       .zenleap-pm-plugin-actions { display: flex; gap: 6px; flex-shrink: 0; }
-      .zenleap-pm-toggle-btn { padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid; font-family: inherit; }
-      .zenleap-pm-toggle-btn.enabled { background: rgba(97,175,239,0.15); border-color: rgba(97,175,239,0.3); color: #61afef; }
-      .zenleap-pm-toggle-btn.enabled:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.3); color: #e06c75; }
-      .zenleap-pm-toggle-btn.disabled { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #888; }
-      .zenleap-pm-toggle-btn.disabled:hover { background: rgba(152,195,121,0.15); border-color: rgba(152,195,121,0.3); color: #98c379; }
-      .zenleap-pm-uninstall-btn { background: none; border: 1px solid rgba(224,108,117,0.2); color: #e06c75; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
-      .zenleap-pm-uninstall-btn:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.4); }
-      .zenleap-pm-empty { padding: 40px 20px; text-align: center; color: #555; font-size: 14px; }
-      .zenleap-pm-footer { padding: 12px 24px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #555; }
-      .zenleap-pm-footer-hint { font-style: italic; }
-      .zenleap-pm-detail-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-      .zenleap-pm-detail-back { background: none; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 8px; display: flex; align-items: center; gap: 4px; font-family: inherit; }
-      .zenleap-pm-detail-back:hover { color: #61afef; }
+      .zenleap-pm-toggle-btn { padding: 6px 14px; border-radius: var(--zl-r-sm); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid; font-family: inherit; }
+      .zenleap-pm-toggle-btn.enabled { background: var(--zl-accent-dim); border-color: var(--zl-accent-border); color: var(--zl-accent); }
+      .zenleap-pm-toggle-btn.enabled:hover { background: color-mix(in srgb, var(--zl-red) 15%, transparent); border-color: color-mix(in srgb, var(--zl-red) 30%, transparent); color: var(--zl-red); }
+      .zenleap-pm-toggle-btn.disabled { background: var(--zl-bg-raised); border-color: var(--zl-border-strong); color: var(--zl-text-secondary); }
+      .zenleap-pm-toggle-btn.disabled:hover { background: color-mix(in srgb, var(--zl-green) 15%, transparent); border-color: color-mix(in srgb, var(--zl-green) 30%, transparent); color: var(--zl-green); }
+      .zenleap-pm-uninstall-btn { background: none; border: 1px solid color-mix(in srgb, var(--zl-red) 25%, transparent); color: var(--zl-red); padding: 6px 10px; border-radius: var(--zl-r-sm); font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+      .zenleap-pm-uninstall-btn:hover { background: color-mix(in srgb, var(--zl-red) 15%, transparent); }
+      .zenleap-pm-empty { padding: 40px 20px; text-align: center; color: var(--zl-text-muted); font-size: 14px; }
+      .zenleap-pm-footer { padding: 12px 24px; border-top: 1px solid var(--zl-border-subtle); display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 11px; color: var(--zl-text-muted); }
+      .zenleap-pm-footer-keys { white-space: nowrap; flex-shrink: 0; }
+      .zenleap-pm-footer-hint { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-pm-detail-header { padding: 20px 24px 16px; border-bottom: 1px solid var(--zl-border-subtle); }
+      .zenleap-pm-detail-back { background: none; border: none; color: var(--zl-text-secondary); font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 8px; display: flex; align-items: center; gap: 4px; font-family: inherit; }
+      .zenleap-pm-detail-back:hover { color: var(--zl-accent); }
       .zenleap-pm-detail-title { display: flex; align-items: center; gap: 12px; }
-      .zenleap-pm-detail-icon { font-size: 32px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 12px; }
-      .zenleap-pm-detail-name { font-size: 20px; font-weight: 700; color: #e0e0e0; margin: 0; }
-      .zenleap-pm-detail-author { font-size: 12px; color: #888; margin-top: 2px; }
-      .zenleap-pm-detail-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+      .zenleap-pm-detail-icon { font-size: 32px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--zl-accent-dim); border-radius: var(--zl-r-lg); }
+      .zenleap-pm-detail-name { font-size: 20px; font-weight: 700; color: var(--zl-text-primary); margin: 0; }
+      .zenleap-pm-detail-author { font-size: 12px; color: var(--zl-text-secondary); margin-top: 2px; }
+      .zenleap-pm-detail-body { padding: 20px 24px; overflow-y: auto; flex: 1; scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-pm-detail-section { margin-bottom: 20px; }
-      .zenleap-pm-detail-section h3 { font-size: 11px; font-weight: 600; color: #61afef; text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 10px; }
-      .zenleap-pm-detail-desc { font-size: 13px; color: #ccc; line-height: 1.5; }
-      .zenleap-pm-cmd-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.02); margin-bottom: 4px; }
+      .zenleap-pm-detail-section h3 { font-size: 11px; font-weight: 600; color: var(--zl-accent); text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 10px; }
+      .zenleap-pm-detail-desc { font-size: 13px; color: var(--zl-text-secondary); line-height: 1.5; margin: 0; }
+      .zenleap-pm-detail-error { font-size: 12px; color: var(--zl-red); font-family: var(--zl-font-mono); white-space: pre-wrap; }
+      .zenleap-pm-cmd-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--zl-r-md); background: var(--zl-bg-raised); margin-bottom: 4px; }
       .zenleap-pm-cmd-icon { font-size: 16px; width: 24px; text-align: center; }
-      .zenleap-pm-cmd-label { font-size: 13px; color: #e0e0e0; }
-      .zenleap-pm-cmd-tags { font-size: 11px; color: #555; margin-left: auto; }
-      .zenleap-pm-setting-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; }
-      .zenleap-pm-setting-row:hover { background: rgba(255,255,255,0.03); }
+      .zenleap-pm-cmd-label { font-size: 13px; color: var(--zl-text-primary); }
+      .zenleap-pm-cmd-tags { font-size: 11px; color: var(--zl-text-tertiary); margin-left: auto; }
+      .zenleap-pm-setting-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--zl-r-md); }
+      .zenleap-pm-setting-row:hover { background: var(--zl-bg-raised); }
       .zenleap-pm-setting-label { flex: 1; }
-      .zenleap-pm-setting-name { font-size: 13px; font-weight: 500; color: #e0e0e0; }
-      .zenleap-pm-setting-desc { font-size: 11px; color: #666; margin-top: 2px; }
-      .zenleap-pm-path-info { font-size: 11px; color: #555; font-family: monospace; word-break: break-all; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; margin-top: 8px; }
+      .zenleap-pm-setting-name { font-size: 13px; font-weight: 500; color: var(--zl-text-primary); }
+      .zenleap-pm-setting-desc { font-size: 11px; color: var(--zl-text-tertiary); margin-top: 2px; }
+      .zenleap-pm-input { background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong); color: var(--zl-text-primary); padding: 5px 10px; border-radius: var(--zl-r-sm); font-size: 13px; outline: none; font-family: inherit; }
+      .zenleap-pm-input:focus { border-color: var(--zl-accent); }
+      .zenleap-pm-switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
+      .zenleap-pm-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+      .zenleap-pm-switch-slider { position: absolute; cursor: pointer; inset: 0; background: var(--zl-bg-elevated); border: 1px solid var(--zl-border-strong); border-radius: 20px; transition: background 0.2s; }
+      .zenleap-pm-switch-slider::before { content: ''; position: absolute; height: 14px; width: 14px; left: 2px; top: 2px; background: var(--zl-text-secondary); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+      .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); }
+      .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider::before { transform: translateX(16px); background: var(--zl-accent); }
+      .zenleap-pm-path-info { font-size: 11px; color: var(--zl-text-tertiary); font-family: var(--zl-font-mono); word-break: break-all; background: var(--zl-bg-raised); padding: 8px 12px; border-radius: var(--zl-r-sm); margin-top: 8px; }
     `;
     document.head.appendChild(style);
     document.documentElement.appendChild(modal);
@@ -4057,6 +4344,28 @@
     else renderPluginList(container);
   }
 
+  function togglePluginEnabled(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry) return;
+    if (entry.enabled) disablePlugin(pluginId); else enablePlugin(pluginId);
+    renderPluginManagerContent();
+  }
+
+  async function confirmAndUninstallPlugin(plugin) {
+    const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
+    if (!confirmed) return;
+    await uninstallExternalPlugin(plugin.id);
+    _pluginManagerView = 'list';
+    _pluginManagerDetailId = null;
+    renderPluginManagerContent();
+  }
+
+  function openPluginDetail(pluginId) {
+    _pluginManagerView = 'detail';
+    _pluginManagerDetailId = pluginId;
+    renderPluginManagerContent();
+  }
+
   function renderPluginList(container) {
     const header = document.createElement('div');
     header.className = 'zenleap-pm-header';
@@ -4065,49 +4374,54 @@
     h1.textContent = 'Plugins';
     const sub = document.createElement('span');
     sub.className = 'zenleap-pm-subtitle';
-    sub.textContent = 'Manage ZenLeap plugins';
+    sub.textContent = 'Plugins run with full browser privileges — only enable plugins you trust';
     headerLeft.appendChild(h1);
     headerLeft.appendChild(sub);
     header.appendChild(headerLeft);
     const closeBtn = document.createElement('button');
     closeBtn.className = 'zenleap-pm-close';
-    closeBtn.textContent = '\u2715';
+    closeBtn.textContent = '✕';
     closeBtn.addEventListener('click', () => exitPluginManagerMode());
     header.appendChild(closeBtn);
 
     const body = document.createElement('div');
     body.className = 'zenleap-pm-body';
     const plugins = getRegisteredPlugins();
+    _pluginManagerFocus = Math.max(0, Math.min(_pluginManagerFocus, plugins.length - 1));
     if (plugins.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'zenleap-pm-empty';
       empty.textContent = 'No plugins installed';
       body.appendChild(empty);
     } else {
-      for (const plugin of plugins) {
+      plugins.forEach((plugin, idx) => {
         const card = document.createElement('div');
-        card.className = 'zenleap-pm-plugin-card';
+        card.className = `zenleap-pm-plugin-card${idx === _pluginManagerFocus ? ' focused' : ''}`;
+        card.dataset.pluginId = plugin.id;
         const icon = document.createElement('div');
         icon.className = 'zenleap-pm-plugin-icon';
-        icon.textContent = plugin.icon;
+        icon.appendChild(createIconNode(plugin.icon, '🧩'));
         const info = document.createElement('div');
         info.className = 'zenleap-pm-plugin-info';
-        info.addEventListener('click', () => { _pluginManagerView = 'detail'; _pluginManagerDetailId = plugin.id; renderPluginManagerContent(); });
+        info.addEventListener('click', () => { _pluginManagerFocus = idx; openPluginDetail(plugin.id); });
         const nameRow = document.createElement('div');
         nameRow.className = 'zenleap-pm-plugin-name';
         nameRow.appendChild(document.createTextNode(plugin.name));
-        const vBadge = document.createElement('span');
-        vBadge.className = 'zenleap-pm-badge zenleap-pm-badge-version';
-        vBadge.textContent = `v${plugin.version}`;
-        nameRow.appendChild(vBadge);
-        if (plugin.builtIn) { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-builtin'; b.textContent = 'Built-in'; nameRow.appendChild(b); }
-        else { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-external'; b.textContent = 'External'; nameRow.appendChild(b); }
+        const badge = (cls, text) => { const b = document.createElement('span'); b.className = `zenleap-pm-badge ${cls}`; b.textContent = text; nameRow.appendChild(b); };
+        badge('zenleap-pm-badge-version', `v${plugin.version}`);
+        badge(plugin.builtIn ? 'zenleap-pm-badge-builtin' : 'zenleap-pm-badge-external', plugin.builtIn ? 'Built-in' : 'External');
+        if (plugin.isNew) badge('zenleap-pm-badge-new', 'New');
+        if (plugin.error) badge('zenleap-pm-badge-error', 'Error');
         const desc = document.createElement('div');
         desc.className = 'zenleap-pm-plugin-desc';
         desc.textContent = plugin.description;
         const meta = document.createElement('div');
-        meta.className = 'zenleap-pm-plugin-meta';
-        meta.textContent = `${plugin.commandCount} command${plugin.commandCount !== 1 ? 's' : ''} · by ${plugin.author}`;
+        meta.className = `zenleap-pm-plugin-meta${plugin.error ? ' error' : ''}`;
+        meta.textContent = plugin.error
+          ? `Failed to load: ${plugin.error}`
+          : plugin.isNew
+            ? 'New plugin found — enable it to run it'
+            : `${plugin.commandCount} command${plugin.commandCount !== 1 ? 's' : ''} · by ${plugin.author}`;
         info.appendChild(nameRow);
         info.appendChild(desc);
         info.appendChild(meta);
@@ -4116,42 +4430,40 @@
         const toggleBtn = document.createElement('button');
         toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
         toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
-        toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+        toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); _pluginManagerFocus = idx; togglePluginEnabled(plugin.id); });
         actions.appendChild(toggleBtn);
         if (!plugin.builtIn) {
           const unBtn = document.createElement('button');
           unBtn.className = 'zenleap-pm-uninstall-btn';
           unBtn.textContent = 'Uninstall';
-          unBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
-            if (!confirmed) return;
-            await uninstallExternalPlugin(plugin.id);
-            renderPluginManagerContent();
-          });
+          unBtn.addEventListener('click', (e) => { e.stopPropagation(); confirmAndUninstallPlugin(plugin); });
           actions.appendChild(unBtn);
         }
         card.appendChild(icon);
         card.appendChild(info);
         card.appendChild(actions);
         body.appendChild(card);
-      }
+      });
     }
 
     const footer = document.createElement('div');
     footer.className = 'zenleap-pm-footer';
     const fLeft = document.createElement('span');
-    fLeft.textContent = `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''} installed`;
+    fLeft.className = 'zenleap-pm-footer-keys';
+    fLeft.textContent = plugins.length
+      ? 'j/k select · Enter details · Space enable/disable · Esc close'
+      : 'Esc close';
     footer.appendChild(fLeft);
     const fRight = document.createElement('span');
     fRight.className = 'zenleap-pm-footer-hint';
     fRight.textContent = 'Loading...';
-    getPluginsDirectory().then(dir => { fRight.textContent = `Plugins dir: ${dir}`; });
+    getPluginsDirectory().then(dir => { fRight.textContent = `Plugins dir: ${dir}`; fRight.title = dir; });
     footer.appendChild(fRight);
 
     container.appendChild(header);
     container.appendChild(body);
     container.appendChild(footer);
+    body.querySelector('.zenleap-pm-plugin-card.focused')?.scrollIntoView({ block: 'nearest' });
   }
 
   function renderPluginDetail(container) {
@@ -4164,20 +4476,20 @@
     header.className = 'zenleap-pm-detail-header';
     const backBtn = document.createElement('button');
     backBtn.className = 'zenleap-pm-detail-back';
-    backBtn.textContent = '\u2190 Back to plugins';
+    backBtn.textContent = '← Back to plugins';
     backBtn.addEventListener('click', () => { _pluginManagerView = 'list'; _pluginManagerDetailId = null; renderPluginManagerContent(); });
     const titleRow = document.createElement('div');
     titleRow.className = 'zenleap-pm-detail-title';
     const iconEl = document.createElement('div');
     iconEl.className = 'zenleap-pm-detail-icon';
-    iconEl.textContent = manifest.icon || '🧩';
+    iconEl.appendChild(createIconNode(manifest.icon, '🧩'));
     const titleInfo = document.createElement('div');
     const nameEl = document.createElement('h2');
     nameEl.className = 'zenleap-pm-detail-name';
     nameEl.textContent = manifest.name;
     const authorEl = document.createElement('div');
     authorEl.className = 'zenleap-pm-detail-author';
-    authorEl.textContent = `v${manifest.version || '1.0.0'} · by ${manifest.author || 'Unknown'}`;
+    authorEl.textContent = `v${manifest.version} · by ${manifest.author}`;
     titleInfo.appendChild(nameEl);
     titleInfo.appendChild(authorEl);
     titleRow.appendChild(iconEl);
@@ -4187,56 +4499,58 @@
 
     const body = document.createElement('div');
     body.className = 'zenleap-pm-detail-body';
+    const section = (title) => {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = title;
+      sec.appendChild(h3);
+      body.appendChild(sec);
+      return sec;
+    };
+
+    if (entry.error) {
+      const pre = document.createElement('div');
+      pre.className = 'zenleap-pm-detail-error';
+      pre.textContent = entry.error;
+      section('Load error').appendChild(pre);
+    }
 
     // Description
     if (manifest.description) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Description';
       const p = document.createElement('p');
       p.className = 'zenleap-pm-detail-desc';
       p.textContent = manifest.description;
-      sec.appendChild(h3);
-      sec.appendChild(p);
-      body.appendChild(sec);
+      section('Description').appendChild(p);
     }
 
     // Commands
-    if (manifest.commands?.length > 0) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = `Commands (${manifest.commands.length})`;
-      sec.appendChild(h3);
+    if (manifest.commands.length > 0) {
+      const sec = section(`Commands (${manifest.commands.length})`);
       for (const cmd of manifest.commands) {
         const row = document.createElement('div');
         row.className = 'zenleap-pm-cmd-row';
-        const ci = document.createElement('span'); ci.className = 'zenleap-pm-cmd-icon'; ci.textContent = cmd.icon || manifest.icon || '🧩';
+        const ci = document.createElement('span'); ci.className = 'zenleap-pm-cmd-icon'; ci.appendChild(createIconNode(cmd.icon || manifest.icon, '🧩'));
         const cl = document.createElement('span'); cl.className = 'zenleap-pm-cmd-label'; cl.textContent = cmd.label;
-        const ct = document.createElement('span'); ct.className = 'zenleap-pm-cmd-tags'; ct.textContent = (cmd.tags || []).join(', ');
+        const ct = document.createElement('span'); ct.className = 'zenleap-pm-cmd-tags'; ct.textContent = cmd.tags.join(', ');
         row.appendChild(ci); row.appendChild(cl); row.appendChild(ct);
         sec.appendChild(row);
       }
-      body.appendChild(sec);
     }
 
     // Plugin settings
-    if (manifest.settings && Object.keys(manifest.settings).length > 0) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Settings';
-      sec.appendChild(h3);
+    const settingEntries = Object.entries(manifest.settings);
+    if (settingEntries.length > 0) {
+      const sec = section('Settings');
       const api = createScopedPluginAPI(_pluginManagerDetailId);
-      for (const [key, schema] of Object.entries(manifest.settings)) {
+      for (const [key, schema] of settingEntries) {
         const row = document.createElement('div');
         row.className = 'zenleap-pm-setting-row';
         const label = document.createElement('div');
         label.className = 'zenleap-pm-setting-label';
         const nameSpan = document.createElement('span');
         nameSpan.className = 'zenleap-pm-setting-name';
-        nameSpan.textContent = schema.label || key;
+        nameSpan.textContent = schema.label;
         label.appendChild(nameSpan);
         if (schema.description) { const d = document.createElement('div'); d.className = 'zenleap-pm-setting-desc'; d.textContent = schema.description; label.appendChild(d); }
         row.appendChild(label);
@@ -4245,12 +4559,12 @@
         const currentVal = api.settings.getOwn(key);
         if (schema.type === 'toggle') {
           const toggle = document.createElement('label');
-          toggle.className = 'zenleap-toggle';
+          toggle.className = 'zenleap-pm-switch';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = !!currentVal;
           const slider = document.createElement('span');
-          slider.className = 'zenleap-toggle-slider';
+          slider.className = 'zenleap-pm-switch-slider';
           toggle.appendChild(cb);
           toggle.appendChild(slider);
           cb.addEventListener('change', () => { api.settings.setOwn(key, cb.checked); });
@@ -4258,73 +4572,99 @@
         } else if (schema.type === 'number') {
           const input = document.createElement('input');
           input.type = 'number';
-          input.value = currentVal;
+          input.className = 'zenleap-pm-input';
+          input.style.width = '80px';
+          input.value = currentVal ?? '';
           if (schema.min !== undefined) input.min = schema.min;
           if (schema.max !== undefined) input.max = schema.max;
           if (schema.step !== undefined) input.step = schema.step;
-          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 80px; outline: none; font-family: inherit;';
-          input.addEventListener('change', () => { api.settings.setOwn(key, parseFloat(input.value) || schema.default); });
+          input.addEventListener('change', () => {
+            let v = parseFloat(input.value);
+            if (!Number.isFinite(v)) v = schema.default;
+            if (typeof schema.min === 'number') v = Math.max(schema.min, v);
+            if (typeof schema.max === 'number') v = Math.min(schema.max, v);
+            input.value = v;
+            api.settings.setOwn(key, v);
+          });
           control.appendChild(input);
         } else if (schema.type === 'text') {
           const input = document.createElement('input');
           input.type = 'text';
+          input.className = 'zenleap-pm-input';
+          input.style.width = '120px';
           input.value = currentVal || '';
-          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 120px; outline: none; font-family: inherit;';
           input.addEventListener('change', () => { api.settings.setOwn(key, input.value); });
           control.appendChild(input);
         }
         row.appendChild(control);
         sec.appendChild(row);
       }
-      body.appendChild(sec);
     }
 
     // Path info for external plugins
     if (manifest._path) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Location';
-      sec.appendChild(h3);
       const pathInfo = document.createElement('div');
       pathInfo.className = 'zenleap-pm-path-info';
       pathInfo.textContent = manifest._path;
-      sec.appendChild(pathInfo);
-      body.appendChild(sec);
+      section('Location').appendChild(pathInfo);
     }
 
     // Actions
-    const actSec = document.createElement('div');
-    actSec.className = 'zenleap-pm-detail-section';
-    const actH3 = document.createElement('h3');
-    actH3.textContent = 'Actions';
-    actSec.appendChild(actH3);
+    const actSec = section('Actions');
     const actRow = document.createElement('div');
     actRow.style.cssText = 'display: flex; gap: 8px;';
     const toggleBtn = document.createElement('button');
     toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
     toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
-    toggleBtn.addEventListener('click', () => { if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+    toggleBtn.addEventListener('click', () => togglePluginEnabled(plugin.id));
     actRow.appendChild(toggleBtn);
     if (!plugin.builtIn) {
       const unBtn = document.createElement('button');
       unBtn.className = 'zenleap-pm-uninstall-btn';
       unBtn.textContent = 'Uninstall';
-      unBtn.addEventListener('click', async () => {
-        const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
-        if (!confirmed) return;
-        await uninstallExternalPlugin(plugin.id);
-        _pluginManagerView = 'list';
-        _pluginManagerDetailId = null;
-        renderPluginManagerContent();
-      });
+      unBtn.addEventListener('click', () => confirmAndUninstallPlugin(plugin));
       actRow.appendChild(unBtn);
     }
     actSec.appendChild(actRow);
-    body.appendChild(actSec);
+
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-pm-footer';
+    footer.textContent = 'h/Backspace back · j/k scroll · Space enable/disable · Esc back';
 
     container.appendChild(header);
     container.appendChild(body);
+    container.appendChild(footer);
+  }
+
+  // Keyboard navigation for the Plugin Manager (Escape is handled by the main key handler).
+  function handlePluginManagerKey(event) {
+    if (event.key === 'Escape' || event.ctrlKey || event.altKey || event.metaKey) return false;
+    const target = event.composedTarget || event.target;
+    if (target?.closest?.('input, textarea')) return false;
+    const isDetail = _pluginManagerView === 'detail' && _pluginManagerDetailId;
+    const key = event.key;
+    if (isDetail) {
+      const body = _pluginManagerModal?.querySelector('.zenleap-pm-detail-body');
+      if (key === 'j' || key === 'ArrowDown') { body?.scrollBy({ top: 60 }); return true; }
+      if (key === 'k' || key === 'ArrowUp') { body?.scrollBy({ top: -60 }); return true; }
+      if (key === 'h' || key === 'Backspace' || key === 'ArrowLeft') {
+        _pluginManagerView = 'list';
+        _pluginManagerDetailId = null;
+        renderPluginManagerContent();
+        return true;
+      }
+      if (key === ' ' || key === 'e') { togglePluginEnabled(_pluginManagerDetailId); return true; }
+      return false;
+    }
+    const plugins = getRegisteredPlugins();
+    if (plugins.length === 0) return false;
+    if (key === 'j' || key === 'ArrowDown') { _pluginManagerFocus = Math.min(_pluginManagerFocus + 1, plugins.length - 1); renderPluginManagerContent(); return true; }
+    if (key === 'k' || key === 'ArrowUp') { _pluginManagerFocus = Math.max(_pluginManagerFocus - 1, 0); renderPluginManagerContent(); return true; }
+    const focused = plugins[_pluginManagerFocus];
+    if (!focused) return false;
+    if (key === 'Enter' || key === 'l' || key === 'ArrowRight') { openPluginDetail(focused.id); return true; }
+    if (key === ' ' || key === 'e') { togglePluginEnabled(focused.id); return true; }
+    return false;
   }
 
   function enterPluginManagerMode() {
@@ -4337,6 +4677,7 @@
     _pluginManagerMode = true;
     _pluginManagerView = 'list';
     _pluginManagerDetailId = null;
+    _pluginManagerFocus = 0;
     renderPluginManagerContent();
     _pluginManagerModal.classList.add('active');
     log('Entered plugin manager mode');
@@ -4351,181 +4692,315 @@
   }
 
   // ── Initialize Plugin System ──
+  function _onWorkspaceChangedForPlugins({ workspace } = {}) {
+    _pluginEventBus.emit('workspace:changed', { workspaceId: workspace?.uuid || null, workspace: workspace || null });
+  }
+
+  // Window unload / hot-unload: stop plugins (destroy hooks, sandboxes) and flush pending
+  // data. Runs before destroy() (registered at script load); clearing the flags below
+  // makes destroy()'s legacy full-file flush a no-op so it cannot overwrite newer data.
+  function _pluginSystemUnload() {
+    try { Services.obs.removeObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC); } catch (e) {}
+    try { window.gZenWorkspaces?.removeChangeListeners?.(_onWorkspaceChangedForPlugins); } catch (e) {}
+    for (const entry of _pluginRegistry.values()) {
+      if (entry.enabled) deactivatePlugin(entry);
+    }
+    flushPluginData();
+    _pluginDataLoaded = false;
+  }
+  onRegionTeardown(_pluginSystemUnload);
+
+  // Hook called by the core teardown() on window unload and on Sine hot-unload. It
+  // releases everything registered through onRegionTeardown (plugins, the settings and
+  // update observers, the dialog key router); calling it more than once is harmless.
+  function teardownPluginSystem() {
+    teardownCommandsRegion();
+  }
+
   async function initPluginSystem() {
+    // Listen before reading the file, so changes broadcast meanwhile are not lost
+    Services.obs.addObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC);
+    try { window.gZenWorkspaces?.addChangeListeners?.(_onWorkspaceChangedForPlugins); }
+    catch (e) { reportError('Could not subscribe to workspace changes for plugins', e); }
     await loadPluginData();
     await loadExternalPlugins();
-    log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) loaded`);
+    log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) registered`);
   }
 
 
+  // ============================================
+  // TAB / FOLDER / WORKSPACE HELPERS (commands, sub-flows, sessions)
+  // ============================================
+
+  // A tab that still exists (not being closed, still in the document)
+  function isLiveTab(tab) {
+    return !!tab && !tab.closing && tab.isConnected;
+  }
+
+  function liveTabs(tabs) {
+    return Array.from(tabs || []).filter(isLiveTab);
+  }
+
+  // Display name of a Zen folder
+  function folderName(folder) {
+    return folder?.label || 'Unnamed Folder';
+  }
+
+  // Tabs in a folder (recursively), without Zen's placeholder tabs
+  function folderTabCount(folder) {
+    return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+  }
+
+  // Workspaces exist in this window (not a private/unsynced window)
+  function workspacesEnabled() {
+    try { return !!window.gZenWorkspaces && !gZenWorkspaces.privateWindowOrDisabled; } catch (e) { return false; }
+  }
+
+  function workspaceCount() {
+    try { return workspacesEnabled() ? (gZenWorkspaces.getWorkspaces()?.length || 0) : 0; } catch (e) { return 0; }
+  }
+
+  // Regular Zen folders of the active workspace, in sidebar order. Live folders are
+  // excluded: Zen manages their tabs itself (matches Zen's own "Move to folder" menu).
+  function getWorkspaceFolders() {
+    let folders;
+    try { folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')); } catch (e) { return []; }
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+    return folders.filter(f => {
+      if (!f.isZenFolder || f.isLiveFolder) return false;
+      const wsId = f.getAttribute('zen-workspace-id');
+      return !activeWsId || !wsId || wsId === activeWsId;
+    });
+  }
+
+  function getWorkspaceName(workspaceId) {
+    try { return gZenWorkspaces.getWorkspaces().find(w => w.uuid === workspaceId)?.name || null; }
+    catch (e) { return null; }
+  }
+
+  // Sort tabs by their current sidebar position to preserve relative order.
+  // Covers every workspace (gBrowser.tabs only holds the active one on Zen 1.2x).
+  function sortTabsBySidebarPosition(tabs) {
+    let allTabs;
+    try { allTabs = window.gZenWorkspaces?.allStoredTabs; } catch (e) { allTabs = null; }
+    if (!allTabs?.length) allTabs = gBrowser.tabs;
+    const positionMap = new Map();
+    Array.from(allTabs).forEach((t, idx) => positionMap.set(t, idx));
+    return [...tabs].sort((a, b) => (positionMap.get(a) ?? Infinity) - (positionMap.get(b) ?? Infinity));
+  }
+
+  // Batch tab operations through Tabbrowser/Zen: one call per batch (one undo entry,
+  // consistent tab caches and events) instead of per-tab loops or raw DOM moves.
+  const TabOps = {
+    // Close as one batch: a single "reopen closed tabs" restores all of them. `warn`
+    // (a gBrowser.closingTabsEnum value) shows Firefox's own "close N tabs?" prompt
+    // where Firefox would; returns the number of tabs closed.
+    close(tabs, { warn } = {}) {
+      const valid = liveTabs(tabs);
+      if (valid.length === 0) return 0;
+      if (warn !== undefined && !gBrowser.warnAboutClosingTabs(valid.length, warn)) return 0;
+      gBrowser.removeTabs(valid);
+      return valid.length;
+    },
+    // Firefox selects another tab first when the current one is unloaded, and handles
+    // split views and beforeunload; resolves to the number of tabs unloaded.
+    unload(tabs) {
+      const valid = liveTabs(tabs).filter(t => !t.hasAttribute('pending'));
+      if (valid.length === 0) return Promise.resolve(0);
+      return gBrowser.explicitUnloadTabs(valid).then(() => valid.length);
+    },
+    // One ordered batch in sidebar order. Zen's moveTabsToWorkspace keeps the order (and
+    // reverses its argument in place when new tabs go to the top): pass a fresh array.
+    moveToWorkspace(tabs, workspaceId) {
+      const valid = sortTabsBySidebarPosition(liveTabs(tabs));
+      if (valid.length === 0 || !window.gZenWorkspaces) return 0;
+      gZenWorkspaces.moveTabsToWorkspace([...valid], workspaceId);
+      return valid.length;
+    },
+  };
+
+  // Zen resolves removeWorkspace() only on its next ZenWorkspacesUIUpdate; never wait forever.
+  function removeWorkspaceWithTimeout(workspaceId, timeoutMs = 5000) {
+    let timer;
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    const removal = Promise.resolve(gZenWorkspaces.removeWorkspace(workspaceId)).then(() => true);
+    return Promise.race([removal, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  // Small transient message at the bottom of the window (command results, plugins).
+  let _toastTimer = null;
+  function showZenLeapToast(message, duration = 3000) {
+    if (!document.getElementById('zenleap-toast-styles')) {
+      const style = document.createElement('style');
+      style.id = 'zenleap-toast-styles';
+      style.textContent = `
+        @keyframes zenleap-toast-rise {
+          from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        #zenleap-toast {
+          position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+          background: var(--zl-bg-elevated); color: var(--zl-text-primary); padding: 10px 20px;
+          border-radius: var(--zl-r-md); font-size: 13px; z-index: 100010; max-width: 80vw;
+          border: 1px solid var(--zl-accent-border); box-shadow: var(--zl-shadow-elevated);
+          animation: zenleap-toast-rise 0.2s ease-out; font-family: var(--zl-font-ui);
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    let toast = document.getElementById('zenleap-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'zenleap-toast';
+      document.documentElement.appendChild(toast);
+    }
+    toast.textContent = String(message ?? '');
+    toast.style.display = 'block';
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+  }
+
+  // Icons from plugins, session files or synced spaces end up in HTML templates: keep
+  // them to short plain text (emoji) or an icon URL so they can never break the
+  // XHTML parser; fall back when nothing usable is left.
+  function safeIconText(icon, fallback = '') {
+    if (typeof icon !== 'string') return fallback;
+    const cleaned = icon.replace(/[<>&"'`]/g, '').trim();
+    if (!cleaned) return fallback;
+    return isImageIcon(cleaned) ? cleaned : Array.from(cleaned).slice(0, 8).join('');
+  }
+
+  // The tab the user is "on". While a Glance preview is open the selected tab is the
+  // glance child; tab-list operations (position, pinning, folders, workspaces, marks,
+  // jumps) act on its parent. Page operations (reload, mute, bookmark, close) keep
+  // using gBrowser.selectedTab, like Zen's own shortcuts.
+  function currentTab() {
+    const tab = gBrowser.selectedTab;
+    try {
+      return window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab;
+    } catch (e) {
+      return tab;
+    }
+  }
+
+  // Data of the active split view (null when none is active)
+  function activeSplitView() {
+    const splitter = window.gZenViewSplitter;
+    return splitter?.splitViewActive ? (splitter._data?.[splitter.currentView] || null) : null;
+  }
 
   // ============================================
   // COMMAND PALETTE
   // ============================================
 
+  // Each command gets the group named by the closest preceding group id string.
+  function withCommandGroups(entries) {
+    let group = null;
+    const commands = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string') group = entry;
+      else commands.push(entry.group ? entry : { ...entry, group });
+    }
+    return commands;
+  }
+
   // Static commands registry
   function getStaticCommands() {
-    return [
+    return withCommandGroups([
+      'tab-mgmt',
       // --- Tab Management ---
-      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { gBrowser.addTab('about:newtab', { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); } },
+      // A real, selected new tab through Firefox's standard path (focuses the URL bar).
+      // Zen's floating URL bar that replaces new tabs stays on Ctrl+T.
+      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { openTrustedLinkIn(BROWSER_NEW_TAB_URL, 'tab'); } },
       { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove', 'del', 'rm', 'cl'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
-      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'], command: () => {
-        const current = gBrowser.selectedTab;
-        const tabs = getVisibleTabs().filter(t => t !== current && !t.pinned);
-        for (const t of tabs) gBrowser.removeTab(t);
-      }},
-      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'], command: () => {
-        const tabs = getVisibleTabs();
-        const idx = tabs.indexOf(gBrowser.selectedTab);
-        if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
-      }},
-      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'], command: () => {
-        const tabs = getVisibleTabs();
-        const idx = tabs.indexOf(gBrowser.selectedTab);
-        if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
-      }},
-      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => { gBrowser.duplicateTab(gBrowser.selectedTab); } },
-      { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
+      // Bulk closes: confirm step (counts, Cancel first) when more than one tab would close;
+      // removeTabs() closes them as one batch (one "Reopen closed tabs" restores them all)
+      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getOtherUnpinnedTabs(), n => `Close ${n} other tabs`),
+        command: () => { TabOps.close(getOtherUnpinnedTabs()); } },
+      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('right'), n => `Close ${n} tabs to the right`),
+        command: () => { TabOps.close(getUnpinnedTabsBeside('right')); } },
+      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('left'), n => `Close ${n} tabs to the left`),
+        command: () => { TabOps.close(getUnpinnedTabsBeside('left')); } },
+      // Inserted next to the source tab, like Zen's own duplicate command
+      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => {
         const tab = gBrowser.selectedTab;
+        gBrowser.duplicateTab(tab, true, { tabIndex: tab.index + 1 });
+      }},
+      { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
+        const tab = currentTab();
         if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
       }},
 
       // --- Zen Essential / Pinned Tab ---
+      // Zen enforces the essentials limit and container-specific essentials
       { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
         condition: () => {
-          try {
-            const tab = gBrowser.selectedTab;
-            return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group;
-          } catch(e) { return false; }
+          const tab = currentTab();
+          return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
+            gZenPinnedTabManager.canEssentialBeAdded(tab);
         },
-        command: () => {
-          try { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); }
-          catch(e) { log(`Add to essentials failed: ${e}`); }
-      }},
+        command: () => { gZenPinnedTabManager.addToEssentials(currentTab()); } },
       { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'); }
-          catch(e) { return false; }
-        },
-        command: () => {
-          try { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); }
-          catch(e) { log(`Remove from essentials failed: ${e}`); }
-      }},
+        condition: () => !!window.gZenPinnedTabManager && currentTab().hasAttribute('zen-essential'),
+        command: () => { gZenPinnedTabManager.removeEssentials(currentTab()); } },
       { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
         command: () => {
-          const tab = gBrowser.selectedTab;
+          const tab = currentTab();
           exitSearchMode();
           setTimeout(() => {
             try {
               TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-title')?.doCommand();
-            } catch(e) { log(`Rename tab failed: ${e}`); }
+              document.getElementById('context_zen-edit-tab-title').doCommand();
+            } catch(e) { reportError('Rename tab failed', e); }
           }, 100);
       }},
       { key: 'edit-tab-icon', label: 'Edit Tab Icon', icon: '🎨', tags: ['tab', 'icon', 'emoji', 'edit', 'custom', 'zen'],
         command: () => {
-          const tab = gBrowser.selectedTab;
+          const tab = currentTab();
           exitSearchMode();
           setTimeout(() => {
             try {
               TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-icon')?.doCommand();
-            } catch(e) { log(`Edit tab icon failed: ${e}`); }
+              document.getElementById('context_zen-edit-tab-icon').doCommand();
+            } catch(e) { reportError('Edit tab icon failed', e); }
           }, 100);
       }},
       { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
-          catch(e) { return false; }
-        },
-        command: () => {
-          try { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); }
-          catch(e) { log(`Reset pinned tab failed: ${e}`); }
-      }},
+        condition: () => !!window.gZenPinnedTabManager && currentTab().pinned,
+        command: () => { gZenPinnedTabManager.resetPinnedTab(currentTab()); } },
       { key: 'replace-pinned-url', label: 'Replace Pinned URL with Current', icon: '📌', tags: ['tab', 'pinned', 'replace', 'url', 'current', 'update', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
-          catch(e) { return false; }
-        },
-        command: () => {
-          try { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); }
-          catch(e) { log(`Replace pinned URL failed: ${e}`); }
-      }},
+        condition: () => !!window.gZenPinnedTabManager && currentTab().pinned,
+        command: () => { gZenPinnedTabManager.replacePinnedUrlWithCurrent(currentTab()); } },
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
       { key: 'find-playing-tab', label: 'Find Playing Tab', icon: '🔊', tags: ['tab', 'audio', 'media', 'sound', 'playing', 'music', 'video', 'find', 'go'],
         command: async () => {
-          // Always search ALL workspaces for the initial check
-          let allTabs;
-          try {
-            if (window.gZenWorkspaces) {
-              const stored = gZenWorkspaces.allStoredTabs;
-              allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
-            } else {
-              allTabs = Array.from(gBrowser.tabs);
-            }
-          } catch (e) { allTabs = Array.from(gBrowser.tabs); }
-
-          const playingTabs = allTabs.filter(tab =>
-            tab && !tab.closing && tab.parentNode &&
-            !tab.hasAttribute('zen-empty-tab') &&
-            tab.hasAttribute('soundplaying')
-          );
-
+          const playingTabs = getPlayingTabs();
           if (playingTabs.length === 0) {
             log('No tabs currently playing audio');
             return;
           }
-
           if (playingTabs.length === 1) {
-            const tab = playingTabs[0];
-            recordJump(gBrowser.selectedTab);
-            const tabWsId = tab.getAttribute('zen-workspace-id');
-            if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace) {
-              await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
-            }
-            gBrowser.selectedTab = tab;
-            recordJump(tab);
+            await switchToTabAcrossWorkspaces(playingTabs[0]);
             return;
           }
-
-          // Multiple playing tabs — re-enter search to show sub-flow
-          // Ensure cross-workspace search is on so all playing tabs are visible
-          if (!S['display.searchAllWorkspaces']) {
-            S['display.searchAllWorkspaces'] = true;
-            saveSettings();
-          }
+          // Multiple playing tabs — re-enter the palette to pick one (lists all workspaces)
           enterSearchMode(true);
           enterSubFlow('playing-tabs', 'Find Playing Tab');
         }
       },
-      { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'], command: () => {
-        const current = gBrowser.selectedTab;
-        // Find the most recently accessed tab to switch to
-        const tabs = Array.from(gBrowser.tabs)
-          .filter(t => t !== current && !t.hasAttribute('pending') && !t.hidden);
-        tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-        const target = tabs[0];
-        if (target) {
-          gBrowser.selectedTab = target;
-        }
-        // Discard after a short delay to let the tab switch complete
-        setTimeout(() => {
-          try { gBrowser.discardBrowser(current); } catch(e) { log(`Unload tab failed: ${e}`); }
-        }, S['timing.unloadTabDelay']);
-      }},
+      // Firefox selects another tab first (and handles split views / beforeunload)
+      { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'],
+        command: () => TabOps.unload([currentTab()]) },
 
       // --- Tab Actions (Context Menu Parity) ---
       { key: 'reload-tab', label: 'Reload Tab', icon: '🔄', tags: ['tab', 'reload', 'refresh', 'r'], command: () => { gBrowser.reloadTab(gBrowser.selectedTab); } },
-      { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => {
-        try { PlacesCommandHook.bookmarkPage(); }
-        catch(e) { log(`Bookmark tab failed: ${e}`); }
-      }},
-      { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => {
-        try { SessionStore.undoCloseTab(window, 0); }
-        catch(e) { log(`Reopen closed tab failed: ${e}`); }
-      }},
+      { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => { PlacesCommandHook.bookmarkPage(); } },
+      { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => { SessionStore.undoCloseTab(window, 0); } },
       { key: 'select-all-tabs', label: 'Select All Tabs (Browse Mode)', icon: '☑', tags: ['tab', 'select', 'all', 'sel'], command: () => {
-        const allTabs = getVisibleTabs().filter(t => !t.closing && t.parentNode);
+        const allTabs = liveTabs(getVisibleTabs());
         selectTabsInBrowseMode(allTabs);
       }},
       // --- Tab Selection (Multi-Step) ---
@@ -4534,7 +5009,7 @@
 
       // --- Tab Movement ---
       { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning', 'mv'], command: () => {
-        const tab = gBrowser.selectedTab;
+        const tab = currentTab();
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
@@ -4546,7 +5021,7 @@
         }
       }},
       { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end', 'mv'], command: () => {
-        const tab = gBrowser.selectedTab;
+        const tab = currentTab();
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
@@ -4562,6 +5037,7 @@
         condition: () => !!window.gZenFolders,
         command: () => { groupLooseTabsByDomain(); exitSearchMode(); } },
 
+      'navigation',
       // --- Navigation ---
       { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
@@ -4589,189 +5065,104 @@
         exitCommandMode();
       }},
 
+      'view',
       // --- View & Browser ---
       { key: 'toggle-fullscreen', label: 'Toggle Fullscreen', icon: '⛶', tags: ['view', 'fullscreen', 'screen'], command: () => { window.fullScreen = !window.fullScreen; } },
+      // Zen's own toggle (same as its keyboard shortcut)
       { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle', 'tog', 'sb'], command: () => {
-        try {
-          const current = Services.prefs.getBoolPref('zen.view.sidebar-expanded');
-          Services.prefs.setBoolPref('zen.view.sidebar-expanded', !current);
-        } catch (e) { log(`Toggle sidebar failed: ${e}`); }
+        document.getElementById('cmd_zenToggleSidebar').doCommand();
       }},
       { key: 'zoom-in', label: 'Zoom In', icon: '🔍+', tags: ['zoom', 'in', 'bigger'], command: () => { ZoomManager.enlarge(); } },
       { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => { ZoomManager.reduce(); } },
       { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => { ZoomManager.reset(); } },
 
+      'split',
       // --- Split View ---
       { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close', 'cl'], command: () => {
-        try { if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView(); } catch (e) { log(`Unsplit failed: ${e}`); }
-      }, condition: () => { try { return window.gZenViewSplitter?.splitViewActive; } catch(e) { return false; } } },
+        if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView();
+      }, condition: () => window.gZenViewSplitter?.splitViewActive },
       { key: 'split-with-tab', label: 'Split View with Tab...', icon: '◫', tags: ['split', 'view', 'side'], subFlow: 'split-tab-picker' },
       { key: 'split-rotate-tabs', label: 'Split View: Rotate Tabs', icon: '🔄', tags: ['split', 'view', 'swap', 'rotate', 'tabs', 'panes'], command: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return;
-          const viewData = splitter._data[splitter.currentView];
-          if (!viewData || !viewData.tabs || viewData.tabs.length < 2) return;
-
-          if (viewData.tabs.length === 2) {
-            // For 2 tabs: simple swap
-            const node1 = splitter.getSplitNodeFromTab(viewData.tabs[0]);
-            const node2 = splitter.getSplitNodeFromTab(viewData.tabs[1]);
-            splitter.swapNodes(node1, node2);
-            splitter.applyGridLayout(viewData.layoutTree);
-          } else {
-            // For 3+ tabs: rotate positions (shift each tab to the next position)
-            const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
-            if (nodes.length > 0 && nodes.every(n => n)) {
-              // Rotate: last goes to first position, everything shifts right
-              const lastNode = nodes[nodes.length - 1];
-              for (let i = nodes.length - 1; i > 0; i--) {
-                splitter.swapNodes(nodes[i], nodes[i - 1]);
-              }
-              splitter.applyGridLayout(viewData.layoutTree);
-            }
-          }
-        } catch (e) { log(`Split rotate tabs failed: ${e}`); }
-      }, condition: () => {
-        try {
-          return window.gZenViewSplitter?.splitViewActive &&
-            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
-        } catch(e) { return false; }
-      }},
+        const splitter = window.gZenViewSplitter;
+        const viewData = activeSplitView();
+        if (!viewData || (viewData.tabs?.length ?? 0) < 2) return;
+        const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
+        if (!nodes.every(n => n)) return;
+        // 2 tabs: swap; 3+: rotate (last goes to first position, everything shifts right)
+        for (let i = nodes.length - 1; i > 0; i--) splitter.swapNodes(nodes[i], nodes[i - 1]);
+        splitter.applyGridLayout(viewData.layoutTree);
+      }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
       { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '\u27F3', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
-        try {
-          rotateSplitLayout();
-        } catch (e) { log(`Split rotate layout failed: ${e}`); }
-      }, condition: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return false;
-          const viewData = splitter._data[splitter.currentView];
-          return !!(viewData?.layoutTree);
-        } catch(e) { return false; }
-      }},
+        rotateSplitLayout();
+      }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'split-reset-sizes', label: 'Split View: Reset Layout Sizes', icon: '\u2B1C', tags: ['split', 'view', 'reset', 'sizes', 'equal', 'normalize', 'balance'], command: () => {
-        try {
-          resetLayoutSizes();
-        } catch (e) { log(`Split reset sizes failed: ${e}`); }
-      }, condition: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return false;
-          const viewData = splitter._data[splitter.currentView];
-          return !!(viewData?.layoutTree);
-        } catch(e) { return false; }
-      }},
+        resetLayoutSizes();
+      }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
-        try {
-          const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
-          // Zen >= 1.19: removeTabFromSplit(event, container); shiftKey=false also selects the tab
-          if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
-        } catch (e) { log(`Remove tab from split failed: ${e}`); }
-      }, condition: () => {
-        try {
-          if (!window.gZenViewSplitter?.splitViewActive) return false;
-          const viewData = window.gZenViewSplitter._data[window.gZenViewSplitter.currentView];
-          return viewData?.tabs?.includes(gBrowser.selectedTab);
-        } catch(e) { return false; }
-      }},
+        const container = currentTab().linkedBrowser?.closest('.browserSidebarContainer');
+        // Zen >= 1.19b: removeTabFromSplit(event, container); a non-Shift event keeps the tab selected
+        if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
+      }, condition: () => !!activeSplitView()?.tabs?.includes(currentTab()) },
       { key: 'split-resize-gtile', label: 'Split View: Resize (gTile)', icon: '\u25A6', tags: ['split', 'view', 'resize', 'gtile', 'grid', 'tile', 'move', 'layout'], command: () => {
         enterGtileMode();
-      }, condition: () => {
-        try {
-          return window.gZenViewSplitter?.splitViewActive &&
-            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
-        } catch(e) { return false; }
-      }},
+      }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
 
+      'workspaces',
       // --- Workspace Management ---
       { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'],
+        condition: () => workspacesEnabled(),
         subFlow: 'create-workspace-input' },
+      // Zen does not allow deleting the last workspace; deleting closes all of the workspace's tabs
       { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy', 'del', 'rm', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         subFlow: 'delete-workspace-picker' },
       { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change', 'sw', 'ws', 'go'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 0,
         subFlow: 'switch-workspace-picker' },
       { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab', 'mv', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         subFlow: 'move-to-workspace-picker' },
       { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name', 'ren', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 0,
         subFlow: 'rename-workspace-picker' },
       { key: 'reorganize-workspaces', label: 'Reorganize Workspaces', icon: '↕', tags: ['workspace', 'reorder', 'reorganize', 'sort', 'move', 'arrange', 'order', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         command: () => { exitSearchMode(); setTimeout(() => enterReorgMode(), 50); } },
 
+      'folders',
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
-        condition: () => !!window.gZenFolders,
-        command: () => {
-          try {
-            const tab = gBrowser.selectedTab;
-            gZenFolders.createFolder([tab], { renameFolder: true });
-          } catch(e) { log(`Create folder failed: ${e}`); }
-      }},
+        condition: () => !!window.gZenFolders && !currentTab().hasAttribute('zen-essential'),
+        command: () => { gZenFolders.createFolder([currentTab()], { renameFolder: true }); } },
       { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group', 'del', 'rm', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'delete-folder-picker' },
       { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group', 'mv', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !currentTab().hasAttribute('zen-essential') && getWorkspaceFolders().some(f => f !== currentTab().group),
         subFlow: 'add-to-folder-picker' },
       { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group', 'ren', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'rename-folder-picker' },
       { key: 'change-folder-icon', label: 'Change Folder Icon...', icon: '🎨', tags: ['folder', 'icon', 'emoji', 'edit', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'change-folder-icon-picker' },
       { key: 'unload-folder-tabs', label: 'Unload All Tabs in Folder...', icon: '💤', tags: ['folder', 'unload', 'discard', 'memory', 'suspend', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'unload-folder-picker' },
       { key: 'create-subfolder', label: 'Create Subfolder...', icon: '📁', tags: ['folder', 'subfolder', 'create', 'new', 'nested', 'mk', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'create-subfolder-picker' },
       { key: 'convert-folder-to-workspace', label: 'Convert Folder to Workspace...', icon: '🗂', tags: ['folder', 'workspace', 'convert', 'space', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && !!window.gZenWorkspaces && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && workspacesEnabled() && getWorkspaceFolders().length > 0,
         subFlow: 'folder-to-workspace-picker' },
       { key: 'unpack-folder', label: 'Unpack Folder (Keep Tabs)...', icon: '📦', tags: ['folder', 'unpack', 'dissolve', 'remove', 'keep', 'tabs', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'unpack-folder-picker' },
       { key: 'move-folder-to-workspace', label: 'Move Folder to Workspace...', icon: '🗂', tags: ['folder', 'move', 'workspace', 'space', 'mv', 'fld', 'fol'],
-        condition: () => {
-          try {
-            return !!window.gZenFolders && !!window.gZenWorkspaces &&
-              (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1 &&
-              gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0;
-          } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && workspaceCount() > 1 && getWorkspaceFolders().length > 0,
         subFlow: 'move-folder-to-ws-folder-picker' },
 
+      'zenleap',
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
         S['display.browsePreview'] = !S['display.browsePreview'];
@@ -4805,20 +5196,33 @@
         const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
         const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
         file.initWithPath(themesPath);
-        try { file.launch(); } catch (e) { console.warn('[ZenLeap] Could not open themes file:', e); }
+        try {
+          file.launch(); // the desktop's default editor for .json files
+        } catch (e) {
+          // No handler registered: show the file in a tab instead
+          gBrowser.selectedTab = gBrowser.addTab(PathUtils.toFileURI(themesPath), {
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            skipRoute: true,
+          });
+        }
       }},
 
+      'plugins',
       // --- Plugin Management ---
       { key: 'plugin-manager', label: 'Manage Plugins', icon: '🧩', tags: ['plugin', 'plugins', 'manage', 'extensions', 'addons', 'install', 'uninstall', 'enable', 'disable'], command: () => {
         exitSearchMode();
         setTimeout(() => enterPluginManagerMode(), 100);
       }},
 
-      // --- Session Management ---
-      { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'], subFlow: 'save-session-scope' },
-      { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'], subFlow: 'restore-session-picker' },
-      { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'], subFlow: 'list-sessions-picker' },
-    ];
+      'sessions',
+      // --- Session Management --- (not in private windows: nothing from them may be written to disk)
+      { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'],
+        condition: () => !isPrivateWindow(), subFlow: 'save-session-scope' },
+      { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'],
+        condition: () => workspacesEnabled(), subFlow: 'restore-session-picker' },
+      { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'],
+        condition: () => !isPrivateWindow(), subFlow: 'list-sessions-picker' },
+    ]);
   }
 
   // Generate dynamic commands based on current state
@@ -4833,10 +5237,10 @@
       { key: 'browse:close', label: `Close ${tabLabel}`, icon: '✕', tags: [...browseTags, 'close', 'remove', 'delete'],
         command: () => { closeMatchedTabs(browseCommandTabs); } },
       { key: 'browse:move-workspace', label: `Move ${tabLabel} to Workspace...`, icon: '🗂', tags: [...browseTags, 'move', 'workspace'],
-        condition: () => { try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; } },
+        condition: () => workspaceCount() > 1,
         subFlow: 'browse-workspace-picker' },
       { key: 'browse:add-folder', label: `Add ${tabLabel} to Folder...`, icon: '📂', tags: [...browseTags, 'folder', 'add', 'group'],
-        condition: () => { try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; } },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'browse-folder-picker' },
       { key: 'browse:create-folder', label: `Create Folder with ${tabLabel}`, icon: '📁', tags: [...browseTags, 'folder', 'create', 'new', 'group'],
         condition: () => !!window.gZenFolders,
@@ -4854,7 +5258,7 @@
       { key: 'browse:unload', label: `Unload ${tabLabel} (Save Memory)`, icon: '💤', tags: [...browseTags, 'unload', 'discard', 'memory', 'suspend'],
         command: () => { unloadMatchedTabs(browseCommandTabs); } },
       { key: 'browse:split-view', label: `Split ${tabLabel} into Split View`, icon: '◫', tags: [...browseTags, 'split', 'view', 'side', 'pane'],
-        condition: () => { try { return !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4; } catch(e) { return false; } },
+        condition: () => !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4,
         command: () => { splitBrowseTabs(browseCommandTabs); } },
       { key: 'browse:reload', label: `Reload ${tabLabel}`, icon: '🔄', tags: [...browseTags, 'reload', 'refresh'],
         command: () => { reloadMatchedTabs(browseCommandTabs); } },
@@ -4863,32 +5267,28 @@
     ];
   }
 
-  // Get all available commands (static + dynamic)
-  // Caches the condition-filtered command list briefly to avoid re-evaluating
-  // expensive conditions (DOM queries, workspace lookups) on every keystroke.
-  // Cache is invalidated after 500ms or when command mode is exited.
+  // Get all available commands (static + dynamic + plugins), filtered by their
+  // conditions. Conditions (DOM queries, workspace lookups) are evaluated once per
+  // palette session, not per keystroke: the list is cached until invalidated (opening
+  // or leaving search/command mode, plugin changes).
   let _commandListCache = null;
-  let _commandListCacheTime = 0;
-  const COMMAND_CACHE_TTL = 500;
 
   function getAllCommands() {
-    const now = Date.now();
-    if (_commandListCache && (now - _commandListCacheTime) < COMMAND_CACHE_TTL) {
-      return _commandListCache;
+    if (_commandListCache) return _commandListCache;
+    const all = [...getStaticCommands(), ...getDynamicCommands(), ...getPluginCommands()];
+    _commandListCache = all.filter(cmd => {
+      if (!cmd.condition) return true;
+      try { return !!cmd.condition(); } catch (e) { return false; }
+    });
+    _commandGroupMap.clear();
+    for (const cmd of _commandListCache) {
+      if (cmd.group) _commandGroupMap.set(cmd.key, cmd.group);
     }
-    const statics = getStaticCommands();
-    const dynamics = getDynamicCommands();
-    const plugins = getPluginCommands();
-    const all = [...statics, ...dynamics, ...plugins];
-    // Filter by condition
-    _commandListCache = all.filter(cmd => !cmd.condition || cmd.condition());
-    _commandListCacheTime = now;
     return _commandListCache;
   }
 
   function invalidateCommandCache() {
     _commandListCache = null;
-    _commandListCacheTime = 0;
   }
 
   // Filter commands by query using fuzzy match
@@ -4910,10 +5310,8 @@
       COMMAND_GROUPS.forEach((g, i) => groupOrder.set(g.id, i));
       const sorted = [...all];
       sorted.sort((a, b) => {
-        const aGroup = _commandGroupMap.get(a.key);
-        const bGroup = _commandGroupMap.get(b.key);
-        const aIdx = aGroup ? (groupOrder.get(aGroup) ?? 999) : 999;
-        const bIdx = bGroup ? (groupOrder.get(bGroup) ?? 999) : 999;
+        const aIdx = groupOrder.get(a.group) ?? 999;
+        const bIdx = groupOrder.get(b.group) ?? 999;
         if (aIdx !== bIdx) return aIdx - bIdx;
         return a.label.localeCompare(b.label);
       });
@@ -4951,6 +5349,13 @@
       const recencyMult = calculateCommandRecencyMultiplier(cmd.key);
       totalScore *= recencyMult;
 
+      // A label containing the whole query as typed outranks fuzzy matches, whatever
+      // their recency (typing a command's exact name must find that command first)
+      const phrase = words.join(' ').toLowerCase();
+      const labelLower = cmd.label.toLowerCase();
+      if (labelLower.startsWith(phrase)) totalScore += 2000;
+      else if (labelLower.includes(phrase)) totalScore += 1000;
+
       results.push({
         ...cmd,
         score: totalScore,
@@ -4962,6 +5367,13 @@
     return results;
   }
 
+  // Failures users care about: always to the console, plus a short toast.
+  function notifyCommandFailure(cmd, error) {
+    reportError(`Command "${cmd.label}" (${cmd.key}) failed`, error);
+    showZenLeapToast(`${cmd.label} failed \u2014 see the Browser Console`);
+    _pluginEventBus.emit('command:failed', { key: cmd.key, error: error?.message || String(error) });
+  }
+
   // Execute a command or enter its sub-flow
   function executeCommand(cmd) {
     // Track recency for all commands (including sub-flow commands)
@@ -4971,50 +5383,96 @@
       enterSubFlow(cmd.subFlow, cmd.label);
       return;
     }
-    if (typeof cmd.command === 'function') {
-      // Save browse command tabs before exitSearchMode clears them,
-      // so browse command closures can still reference browseCommandTabs
-      const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
-      exitSearchMode();
-      if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
-      try {
-        const result = cmd.command();
-        if (result && typeof result.then === 'function') {
-          result.then(() => {
-            _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
-            log(`Executed async command: ${cmd.key}`);
-          }).catch(e => {
-            _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
-            log(`Async command failed: ${cmd.key}: ${e}`);
-          });
-        } else {
-          _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
-          log(`Executed command: ${cmd.key}`);
-        }
-      } catch (e) {
-        _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
-        log(`Command failed: ${cmd.key}: ${e}`);
+    // Destructive commands describe what they will do; ask first when they return a description
+    if (typeof cmd.confirm === 'function') {
+      let confirmation = null;
+      try { confirmation = cmd.confirm(); } catch (e) { notifyCommandFailure(cmd, e); return; }
+      if (confirmation) {
+        enterSubFlow('command-confirm', cmd.label);
+        commandSubFlow.data = { cmd, ...confirmation };
+        renderCommandResults();
+        return;
       }
-      browseCommandTabs = [];
     }
+    runCommand(cmd);
+  }
+
+  function runCommand(cmd) {
+    if (typeof cmd.command !== 'function') return;
+    // Save browse command tabs before exitSearchMode clears them,
+    // so browse command closures can still reference browseCommandTabs
+    const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
+    exitSearchMode();
+    if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
+    try {
+      const result = cmd.command();
+      if (result && typeof result.then === 'function') {
+        result.then(() => {
+          _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+          log(`Executed async command: ${cmd.key}`);
+        }).catch(e => notifyCommandFailure(cmd, e));
+      } else {
+        _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+        log(`Executed command: ${cmd.key}`);
+      }
+    } catch (e) {
+      notifyCommandFailure(cmd, e);
+    }
+    browseCommandTabs = [];
+  }
+
+  // Confirmation results for 'command-confirm': Cancel is first, so a stray Enter is harmless.
+  function getCommandConfirmResults() {
+    const data = commandSubFlow?.data;
+    if (!data) return [];
+    return [
+      { key: 'command-confirm:cancel', label: 'Cancel', icon: '↩', sublabel: data.cancelLabel || 'Do nothing', tags: [] },
+      { key: 'command-confirm:run', label: data.label, icon: data.icon || '\u26A0', sublabel: data.sublabel || '', tags: [] },
+    ];
+  }
+
+  // ── Bulk tab closing (Close Other / Left / Right) ──
+  function getOtherUnpinnedTabs() {
+    const current = currentTab();
+    return getVisibleTabs().filter(t => t !== current && !t.pinned);
+  }
+
+  function getUnpinnedTabsBeside(side) {
+    const tabs = getVisibleTabs();
+    const idx = tabs.indexOf(currentTab());
+    if (idx < 0) return [];
+    return (side === 'right' ? tabs.slice(idx + 1) : tabs.slice(0, idx)).filter(t => !t.pinned);
+  }
+
+  // Ask before closing more than one tab (returns null = no confirmation needed)
+  function bulkCloseConfirmation(tabs, describe) {
+    if (tabs.length <= 1) return null;
+    return {
+      label: describe(tabs.length),
+      icon: '✕',
+      sublabel: 'Closed tabs can be reopened with Reopen Closed Tab',
+      cancelLabel: 'Keep all tabs open',
+    };
   }
 
   // ============================================
   // COMMAND SUB-FLOW SYSTEM
   // ============================================
 
-  function enterSubFlow(type, label) {
+  // Every sub-flow is one entry in SUBFLOWS (defined at the end of this section):
+  //   placeholder       input placeholder text
+  //   results(q, data)  result rows for the current query
+  //   select(r, data)   Enter on a row
+  //   readOnly          fixed list (preview/confirmation): the input can't be typed into
+  //   onEnter/onExit    optional hooks
+  // enterSubFlow/getSubFlowResults/handleSubFlowSelect dispatch through the table, so a
+  // new flow is defined in one place.
+
+  function enterSubFlow(type, label, data = null) {
     commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery, data: commandSubFlow?.data || null });
-    commandSubFlow = { type, label, data: null };
+    commandSubFlow = { type, label, data };
     commandQuery = '';
-    // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
-    if (type === 'tab-search' || type === 'split-tab-picker' || type === 'playing-tabs') {
-      commandMatchedTabs = [];
-    }
-    // Save current theme for live-preview restore on Escape
-    if (type === 'theme-picker') {
-      _themePreviewOriginal = S['appearance.theme'] || 'meridian';
-    }
+    SUBFLOWS[type]?.onEnter?.();
     searchSelectedIndex = 0;
     searchCursorPos = 0;
 
@@ -5024,7 +5482,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = getSubFlowPlaceholder(type);
-      searchInput.readOnly = (type === 'dedup-preview' || type === 'session-detail-view' || type === 'delete-session-confirm');
+      searchInput.readOnly = !!SUBFLOWS[type]?.readOnly;
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5034,27 +5492,8 @@
 
   function exitSubFlow() {
     searchSelectedIndex = 0;
-    const currentType = commandSubFlow?.type;
-
-    // Clean up dedup-preview state when leaving it
-    if (currentType === 'dedup-preview') {
-      hidePreviewPanel(true);
-      dedupTabsToClose = [];
-      if (searchInput) searchInput.readOnly = false;
-    }
-
-    // Clean up session readonly state when leaving session views
-    if (currentType === 'session-detail-view' || currentType === 'delete-session-confirm') {
-      if (searchInput) searchInput.readOnly = false;
-    }
-
-    // Restore original theme when backing out of theme-picker
-    if (currentType === 'theme-picker' && _themePreviewOriginal) {
-      S['appearance.theme'] = _themePreviewOriginal;
-      saveSettings();
-      applyTheme();
-      _themePreviewOriginal = null;
-    }
+    SUBFLOWS[commandSubFlow?.type]?.onExit?.();
+    if (searchInput) searchInput.readOnly = false;
 
     if (commandSubFlowStack.length === 0) {
       if (browseCommandMode) {
@@ -5080,7 +5519,8 @@
       commandSubFlow = null;
       commandQuery = prev.query || '';
     } else {
-      commandSubFlow = { type: prev.type, label: prev.label, data: null };
+      // Restore the previous step's data (e.g. the session being restored)
+      commandSubFlow = { type: prev.type, label: prev.label, data: prev.data || null };
       commandQuery = prev.query || '';
     }
     // Only clear matched tabs when going back to tab-search or to root
@@ -5091,6 +5531,7 @@
     if (searchInput) {
       searchInput.value = commandQuery;
       searchInput.placeholder = commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...';
+      searchInput.readOnly = !!SUBFLOWS[commandSubFlow?.type]?.readOnly;
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5099,48 +5540,7 @@
   }
 
   function getSubFlowPlaceholder(type) {
-    switch (type) {
-      case 'tab-search': return 'Search tabs to select...';
-      case 'action-picker': return 'Choose an action...';
-      case 'workspace-picker': return 'Choose a workspace...';
-      case 'folder-picker': return 'Choose a folder...';
-      case 'split-tab-picker': return 'Search for a tab to split with...';
-      case 'playing-tabs': return 'Search playing tabs...';
-      case 'dedup-preview': return 'Duplicates to close — Enter to confirm';
-      case 'folder-name-input': return 'Enter folder name...';
-      case 'delete-folder-picker': return 'Select a folder to delete...';
-      case 'delete-workspace-picker': return 'Select a workspace to delete...';
-      case 'switch-workspace-picker': return 'Select a workspace to switch to...';
-      case 'move-to-workspace-picker': return 'Select a workspace to move tab to...';
-      case 'add-to-folder-picker': return 'Select a folder to add tab to...';
-      case 'rename-folder-picker': return 'Select a folder to rename...';
-      case 'rename-workspace-picker': return 'Select a workspace to rename...';
-      case 'rename-folder-input': return 'Enter new folder name...';
-      case 'rename-workspace-input': return 'Enter new workspace name...';
-      case 'create-workspace-input': return 'Enter new workspace name...';
-      case 'save-session-scope': return 'What to save?';
-      case 'save-session-input': return 'Type a comment for this snapshot and press Enter...';
-      case 'restore-session-picker': return 'Select a session to restore...';
-      case 'restore-session-mode': return 'How to restore?';
-      case 'list-sessions-picker': return 'Browse saved sessions...';
-      case 'session-detail-view': return 'Session contents (Esc to go back)';
-      case 'delete-session-confirm': return 'Press Enter to confirm deletion...';
-      case 'browse-workspace-picker': return 'Choose a workspace...';
-      case 'browse-folder-picker': return 'Choose a folder...';
-      case 'browse-folder-name-input': return 'Enter folder name...';
-      case 'sort-picker': return 'Sort by...';
-      case 'change-folder-icon-picker': return 'Select a folder to change icon...';
-      case 'unload-folder-picker': return 'Select a folder to unload tabs...';
-      case 'unload-folder-progress': return 'Unloading...';
-      case 'create-subfolder-picker': return 'Select a parent folder...';
-      case 'folder-to-workspace-picker': return 'Select a folder to convert to workspace...';
-      case 'unpack-folder-picker': return 'Select a folder to unpack...';
-      case 'move-folder-to-ws-folder-picker': return 'Select a folder to move...';
-      case 'move-folder-to-ws-workspace-picker': return 'Select destination workspace...';
-      case 'theme-picker': return 'Select a theme...';
-      case 'theme-browser-confirm': return 'Apply theme to browser too?';
-      default: return 'Type a command...';
-    }
+    return SUBFLOWS[type]?.placeholder ?? 'Type a command...';
   }
 
   function updateBreadcrumb() {
@@ -5165,97 +5565,89 @@
 
   // Get sub-flow results based on type
   function getSubFlowResults() {
-    if (!commandSubFlow) return [];
-    const query = commandQuery;
-
-    switch (commandSubFlow.type) {
-      case 'tab-search':
-        return getTabSearchSubFlowResults(query);
-      case 'action-picker':
-        return getActionPickerResults(query);
-      case 'workspace-picker':
-        return getWorkspacePickerResults(query);
-      case 'folder-picker':
-        return getFolderPickerResults(query);
-      case 'split-tab-picker':
-        return getSplitTabPickerResults(query);
-      case 'playing-tabs':
-        return getPlayingTabsResults(query);
-      case 'dedup-preview':
-        return getDedupPreviewResults();
-      case 'folder-name-input':
-        return getFolderNameInputResults(query);
-      case 'delete-folder-picker':
-        return getDeleteFolderPickerResults(query);
-      case 'delete-workspace-picker':
-        return getDeleteWorkspacePickerResults(query);
-      case 'switch-workspace-picker':
-        return getSwitchWorkspacePickerResults(query);
-      case 'move-to-workspace-picker':
-        return getMoveToWorkspacePickerResults(query);
-      case 'add-to-folder-picker':
-        return getAddToFolderPickerResults(query);
-      case 'rename-folder-picker':
-        return getRenameFolderPickerResults(query);
-      case 'rename-workspace-picker':
-        return getRenameWorkspacePickerResults(query);
-      case 'rename-folder-input':
-        return getRenameFolderInputResults(query);
-      case 'rename-workspace-input':
-        return getRenameWorkspaceInputResults(query);
-      case 'create-workspace-input':
-        return getCreateWorkspaceInputResults(query);
-      case 'save-session-scope':
-        return getSaveSessionScopeResults(query);
-      case 'save-session-input':
-        return getSaveSessionInputResults(query);
-      case 'restore-session-picker':
-        return getRestoreSessionPickerResults(query);
-      case 'restore-session-mode':
-        return getRestoreSessionModeResults(query);
-      case 'list-sessions-picker':
-        return getListSessionsPickerResults(query);
-      case 'session-detail-view':
-        return getSessionDetailViewResults(query);
-      case 'delete-session-confirm':
-        return getDeleteSessionConfirmResults();
-      case 'browse-workspace-picker':
-        return getWorkspacePickerResults(query);
-      case 'browse-folder-picker':
-        return getFolderPickerResults(query);
-      case 'browse-folder-name-input':
-        return getFolderNameInputResults(query);
-      case 'sort-picker':
-        return getSortPickerResults(query);
-      case 'change-folder-icon-picker':
-        return getFolderPickerForAction(query, '🎨', 'change-icon');
-      case 'unload-folder-picker':
-        return getFolderPickerForAction(query, '💤', 'unload');
-      case 'unload-folder-progress': {
-        const data = commandSubFlow?.data;
-        const count = data?.getCount?.() || 0;
-        const total = data?.total || 0;
-        const done = count >= total;
-        return [{ key: 'unload-progress', label: done ? `Done — unloaded ${total} tab${total !== 1 ? 's' : ''}` : `Unloading... ${count} / ${total}`, icon: done ? '✓' : '💤', tags: [] }];
-      }
-      case 'create-subfolder-picker':
-        return getFolderPickerForAction(query, '📁', 'subfolder');
-      case 'folder-to-workspace-picker':
-        return getFolderPickerForAction(query, '🗂', 'convert');
-      case 'unpack-folder-picker':
-        return getFolderPickerForAction(query, '📦', 'unpack');
-      case 'move-folder-to-ws-folder-picker':
-        return getFolderPickerForAction(query, '🗂', 'move-ws');
-      case 'move-folder-to-ws-workspace-picker':
-        return getMoveToWorkspacePickerResults(query);
-      case 'theme-picker':
-        return getThemePickerResults(query);
-      case 'theme-browser-confirm':
-        return getThemeBrowserConfirmResults(query);
-      default:
-        return [];
-    }
+    const flow = SUBFLOWS[commandSubFlow?.type];
+    return flow ? flow.results(commandQuery, commandSubFlow.data) : [];
   }
+
+  // Handle sub-flow selection (Enter on a result)
+  function handleSubFlowSelect(result) {
+    const flow = SUBFLOWS[commandSubFlow?.type];
+    if (flow?.select) flow.select(result, commandSubFlow.data);
+  }
+
+  // ── Picker builders ──
+
+  // Workspaces as picker rows. Options: markCurrent (label "(current)"), excludeActive,
+  // currentLast (never pre-select the current workspace), createKey (adds a
+  // "+ Create New Workspace" row with that key), emptyLabel (row shown when empty).
+  function workspacePickerResults(query, { keyPrefix, verb, icon = '🗂', markCurrent = false, excludeActive = false, currentLast = false, createKey = null, emptyLabel = null } = {}) {
+    const activeId = window.gZenWorkspaces?.activeWorkspace;
+    const rows = [];
+    try {
+      for (const ws of (gZenWorkspaces.getWorkspaces() || [])) {
+        const isActive = ws.uuid === activeId;
+        if (excludeActive && isActive) continue;
+        const name = ws.name || 'Unnamed';
+        rows.push({
+          key: `${keyPrefix}:${ws.uuid}`,
+          label: `${name}${markCurrent && isActive ? ' (current)' : ''}`,
+          icon: safeIconText(ws.icon, icon),
+          tags: ['workspace', ...(verb ? [verb] : []), name.toLowerCase()],
+          workspaceId: ws.uuid,
+          workspaceName: name,
+          isActive,
+        });
+      }
+    } catch (e) { reportError('Listing workspaces failed', e); }
+    if (rows.length === 0 && emptyLabel) {
+      return [{ key: `${keyPrefix}:none`, label: emptyLabel, icon: '🗂', tags: [] }];
+    }
+    if (currentLast) rows.sort((a, b) => (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0));
+    const filtered = fuzzyFilterAndSort(rows, query);
+    if (createKey) filtered.push({ key: createKey, label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
+    return filtered;
+  }
+
+  // Folders of the active workspace (no live folders) as picker rows. Options: canNest
+  // (only folders that may get a subfolder), skip (a folder to leave out), counts (tab
+  // count sublabel), createKey (adds a "Create New Folder" row with that key).
+  function folderPickerResults(query, { keyPrefix, verb, icon, canNest = false, skip = null, counts = true, createKey = null } = {}) {
+    const maxDepth = Services.prefs.getIntPref('zen.folders.max-subfolders', 5);
+    const rows = [];
+    for (const folder of getWorkspaceFolders()) {
+      if (folder === skip) continue;
+      // Zen refuses subfolders beyond its nesting limit (same rule as its context menu)
+      if (canNest && (folder.level ?? 0) >= maxDepth - 1) continue;
+      const name = folderName(folder);
+      const row = { key: `${keyPrefix}:${folder.id}`, label: name, icon, tags: ['folder', ...(verb ? [verb] : []), name.toLowerCase()], folder };
+      if (counts) {
+        const tabCount = folderTabCount(folder);
+        row.sublabel = `${tabCount} tab${tabCount !== 1 ? 's' : ''}`;
+      }
+      rows.push(row);
+    }
+    if (createKey) {
+      rows.push({ key: createKey, label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
+    } else if (rows.length === 0) {
+      return [{ key: `${keyPrefix}:none`, label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    return fuzzyFilterAndSort(rows, query);
+  }
+
+  // A free-text step: a prompt row until something is typed, then a confirm row.
+  function textInputResults(query, { keyPrefix, icon, prompt, confirm, confirmIcon = icon }) {
+    const text = (query || '').trim();
+    if (!text) return [{ key: `${keyPrefix}:prompt`, label: prompt, icon, tags: [] }];
+    return [{ key: `${keyPrefix}:confirm`, label: confirm(text), icon: confirmIcon, tags: [] }];
+  }
+
+  const FOLDER_NAME_INPUT = {
+    keyPrefix: 'folder-name', icon: '📁', confirmIcon: '📁+',
+    prompt: 'Type a name for the new folder and press Enter',
+    confirm: name => `Create folder: "${name}"`,
+  };
+
+  // ── Individual result lists ──
 
   // Theme picker sub-flow: lists all themes (built-in + user) with grouping
   function getThemePickerResults(query) {
@@ -5287,260 +5679,46 @@
     return fuzzyFilterAndSort(options, query);
   }
 
-  function getFolderNameInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'folder-name:prompt', label: 'Type a name for the new folder and press Enter', icon: '📁', tags: [] }];
-    }
-    return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
+  // What deleting a workspace closes (same selection as Zen's removeWorkspace()).
+  function getWorkspaceOwnedItems(workspaceId) {
+    let stored = [];
+    try { stored = Array.from(gZenWorkspaces.allStoredTabs || []); } catch (e) { stored = []; }
+    const tabs = stored.filter(t =>
+      t.getAttribute('zen-workspace-id') === workspaceId &&
+      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab')
+    );
+    const folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder'))
+      .filter(f => f.getAttribute('zen-workspace-id') === workspaceId);
+    return { tabs, folders, pinned: tabs.filter(t => t.pinned).length };
   }
 
-  // Generic folder picker for context-menu-parity sub-flows
-  function getFolderPickerForAction(query, icon, actionPrefix) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `${actionPrefix}-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon,
-          tags: ['folder', actionPrefix, name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for ${actionPrefix}: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: `${actionPrefix}-folder:none`, label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
+  function getDeleteWorkspaceConfirmResults(data) {
+    if (!data?.workspaceId) return [];
+    const { tabs, folders, pinned } = getWorkspaceOwnedItems(data.workspaceId);
+    const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
+    const details = [pinned ? `${pinned} pinned` : '', folders.length ? plural(folders.length, 'folder') : ''].filter(Boolean).join(', ');
+    return [
+      { key: 'delete-workspace:cancel', label: 'Cancel', icon: '↩', sublabel: `Keep "${data.workspaceName}"`, tags: [] },
+      {
+        key: 'delete-workspace:confirm',
+        label: `Delete "${data.workspaceName}" and close ${plural(tabs.length, 'tab')}${details ? ` (${details})` : ''}`,
+        icon: '🗑',
+        sublabel: 'Closed tabs can be reopened one at a time (up to your recently-closed limit); the workspace itself cannot be restored',
+        tags: [],
+      },
+    ];
   }
 
-  function getDeleteFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        // Only show folders in the current workspace
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        // Exclude zen-empty-tab placeholders from count
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `delete-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '🗑',
-          tags: ['folder', 'delete', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for delete: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'delete-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getDeleteWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `delete-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '🗑',
-              tags: ['workspace', 'delete', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for delete: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'delete-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    // Put current workspace first so it's the default selection
-    results.sort((a, b) => {
-      const aActive = a.label.endsWith('(current)') ? 0 : 1;
-      const bActive = b.label.endsWith('(current)') ? 0 : 1;
-      return aActive - bActive;
-    });
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getSwitchWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `switch-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '🗂',
-              tags: ['workspace', 'switch', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'switch-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getMoveToWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            if (ws.uuid === activeId) continue;
-            const name = ws.name || 'Unnamed';
-            results.push({
-              key: `move-to-workspace:${ws.uuid}`,
-              label: name,
-              icon: ws.icon || '🗂',
-              tags: ['workspace', 'move', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'move-to-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getRenameWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `rename-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '✏',
-              tags: ['workspace', 'rename', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getAddToFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeTab = gBrowser.selectedTab;
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-        // Skip if tab is already in this folder
-        if (activeTab && activeTab.group === folder) continue;
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `add-to-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '📂',
-          tags: ['folder', 'add', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for add: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'add-to-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getRenameFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `rename-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '✏',
-          tags: ['folder', 'rename', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getRenameFolderInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-folder-input:prompt', label: 'Type a new name for the folder and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-folder-input:confirm', label: `Rename folder to: "${name}"`, icon: '✏', tags: [] }];
-  }
-
-  function getRenameWorkspaceInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-workspace-input:prompt', label: 'Type a new name for the workspace and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-workspace-input:confirm', label: `Rename workspace to: "${name}"`, icon: '✏', tags: [] }];
-  }
-
-  function getCreateWorkspaceInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'create-workspace-input:prompt', label: 'Type a name for the new workspace and press Enter', icon: '➕', tags: [] }];
-    }
-    return [{ key: 'create-workspace-input:confirm', label: `Create workspace: "${name}"`, icon: '➕', tags: [] }];
+  function getDeleteFolderConfirmResults(data) {
+    const folder = data?.folder;
+    if (!folder?.isConnected) return [{ key: 'delete-folder:gone', label: 'The folder no longer exists', icon: '📂', tags: [] }];
+    const n = folderTabCount(folder);
+    const tabsText = `${n} tab${n !== 1 ? 's' : ''}`;
+    return [
+      { key: 'delete-folder:cancel', label: 'Cancel', icon: '↩', sublabel: `Keep "${folderName(folder)}"`, tags: [] },
+      { key: 'delete-folder:keep-tabs', label: `Delete folder only (keep ${tabsText})`, icon: '📦', sublabel: 'The tabs stay in the workspace', tags: [] },
+      { key: 'delete-folder:with-tabs', label: `Delete folder and close ${tabsText}`, icon: '🗑', sublabel: `Undo with ${formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete'])} within 30 seconds`, tags: [] },
+    ];
   }
 
   function getTabSearchSubFlowResults(query) {
@@ -5586,49 +5764,6 @@
     return fuzzyFilterAndSort(options, query);
   }
 
-  function getWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            results.push({
-              key: `ws:${ws.uuid}`,
-              label: name,
-              icon: ws.icon || '🗂',
-              tags: ['workspace', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'ws:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getFolderPickerResults(query) {
-    const results = [];
-    try {
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        results.push({
-          key: `folder:${folder.id}`,
-          label: name,
-          icon: '📂',
-          tags: ['folder', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders: ${e}`); }
-    results.push({ key: 'folder:new', label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
-    return fuzzyFilterAndSort(results, query);
-  }
-
   function getSplitTabPickerResults(query) {
     // Reuse tab search for split view picker
     const results = searchTabs(query);
@@ -5646,24 +5781,23 @@
     }));
   }
 
-  function getPlayingTabsResults(query) {
-    // Get tabs based on current cross-workspace setting
+  // Tabs currently playing audio, across all workspaces (finding one is the point,
+  // so this ignores the search-scope setting instead of flipping it).
+  function getPlayingTabs() {
     let allTabs;
-    if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
-      try {
-        const stored = gZenWorkspaces.allStoredTabs;
-        allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
-      } catch (e) { allTabs = Array.from(gBrowser.tabs); }
-    } else {
-      allTabs = getVisibleTabs();
-    }
-
-    // Filter to tabs currently playing audio
-    const playingTabs = allTabs.filter(tab =>
-      tab && !tab.closing && tab.parentNode &&
+    try {
+      const stored = window.gZenWorkspaces?.allStoredTabs;
+      allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
+    } catch (e) { allTabs = Array.from(gBrowser.tabs); }
+    return allTabs.filter(tab =>
+      isLiveTab(tab) &&
       !tab.hasAttribute('zen-empty-tab') &&
       tab.hasAttribute('soundplaying')
     );
+  }
+
+  function getPlayingTabsResults(query) {
+    const playingTabs = getPlayingTabs();
 
     let results = playingTabs.map(tab => ({
       key: `playing-tab:${tab.index}`,
@@ -5708,7 +5842,7 @@
 
     // Filter to valid, non-essential, non-pinned tabs
     const validTabs = allTabs.filter(t =>
-      t && !t.closing && t.parentNode &&
+      isLiveTab(t) &&
       !t.pinned &&
       !t.hasAttribute('zen-essential') &&
       !t.hasAttribute('zen-glance-tab') &&
@@ -5726,7 +5860,7 @@
 
     // For each group with >1 tab, keep the most recently accessed, collect the rest
     const tabsToClose = [];
-    for (const [url, tabs] of urlGroups) {
+    for (const [, tabs] of urlGroups) {
       if (tabs.length < 2) continue;
       tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
       for (let i = 1; i < tabs.length; i++) {
@@ -5749,447 +5883,448 @@
     }));
   }
 
-  // Handle sub-flow selection (Enter on a result)
-  function handleSubFlowSelect(result) {
-    if (!commandSubFlow) return;
+  // ── Selection helpers shared by several flows ──
 
-    switch (commandSubFlow.type) {
-      case 'tab-search':
-        // Move to action picker
-        enterSubFlow('action-picker', `${commandMatchedTabs.length} tabs`);
-        break;
+  function enterCreateWorkspaceStep(data) {
+    enterSubFlow('create-workspace-input', 'New Workspace', data);
+  }
 
-      case 'action-picker':
-        if (result.subFlow) {
-          enterSubFlow(result.subFlow, result.label);
-        } else if (result.key === 'action:browse-select') {
-          selectTabsInBrowseMode(commandMatchedTabs);
-        } else if (result.key === 'action:close-all') {
-          closeMatchedTabs(commandMatchedTabs);
-        } else if (result.key === 'action:move-to-top') {
-          moveMatchedTabsToPosition(commandMatchedTabs, 'top');
-        } else if (result.key === 'action:move-to-bottom') {
-          moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
-        } else if (result.key === 'action:unload-all') {
-          unloadMatchedTabs(commandMatchedTabs);
-        }
-        break;
+  // Run a folder action from a picker after the palette has closed (Zen's pickers and
+  // inline editors need the palette gone first).
+  function afterPalette(action, what) {
+    exitSearchMode();
+    setTimeout(() => {
+      try { action(); } catch (e) { reportError(`${what} failed`, e); }
+    }, 100);
+  }
 
-      case 'workspace-picker':
-        if (result.key === 'ws:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'workspace-picker' };
-        } else {
-          moveTabsToWorkspace(commandMatchedTabs, result.workspaceId);
-        }
-        break;
+  // ── The sub-flow table ──
+  const SUBFLOWS = {
+    // Select matching tabs → action
+    'tab-search': {
+      placeholder: 'Search tabs to select...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getTabSearchSubFlowResults(q),
+      select: () => enterSubFlow('action-picker', `${commandMatchedTabs.length} tabs`),
+    },
+    'action-picker': {
+      placeholder: 'Choose an action...',
+      results: q => getActionPickerResults(q),
+      select: (r) => {
+        if (r.subFlow) enterSubFlow(r.subFlow, r.label);
+        else if (r.key === 'action:browse-select') selectTabsInBrowseMode(commandMatchedTabs);
+        else if (r.key === 'action:close-all') closeMatchedTabs(commandMatchedTabs);
+        else if (r.key === 'action:move-to-top') moveMatchedTabsToPosition(commandMatchedTabs, 'top');
+        else if (r.key === 'action:move-to-bottom') moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
+        else if (r.key === 'action:unload-all') unloadMatchedTabs(commandMatchedTabs);
+      },
+    },
+    'workspace-picker': {
+      placeholder: 'Choose a workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      select: (r) => {
+        if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'workspace-picker' });
+        else moveTabsToWorkspace(commandMatchedTabs, r.workspaceId);
+      },
+    },
+    'folder-picker': {
+      placeholder: 'Choose a folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'folder', icon: '📂', counts: false, createKey: 'folder:new' }),
+      select: (r) => {
+        // Name input sub-flow instead of Zen's inline rename (unreliable from the palette)
+        if (r.key === 'folder:new') enterSubFlow('folder-name-input', 'Name new folder');
+        else addTabsToFolder(commandMatchedTabs, r);
+      },
+    },
+    'folder-name-input': {
+      placeholder: 'Enter folder name...',
+      results: q => textInputResults(q, FOLDER_NAME_INPUT),
+      select: () => {
+        const name = (commandQuery || '').trim();
+        if (name) createFolderWithName(commandMatchedTabs, name);
+      },
+    },
 
-      case 'folder-picker':
-        if (result.key === 'folder:new') {
-          // Enter name input sub-flow instead of using Zen's broken rename UI
-          enterSubFlow('folder-name-input', 'Name new folder');
-        } else {
-          addTabsToFolder(commandMatchedTabs, result);
-        }
-        break;
-
-      case 'folder-name-input': {
-        const folderName = (commandQuery || '').trim();
-        if (folderName) {
-          createFolderWithName(commandMatchedTabs, folderName);
-        }
-        break;
-      }
-
-      case 'split-tab-picker':
-        splitWithTab(result.tab);
-        break;
-
-      case 'playing-tabs':
-        if (result.tab) {
-          recordJump(gBrowser.selectedTab);
-          const ptTab = result.tab;
-          const ptWsId = ptTab.getAttribute('zen-workspace-id');
-          if (ptWsId && window.gZenWorkspaces && ptWsId !== gZenWorkspaces.activeWorkspace) {
-            gZenWorkspaces.changeWorkspaceWithID(ptWsId).then(() => {
-              gBrowser.selectedTab = ptTab;
-              recordJump(ptTab);
-            });
-          } else {
-            gBrowser.selectedTab = ptTab;
-            recordJump(ptTab);
-          }
-        }
+    // Tab pickers
+    'split-tab-picker': {
+      placeholder: 'Search for a tab to split with...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getSplitTabPickerResults(q),
+      select: r => splitWithTab(r.tab),
+    },
+    'playing-tabs': {
+      placeholder: 'Search playing tabs...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getPlayingTabsResults(q),
+      select: (r) => {
         exitSearchMode();
-        break;
-
-      case 'dedup-preview':
-        if (dedupTabsToClose.length > 0) {
-          const count = dedupTabsToClose.length;
-          for (const t of dedupTabsToClose) {
-            try { gBrowser.removeTab(t); } catch (e) { log(`Failed to close duplicate tab: ${e}`); }
-          }
-          log(`Deduplicated: closed ${count} duplicate tab(s)`);
-          dedupTabsToClose = [];
-        }
+        if (r.tab) switchToTabAcrossWorkspaces(r.tab).catch(e => reportError('Switching to playing tab failed', e));
+      },
+    },
+    'dedup-preview': {
+      placeholder: 'Duplicates to close — Enter to confirm',
+      readOnly: true,
+      onExit: () => { hidePreviewPanel(true); dedupTabsToClose = []; },
+      results: () => getDedupPreviewResults(),
+      select: () => {
+        // The preview list is the confirmation; close them as one batch
+        const count = TabOps.close(dedupTabsToClose);
+        if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
+        dedupTabsToClose = [];
         hidePreviewPanel(true);
         exitSearchMode();
-        break;
+      },
+    },
+    'sort-picker': {
+      placeholder: 'Sort by...',
+      results: q => getSortPickerResults(q),
+      select: (r) => {
+        if (r.key === 'sort:domain') sortLooseTabsByDomain();
+        else if (r.key === 'sort:title-az') sortLooseTabsByTitle();
+        else if (r.key === 'sort:title-za') sortLooseTabsByTitleReverse();
+        else if (r.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
+        else if (r.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+        exitSearchMode();
+      },
+    },
 
-      case 'delete-folder-picker':
-        if (result.folder) {
-          deleteFolder(result.folder);
-        }
-        break;
+    // Confirmation of a command that declared confirm()
+    'command-confirm': {
+      placeholder: 'Confirm — choose with ↓ and Enter',
+      readOnly: true,
+      results: () => getCommandConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'command-confirm:run' && data?.cmd) runCommand(data.cmd);
+        else exitSubFlow();
+      },
+    },
 
-      case 'delete-workspace-picker':
-        if (result.workspaceId) {
-          deleteWorkspace(result.workspaceId);
-        }
-        break;
-
-      case 'switch-workspace-picker':
-        if (result.key === 'switch-workspace:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'switch-workspace-picker' };
-        } else if (result.workspaceId) {
-          window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
+    // Workspaces
+    'create-workspace-input': {
+      placeholder: 'Enter new workspace name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'create-workspace-input', icon: '➕',
+        prompt: 'Type a name for the new workspace and press Enter',
+        confirm: name => `Create workspace: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'create-workspace-input:confirm' && name) handleCreateWorkspaceAndChain(name, data);
+      },
+    },
+    'delete-workspace-picker': {
+      placeholder: 'Select a workspace to delete...',
+      // Deleting closes the workspace's tabs: never pre-select the current workspace
+      results: q => workspacePickerResults(q, { keyPrefix: 'delete-workspace', verb: 'delete', icon: '🗑', markCurrent: true, currentLast: true, emptyLabel: 'No workspaces found' }),
+      select: (r) => {
+        if (r.workspaceId) enterSubFlow('delete-workspace-confirm', `Delete: ${r.workspaceName}`, { workspaceId: r.workspaceId, workspaceName: r.workspaceName });
+      },
+    },
+    'delete-workspace-confirm': {
+      placeholder: 'Deleting a workspace closes its tabs — choose with ↓ and Enter',
+      readOnly: true,
+      results: (q, data) => getDeleteWorkspaceConfirmResults(data),
+      select: (r, data) => {
+        if (r.key === 'delete-workspace:confirm' && data?.workspaceId) deleteWorkspace(data.workspaceId);
+        else exitSubFlow();
+      },
+    },
+    'switch-workspace-picker': {
+      placeholder: 'Select a workspace to switch to...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'switch-workspace', verb: 'switch', markCurrent: true, createKey: 'switch-workspace:create-new' }),
+      select: (r) => {
+        if (r.key === 'switch-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'switch-workspace-picker' });
+        } else if (r.workspaceId) {
           exitSearchMode();
+          gZenWorkspaces.changeWorkspaceWithID(r.workspaceId);
         }
-        break;
-
-      case 'move-to-workspace-picker':
-        if (result.key === 'move-to-workspace:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab };
-        } else if (result.workspaceId) {
-          const tabToMove = gBrowser.selectedTab;
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, result.workspaceId);
-          // Switch to the target workspace and focus the moved tab
-          setTimeout(() => {
-            window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
-            setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
-          }, S['timing.workspaceSwitchDelay'] || 100);
+      },
+    },
+    'move-to-workspace-picker': {
+      placeholder: 'Select a workspace to move tab to...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      select: (r) => {
+        if (r.key === 'move-to-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'move-to-workspace-picker', tabToMove: currentTab() });
+        } else if (r.workspaceId) {
+          const tabToMove = currentTab();
           exitSearchMode();
+          // Move, then follow the tab into the target workspace
+          TabOps.moveToWorkspace([tabToMove], r.workspaceId);
+          switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
         }
-        break;
+      },
+    },
+    'rename-workspace-picker': {
+      placeholder: 'Select a workspace to rename...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'rename-workspace', verb: 'rename', icon: '✏', markCurrent: true, emptyLabel: 'No workspaces found' }),
+      select: (r) => {
+        if (r.workspaceId) enterSubFlow('rename-workspace-input', `Rename: ${r.workspaceName}`, { workspaceId: r.workspaceId, workspaceName: r.workspaceName });
+      },
+    },
+    'rename-workspace-input': {
+      placeholder: 'Enter new workspace name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'rename-workspace-input', icon: '✏',
+        prompt: 'Type a new name for the workspace and press Enter',
+        confirm: name => `Rename workspace to: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'rename-workspace-input:confirm' && name && data?.workspaceId) renameWorkspace(data.workspaceId, name);
+      },
+    },
 
-      case 'add-to-folder-picker':
-        if (result.folder) {
-          addTabToFolder(result.folder);
-        }
-        break;
-
-      case 'rename-folder-picker':
-        if (result.folder) {
-          enterSubFlow('rename-folder-input', `Rename: ${result.label}`);
-          commandSubFlow.data = { folderId: result.folder.id, folderName: result.label };
-        }
-        break;
-
-      case 'rename-workspace-picker':
-        if (result.workspaceId) {
-          enterSubFlow('rename-workspace-input', `Rename: ${result.label.replace(' (current)', '')}`);
-          commandSubFlow.data = { workspaceId: result.workspaceId, workspaceName: result.label.replace(' (current)', '') };
-        }
-        break;
-
-      case 'rename-folder-input':
-        if (result.key === 'rename-folder-input:confirm') {
-          const name = commandQuery.trim();
-          const data = commandSubFlow?.data;
-          if (name && data?.folderId) {
-            renameFolder(data.folderId, name);
-          }
-        }
-        break;
-
-      case 'rename-workspace-input':
-        if (result.key === 'rename-workspace-input:confirm') {
-          const name = commandQuery.trim();
-          const data = commandSubFlow?.data;
-          if (name && data?.workspaceId) {
-            renameWorkspace(data.workspaceId, name);
-          }
-        }
-        break;
-
-      case 'create-workspace-input':
-        if (result.key === 'create-workspace-input:confirm') {
-          const name = commandQuery.trim();
-          if (name) {
-            handleCreateWorkspaceAndChain(name, commandSubFlow?.data);
-          }
-        }
-        break;
-
-      // --- Session Management Sub-Flows ---
-      case 'save-session-scope': {
-        const saveScope = result.key === 'save-scope:all' ? 'all' : 'current';
-        enterSubFlow('save-session-input', 'Add Comment');
-        commandSubFlow.data = { scope: saveScope };
-        break;
-      }
-
-      case 'save-session-input':
-        handleSaveSession(commandQuery.trim());
-        break;
-
-      case 'restore-session-picker':
-        if (result.sessionData) {
-          enterSubFlow('restore-session-mode', 'Restore Mode');
-          commandSubFlow.data = { session: result.sessionData };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-
-      case 'restore-session-mode': {
-        const restoreSession = commandSubFlow.data?.session;
-        if (result.key === 'restore-mode:new') {
-          handleRestoreSession(restoreSession, 'new');
-        } else if (result.key === 'restore-mode:replace') {
-          handleRestoreSession(restoreSession, 'replace');
-        }
-        break;
-      }
-
-      case 'list-sessions-picker':
-        if (result.sessionData) {
-          enterSubFlow('session-detail-view', result.label);
-          commandSubFlow.data = { session: result.sessionData };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-
-      case 'session-detail-view': {
-        const detailSession = commandSubFlow.data?.session;
-        if (detailSession) {
-          enterSubFlow('restore-session-mode', 'Restore Mode');
-          commandSubFlow.data = { session: detailSession };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-      }
-
-      case 'delete-session-confirm':
-        if (result.key === 'delete-session:confirm') {
-          const sessionId = commandSubFlow.data?.sessionId;
-          if (sessionId) {
-            deleteSessionFile(sessionId).then(() => {
-              sessionCache = null;
-              sessionLoadPromise = null;
-              exitSubFlow();
-            }).catch(e => {
-              log(`Delete session failed: ${e}`);
-              exitSubFlow();
-            });
-          }
-        } else if (result.key === 'delete-session:cancel') {
+    // Folders
+    'delete-folder-picker': {
+      placeholder: 'Select a folder to delete...',
+      results: q => folderPickerResults(q, { keyPrefix: 'delete-folder', verb: 'delete', icon: '🗑' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('delete-folder-confirm', `Delete: ${r.label}`, { folder: r.folder });
+      },
+    },
+    'delete-folder-confirm': {
+      placeholder: 'What should happen to the folder’s tabs?',
+      readOnly: true,
+      results: (q, data) => getDeleteFolderConfirmResults(data),
+      select: (r, data) => {
+        const folder = data?.folder;
+        if (r.key === 'delete-folder:keep-tabs' && folder) {
+          exitSearchMode();
+          dissolveFolder(folder).catch(e => reportError('Deleting folder failed', e));
+        } else if (r.key === 'delete-folder:with-tabs' && folder) {
+          exitSearchMode();
+          deleteFolderWithTabs(folder).catch(e => reportError('Deleting folder failed', e));
+        } else {
           exitSubFlow();
         }
-        break;
-      case 'sort-picker':
-        if (result.key === 'sort:domain') sortLooseTabsByDomain();
-        else if (result.key === 'sort:title-az') sortLooseTabsByTitle();
-        else if (result.key === 'sort:title-za') sortLooseTabsByTitleReverse();
-        else if (result.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
-        else if (result.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+      },
+    },
+    'add-to-folder-picker': {
+      placeholder: 'Select a folder to add tab to...',
+      // Skip the folder the tab is already in
+      results: q => folderPickerResults(q, { keyPrefix: 'add-to-folder', verb: 'add', icon: '📂', skip: currentTab()?.group }),
+      select: (r) => { if (r.folder) addTabToFolder(r.folder); },
+    },
+    'rename-folder-picker': {
+      placeholder: 'Select a folder to rename...',
+      results: q => folderPickerResults(q, { keyPrefix: 'rename-folder', verb: 'rename', icon: '✏' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('rename-folder-input', `Rename: ${r.label}`, { folderId: r.folder.id, folderName: r.label });
+      },
+    },
+    'rename-folder-input': {
+      placeholder: 'Enter new folder name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'rename-folder-input', icon: '✏',
+        prompt: 'Type a new name for the folder and press Enter',
+        confirm: name => `Rename folder to: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'rename-folder-input:confirm' && name && data?.folderId) renameFolder(data.folderId, name);
+      },
+    },
+    'change-folder-icon-picker': {
+      placeholder: 'Select a folder to change icon...',
+      results: q => folderPickerResults(q, { keyPrefix: 'change-icon-folder', verb: 'change-icon', icon: '🎨' }),
+      select: (r) => {
+        if (r.folder) afterPalette(() => gZenFolders.changeFolderUserIcon(r.folder), 'Change folder icon');
+      },
+    },
+    'unload-folder-picker': {
+      placeholder: 'Select a folder to unload tabs...',
+      results: q => folderPickerResults(q, { keyPrefix: 'unload-folder', verb: 'unload', icon: '💤' }),
+      select: (r) => {
+        if (!r.folder) return;
         exitSearchMode();
-        break;
-
-      // Browse command mode sub-flows
-      case 'browse-workspace-picker':
-        if (result.key === 'ws:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'browse-workspace-picker' };
-        } else if (result.workspaceId) {
-          moveTabsToWorkspace(browseCommandTabs, result.workspaceId);
-        }
-        break;
-
-      case 'browse-folder-picker':
-        if (result.key === 'folder:new') {
-          enterSubFlow('browse-folder-name-input', 'Name new folder');
-        } else {
-          addTabsToFolder(browseCommandTabs, result);
-        }
-        break;
-
-      case 'browse-folder-name-input': {
-        const browseFolderName = (commandQuery || '').trim();
-        if (browseFolderName) {
-          createFolderWithName(browseCommandTabs, browseFolderName);
-        }
-        break;
-      }
-
-      // --- Folder context-menu-parity sub-flows ---
-      case 'change-folder-icon-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
+        // Zen's own "Unload all tabs" for folders: unloads (per the pinned-tab close
+        // behavior pref) and collapses the folder
+        try {
+          r.folder.unloadAllTabs(new CustomEvent('ZenLeapUnloadFolder'));
+          log(`Unloaded tabs in folder: ${folderName(r.folder)}`);
+        } catch (e) { reportError('Unloading folder tabs failed', e); }
+      },
+    },
+    'create-subfolder-picker': {
+      placeholder: 'Select a parent folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'subfolder-folder', verb: 'subfolder', icon: '📁', canNest: true }),
+      select: (r) => {
+        if (r.folder) afterPalette(() => r.folder.createSubfolder(), 'Create subfolder');
+      },
+    },
+    'folder-to-workspace-picker': {
+      placeholder: 'Select a folder to convert to workspace...',
+      results: q => folderPickerResults(q, { keyPrefix: 'convert-folder', verb: 'convert', icon: '🗂' }),
+      select: (r) => {
+        exitSearchMode();
+        if (r.folder) convertFolderToWorkspace(r.folder).catch(e => reportError('Convert folder to workspace failed', e));
+      },
+    },
+    'unpack-folder-picker': {
+      placeholder: 'Select a folder to unpack...',
+      results: q => folderPickerResults(q, { keyPrefix: 'unpack-folder', verb: 'unpack', icon: '📦' }),
+      select: (r) => {
+        exitSearchMode();
+        if (!r.folder) return;
+        Promise.resolve(r.folder.unpackTabs())
+          .then(() => log(`Unpacked folder: ${folderName(r.folder)}`))
+          .catch(e => reportError('Unpack folder failed', e));
+      },
+    },
+    'move-folder-to-ws-folder-picker': {
+      placeholder: 'Select a folder to move...',
+      results: q => folderPickerResults(q, { keyPrefix: 'move-ws-folder', verb: 'move-ws', icon: '🗂' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('move-folder-to-ws-workspace-picker', `Move: ${r.label}`, { folder: r.folder, folderName: r.label });
+      },
+    },
+    'move-folder-to-ws-workspace-picker': {
+      placeholder: 'Select destination workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      select: (r, data) => {
+        if (r.key === 'move-to-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'move-folder-to-ws-workspace-picker', folder: data?.folder, folderName: data?.folderName });
+        } else if (r.workspaceId) {
           exitSearchMode();
-          setTimeout(() => {
+          if (data?.folder && window.gZenFolders) {
             try {
-              if (typeof gZenFolders?.changeFolderUserIcon === 'function') gZenFolders.changeFolderUserIcon(targetFolder);
-              else log('changeFolderUserIcon not available');
-            } catch(e) { log(`Change folder icon failed: ${e}`); }
-          }, 100);
-        }
-        break;
-
-      case 'unload-folder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          if (targetFolder) {
-            // Show "Unloading..." sub-flow while tabs are being discarded
-            enterSubFlow('unload-folder-progress', `Unload: ${targetFolder.label || 'folder'}`);
-            const folderTabs = (targetFolder.tabs || []).filter(t =>
-              t && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('pending') && !t.closing
-            );
-            const total = folderTabs.length;
-            let count = 0;
-            // Unload tabs one at a time with a small delay so the UI stays responsive
-            function unloadNext() {
-              if (count < total) {
-                try { gBrowser.discardBrowser(folderTabs[count]); } catch(e) {}
-                count++;
-                renderCommandResults();
-                setTimeout(unloadNext, 50);
-              } else {
-                log(`Unloaded ${count} tabs in folder: ${targetFolder.label || 'folder'}`);
-                exitSearchMode();
-              }
-            }
-            // Store progress state for the sub-flow results to read
-            commandSubFlow.data = { total, getCount: () => count };
-            renderCommandResults();
-            setTimeout(unloadNext, 50);
+              gZenFolders.changeFolderToSpace(data.folder, r.workspaceId);
+              log(`Moved folder "${data.folderName}" to workspace`);
+            } catch (e) { reportError('Move folder to workspace failed', e); }
           }
         }
-        break;
+      },
+    },
 
-      case 'create-subfolder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          exitSearchMode();
-          setTimeout(() => {
-            try {
-              if (typeof targetFolder.createSubfolder === 'function') targetFolder.createSubfolder();
-              else if (typeof gZenFolders?.createSubfolder === 'function') gZenFolders.createSubfolder(targetFolder);
-              else log('createSubfolder not available');
-            } catch(e) { log(`Create subfolder failed: ${e}`); }
-          }, 100);
+    // Browse-mode selection (the palette opened from browse mode acts on browseCommandTabs)
+    'browse-workspace-picker': {
+      placeholder: 'Choose a workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      select: (r) => {
+        if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'browse-workspace-picker' });
+        else if (r.workspaceId) moveTabsToWorkspace(browseCommandTabs, r.workspaceId);
+      },
+    },
+    'browse-folder-picker': {
+      placeholder: 'Choose a folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'folder', icon: '📂', counts: false, createKey: 'folder:new' }),
+      select: (r) => {
+        if (r.key === 'folder:new') enterSubFlow('browse-folder-name-input', 'Name new folder');
+        else addTabsToFolder(browseCommandTabs, r);
+      },
+    },
+    'browse-folder-name-input': {
+      placeholder: 'Enter folder name...',
+      results: q => textInputResults(q, FOLDER_NAME_INPUT),
+      select: () => {
+        const name = (commandQuery || '').trim();
+        if (name) createFolderWithName(browseCommandTabs, name);
+      },
+    },
+
+    // Sessions
+    'save-session-scope': {
+      placeholder: 'What to save?',
+      results: q => getSaveSessionScopeResults(q),
+      select: r => enterSubFlow('save-session-input', 'Add Comment', { scope: r.key === 'save-scope:all' ? 'all' : 'current' }),
+    },
+    'save-session-input': {
+      placeholder: 'Type a comment for this snapshot and press Enter...',
+      results: q => getSaveSessionInputResults(q),
+      select: () => handleSaveSession(commandQuery.trim()),
+    },
+    'restore-session-picker': {
+      placeholder: 'Select a session to restore...',
+      results: q => getRestoreSessionPickerResults(q),
+      select: (r) => { if (r.sessionData) enterSubFlow('restore-session-mode', 'Restore Mode', { session: r.sessionData }); },
+    },
+    'restore-session-mode': {
+      placeholder: 'How to restore?',
+      results: q => getRestoreSessionModeResults(q),
+      select: (r, data) => {
+        if (r.key === 'restore-mode:new') handleRestoreSession(data?.session, 'new');
+        // Destructive: confirm (with counts) first
+        else if (r.key === 'restore-mode:replace') enterSubFlow('restore-replace-confirm', 'Replace Current Workspace', { session: data?.session });
+      },
+    },
+    'restore-replace-confirm': {
+      placeholder: 'Replacing closes the current workspace’s tabs — choose with ↓ and Enter',
+      readOnly: true,
+      results: () => getRestoreReplaceConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'restore-replace:confirm') handleRestoreSession(data?.session, 'replace');
+        else exitSubFlow();
+      },
+    },
+    'list-sessions-picker': {
+      placeholder: 'Browse saved sessions...',
+      results: q => getListSessionsPickerResults(q),
+      select: (r) => { if (r.sessionData) enterSubFlow('session-detail-view', r.label, { session: r.sessionData }); },
+    },
+    'session-detail-view': {
+      placeholder: 'Session contents (Esc to go back)',
+      readOnly: true,
+      results: q => getSessionDetailViewResults(q),
+      select: (r, data) => { if (data?.session) enterSubFlow('restore-session-mode', 'Restore Mode', { session: data.session }); },
+    },
+    'delete-session-confirm': {
+      placeholder: 'Press Enter to confirm deletion...',
+      readOnly: true,
+      results: () => getDeleteSessionConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'delete-session:confirm' && data?.sessionId) {
+          deleteSessionFile(data.sessionId).then(() => {
+            sessionCache = null;
+            sessionLoadPromise = null;
+            exitSubFlow();
+          }).catch(e => {
+            reportError('Deleting session failed', e);
+            exitSubFlow();
+          });
+        } else if (r.key === 'delete-session:cancel') {
+          exitSubFlow();
         }
-        break;
+      },
+    },
 
-      case 'folder-to-workspace-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          if (targetFolder && window.gZenWorkspaces) {
-            (async () => {
-              try {
-                const folderName = targetFolder.label || 'Untitled';
-                const currentWorkspace = gZenWorkspaces.getActiveWorkspaceFromCache();
-                const icon = targetFolder.icon?.querySelector('svg .icon image');
-                let selectedTab = targetFolder.tabs?.find(t => t.selected);
-
-                const newSpace = await gZenWorkspaces.createAndSaveWorkspace(
-                  folderName,
-                  icon?.getAttribute('href'),
-                  false,
-                  currentWorkspace?.containerTabId || 0,
-                  {
-                    beforeChangeCallback: async (newWorkspace) => {
-                      await new Promise((resolve) => {
-                        requestAnimationFrame(async () => {
-                          const wsPinnedContainer = gZenWorkspaces.workspaceElement(newWorkspace.uuid)?.pinnedTabsContainer;
-                          const tabs = (targetFolder.allItems || targetFolder.tabs || []).filter(t => !t.hasAttribute('zen-empty-tab'));
-                          if (wsPinnedContainer) wsPinnedContainer.append(...tabs);
-                          if (typeof targetFolder.delete === 'function') await targetFolder.delete();
-                          gBrowser.tabContainer._invalidateCachedTabs();
-                          if (selectedTab) {
-                            selectedTab.setAttribute('zen-workspace-id', newWorkspace.uuid);
-                            selectedTab.removeAttribute('folder-active');
-                            gZenWorkspaces.lastSelectedWorkspaceTabs[newWorkspace.uuid] = selectedTab;
-                          }
-                          resolve();
-                        });
-                      });
-                    },
-                  }
-                );
-                log(`Converted folder "${folderName}" to workspace`);
-              } catch(e) { log(`Convert folder to workspace failed: ${e}`); }
-            })();
-          }
-        }
-        exitSearchMode();
-        break;
-
-      case 'unpack-folder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          try {
-            if (typeof targetFolder.unpackTabs === 'function') targetFolder.unpackTabs();
-            else if (typeof gZenFolders?.ungroupTabsFromActiveGroups === 'function') {
-              const tabs = (targetFolder.tabs || []).filter(t => t && !t.hasAttribute('zen-empty-tab'));
-              gZenFolders.ungroupTabsFromActiveGroups(tabs);
-            }
-            log(`Unpacked folder: ${targetFolder.label || 'folder'}`);
-          } catch(e) { log(`Unpack folder failed: ${e}`); }
-        }
-        exitSearchMode();
-        break;
-
-      case 'move-folder-to-ws-folder-picker':
-        if (result.folder) {
-          enterSubFlow('move-folder-to-ws-workspace-picker', `Move: ${result.label}`);
-          commandSubFlow.data = { folder: result.folder, folderName: result.label };
-        }
-        break;
-
-      case 'move-folder-to-ws-workspace-picker':
-        if (result.key === 'move-to-workspace:create-new') {
-          const prevData = commandSubFlow?.data;
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'move-folder-to-ws-workspace-picker', folder: prevData?.folder, folderName: prevData?.folderName };
-        } else if (result.workspaceId) {
-          const folderData = commandSubFlow?.data;
-          if (folderData?.folder && window.gZenFolders) {
-            try {
-              gZenFolders.changeFolderToSpace(folderData.folder, result.workspaceId);
-              log(`Moved folder "${folderData.folderName}" to workspace`);
-            } catch(e) { log(`Move folder to workspace failed: ${e}`); }
-          }
-          exitSearchMode();
-        }
-        break;
-
-      // --- Theme Sub-Flows ---
-      case 'theme-picker':
-        if (result.themeId) {
-          // User confirmed — clear preview state so exitSubFlow won't revert
-          _themePreviewOriginal = null;
-          S['appearance.theme'] = result.themeId;
-          saveSettings();
-          applyTheme();
-          // Ask about browser application
-          enterSubFlow('theme-browser-confirm', 'Apply to Browser?');
-        }
-        break;
-
-      case 'theme-browser-confirm':
-        if (result.key === 'theme-browser:yes') {
-          S['appearance.applyToBrowser'] = true;
-        } else if (result.key === 'theme-browser:no') {
-          S['appearance.applyToBrowser'] = false;
-        }
+    // Themes
+    'theme-picker': {
+      placeholder: 'Select a theme...',
+      // Save current theme for live-preview restore on Escape
+      onEnter: () => { _themePreviewOriginal = S['appearance.theme'] || 'meridian'; },
+      onExit: () => {
+        if (!_themePreviewOriginal) return;
+        S['appearance.theme'] = _themePreviewOriginal;
+        _themePreviewOriginal = null;
+        saveSettings();
+        applyTheme();
+      },
+      results: q => getThemePickerResults(q),
+      select: (r) => {
+        if (!r.themeId) return;
+        // User confirmed — clear preview state so leaving the picker won't revert
+        _themePreviewOriginal = null;
+        S['appearance.theme'] = r.themeId;
+        saveSettings();
+        applyTheme();
+        // Ask about browser application
+        enterSubFlow('theme-browser-confirm', 'Apply to Browser?');
+      },
+    },
+    'theme-browser-confirm': {
+      placeholder: 'Apply theme to browser too?',
+      results: q => getThemeBrowserConfirmResults(q),
+      select: (r) => {
+        if (r.key === 'theme-browser:yes') S['appearance.applyToBrowser'] = true;
+        else if (r.key === 'theme-browser:no') S['appearance.applyToBrowser'] = false;
         saveSettings();
         applyBrowserTheme();
         exitSearchMode();
-        break;
-    }
-  }
+      },
+    },
+  };
 
   // Action executors for sub-flows
   function selectTabsInBrowseMode(tabs) {
@@ -6204,13 +6339,13 @@
       browseDirection = 'down';
       const currentIdx = findCurrentItemIndex(visibleItems);
       originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
-      originalTab = gBrowser.selectedTab;
+      originalTab = currentTab();
       highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
 
       // Pre-select the matched tabs
       selectedItems.clear();
       for (const t of tabs) {
-        if (t && !t.closing && t.parentNode) selectedItems.add(t);
+        if (isLiveTab(t)) selectedItems.add(t);
       }
 
       updateHighlight();
@@ -6219,78 +6354,37 @@
     }, 100);
   }
 
+  // Close a user-selected set of tabs as one batch; Firefox's own warning appears when
+  // more tabs than can be reopened would close.
   function closeMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    const count = validTabs.length;
-    for (const t of validTabs) gBrowser.removeTab(t);
-    log(`Closed ${count} matching tabs`);
     exitSearchMode();
+    const count = TabOps.close(tabs, { warn: gBrowser.closingTabsEnum.MULTI_SELECTED });
+    log(`Closed ${count} matching tabs`);
   }
 
-  // Unload (discard) matched tabs to save memory
+  // Unload (discard) matched tabs to save memory. Firefox picks another tab to select
+  // first when the current one is included, and handles split views/beforeunload.
   function unloadMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t =>
-      t && !t.closing && t.parentNode && !t.hasAttribute('pending')
-    );
-    if (validTabs.length === 0) {
-      log('No tabs to unload (all already unloaded or invalid)');
-      exitSearchMode();
-      return;
-    }
-
-    const currentTab = gBrowser.selectedTab;
-    const currentIsMatched = validTabs.includes(currentTab);
-
-    if (currentIsMatched) {
-      // Switch to the most recently accessed non-matched, non-pending tab
-      const matchedSet = new Set(validTabs);
-      const alternates = Array.from(gBrowser.tabs)
-        .filter(t => t && !t.closing && t.parentNode && !matchedSet.has(t) &&
-                      !t.hasAttribute('pending') && !t.hidden);
-      alternates.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-      if (alternates[0]) {
-        gBrowser.selectedTab = alternates[0];
-      }
-    }
-
-    const count = validTabs.length;
-    // Discard after delay to let any tab switch complete
-    setTimeout(() => {
-      for (const tab of validTabs) {
-        try {
-          gBrowser.discardBrowser(tab);
-        } catch (e) {
-          log(`Failed to unload tab: ${e}`);
-        }
-      }
-      log(`Unloaded ${count} matching tabs`);
-    }, S['timing.unloadTabDelay']);
-
     exitSearchMode();
+    TabOps.unload(tabs)
+      .then(count => log(`Unloaded ${count} matching tabs`))
+      .catch(e => reportError('Unloading tabs failed', e));
   }
 
   function reloadMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     for (const t of validTabs) gBrowser.reloadTab(t);
     log(`Reloaded ${validTabs.length} tabs`);
     exitSearchMode();
   }
 
   function bookmarkMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     try {
       // Use bookmarkTabs() which is the same API the context menu uses
       PlacesCommandHook.bookmarkTabs(validTabs);
-    } catch(e) { log(`Bookmark tabs failed: ${e}`); }
+    } catch(e) { reportError('Bookmarking tabs failed', e); }
     exitSearchMode();
-  }
-
-  // Sort tabs by their current sidebar position to preserve relative order
-  function sortTabsBySidebarPosition(tabs) {
-    const visibleTabs = getVisibleTabs();
-    const positionMap = new Map();
-    visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
-    return [...tabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
   }
 
   // --- Tab Sorting Helpers ---
@@ -6325,12 +6419,9 @@
       const firstRegularIdx = visibleTabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
       if (firstRegularIdx < 0) return;
 
-      // Place first sorted tab at the first regular position
-      gBrowser.moveTabBefore(sortedTabs[0], visibleTabs[firstRegularIdx]);
-      for (let i = 1; i < sortedTabs.length; i++) {
-        gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-      }
-    } catch (e) { log(`Tab reorder failed: ${e}`); }
+      // Place the sorted tabs, in order, at the first regular position
+      gBrowser.moveTabsBefore(sortedTabs, visibleTabs[firstRegularIdx]);
+    } catch (e) { reportError('Reordering tabs failed', e); }
   }
 
   // Sort all loose tabs by domain, grouping same-domain tabs together
@@ -6426,18 +6517,17 @@
   }
 
   function moveMatchedTabsToPosition(tabs, position) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+    exitSearchMode();
+    const validTabs = liveTabs(tabs);
+    if (validTabs.length === 0) return;
 
-    // Move tabs from other workspaces into the current workspace first
-    if (window.gZenWorkspaces) {
+    // Move tabs from other workspaces into the current workspace first (one ordered batch)
+    if (workspacesEnabled()) {
       const currentWsId = gZenWorkspaces.activeWorkspace;
-      for (const tab of validTabs) {
-        const tabWsId = tab.getAttribute('zen-workspace-id');
-        if (tabWsId && tabWsId !== currentWsId) {
-          gZenWorkspaces.moveTabToWorkspace(tab, currentWsId);
-        }
-      }
+      TabOps.moveToWorkspace(validTabs.filter(t => {
+        const wsId = t.getAttribute('zen-workspace-id');
+        return wsId && wsId !== currentWsId && !t.hasAttribute('zen-essential');
+      }), currentWsId);
     }
 
     // Unpin any pinned tabs (except essentials) so they can cross the pinned/unpinned DOM boundary
@@ -6448,56 +6538,29 @@
     }
 
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     const sortedSet = new Set(sortedTabs);
     const visibleTabs = getVisibleTabs();
     try {
       if (position === 'top') {
-        // Find the first non-pinned, non-essential tab that is NOT being moved
-        const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t));
-        if (anchor && sortedTabs.length > 0) {
-          // Move first tab before the anchor, then chain each subsequent tab after the previous
-          gBrowser.moveTabBefore(sortedTabs[0], anchor);
-          for (let i = 1; i < sortedTabs.length; i++) {
-            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-          }
-        } else {
-          // All regular tabs are being moved (or single tab) — find first regular tab as anchor
-          const firstRegular = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
-          if (firstRegular) {
-            gBrowser.moveTabBefore(sortedTabs[0], firstRegular);
-            for (let i = 1; i < sortedTabs.length; i++) {
-              gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-            }
-          }
-        }
+        // Anchor: the first regular tab that is not being moved (or the first regular tab)
+        const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t))
+          || visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
+        if (anchor && anchor !== sortedTabs[0]) gBrowser.moveTabsBefore(sortedTabs, anchor);
+        else if (anchor && sortedTabs.length > 1) gBrowser.moveTabsAfter(sortedTabs.slice(1), sortedTabs[0]);
       } else {
-        // Move to bottom - chain each tab after the previous, starting after the last visible tab
-        if (sortedTabs.length > 0) {
-          const lastVisible = getVisibleTabs();
-          const lastTab = lastVisible[lastVisible.length - 1];
-          if (lastTab && lastTab !== sortedTabs[0]) {
-            gBrowser.moveTabAfter(sortedTabs[0], lastTab);
-          }
-          for (let i = 1; i < sortedTabs.length; i++) {
-            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-          }
-        }
+        const lastTab = visibleTabs[visibleTabs.length - 1];
+        if (lastTab && lastTab !== sortedTabs[0]) gBrowser.moveTabsAfter(sortedTabs, lastTab);
+        else if (sortedTabs.length > 1) gBrowser.moveTabsAfter(sortedTabs.slice(1), sortedTabs[0]);
       }
       log(`Moved ${sortedTabs.length} tabs to ${position}`);
-    } catch (e) { log(`Move to ${position} failed: ${e}`); }
-    exitSearchMode();
+    } catch (e) { reportError(`Moving tabs to the ${position} failed`, e); }
   }
 
   function moveTabsToWorkspace(tabs, workspaceId) {
     try {
-      for (const t of tabs) {
-        if (t && !t.closing && t.parentNode) {
-          window.gZenWorkspaces.moveTabToWorkspace(t, workspaceId);
-        }
-      }
-      log(`Moved ${tabs.length} tabs to workspace ${workspaceId}`);
-    } catch (e) { log(`Move to workspace failed: ${e}`); }
+      const count = TabOps.moveToWorkspace(tabs, workspaceId);
+      log(`Moved ${count} tabs to workspace ${workspaceId}`);
+    } catch (e) { reportError('Moving tabs to workspace failed', e); }
     exitSearchMode();
   }
 
@@ -6509,7 +6572,7 @@
     try {
       await gZenWorkspaces.createAndSaveWorkspace(name, undefined, false, 0);
     } catch (e) {
-      log(`Create workspace failed: ${e}`);
+      reportError('Creating workspace failed', e);
       exitSearchMode();
       return;
     }
@@ -6529,13 +6592,13 @@
         return;
 
       case 'move-to-workspace-picker': {
-        // Move the captured tab to the new workspace
+        // Move the captured tab to the new (already active) workspace and select it
         const tabToMove = data?.tabToMove;
-        if (tabToMove && !tabToMove.closing) {
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, newWsId);
-          setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
-        }
         exitSearchMode();
+        if (isLiveTab(tabToMove)) {
+          TabOps.moveToWorkspace([tabToMove], newWsId);
+          await switchToTabAcrossWorkspaces(tabToMove);
+        }
         return;
       }
 
@@ -6550,7 +6613,7 @@
           try {
             gZenFolders.changeFolderToSpace(data.folder, newWsId);
             log(`Moved folder "${data.folderName}" to new workspace "${name}"`);
-          } catch(e) { log(`Move folder to workspace failed: ${e}`); }
+          } catch(e) { reportError('Moving folder to workspace failed', e); }
         }
         exitSearchMode();
         return;
@@ -6563,69 +6626,54 @@
   }
 
   function addTabsToFolder(tabs, folderResult) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+    exitSearchMode();
+    const validTabs = liveTabs(tabs);
+    // Re-fetch folder by ID to avoid stale DOM references
+    const targetFolder = folderResult?.folder ? document.getElementById(folderResult.folder.id) : null;
+    if (validTabs.length === 0 || !targetFolder) { log('Add to folder: no tabs or folder not found'); return; }
 
     // Sort tabs by sidebar position to preserve relative order
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     try {
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = folderResult.folder ?
-        document.getElementById(folderResult.folder.id) : null;
-      if (!targetFolder) { log('Target folder not found'); exitSearchMode(); return; }
-
-      // Handle workspace and pin for each tab
+      // Tabs from other workspaces move over first (one ordered batch)
       const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+      if (targetWorkspaceId && workspacesEnabled()) {
+        TabOps.moveToWorkspace(sortedTabs.filter(t => (t.getAttribute('zen-workspace-id') || gZenWorkspaces.activeWorkspace) !== targetWorkspaceId), targetWorkspaceId);
+      }
+      // Zen folders hold pinned tabs
       for (const t of sortedTabs) {
-        if (targetWorkspaceId && window.gZenWorkspaces) {
-          const currentWsId = t.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-          if (currentWsId !== targetWorkspaceId) {
-            window.gZenWorkspaces.moveTabToWorkspace(t, targetWorkspaceId);
-          }
-        }
         if (!t.pinned) gBrowser.pinTab(t);
       }
       targetFolder.addTabs(sortedTabs);
-      log(`Added ${sortedTabs.length} tabs to folder: ${targetFolder.label}`);
-    } catch (e) { log(`Add to folder failed: ${e}`); }
-    exitSearchMode();
+      log(`Added ${sortedTabs.length} tabs to folder: ${folderName(targetFolder)}`);
+    } catch (e) { reportError('Adding tabs to folder failed', e); }
   }
 
-  function createFolderWithName(tabs, folderName) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+  function createFolderWithName(tabs, name) {
+    exitSearchMode();
+    const validTabs = liveTabs(tabs).filter(t => !t.hasAttribute('zen-essential'));
+    if (validTabs.length === 0 || !window.gZenFolders) return;
 
     // Sort tabs by sidebar position to preserve relative order
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     try {
-      if (!window.gZenFolders) {
-        log('gZenFolders not available');
-        exitSearchMode();
-        return;
-      }
       // gZenFolders.createFolder handles pinning tabs internally
-      gZenFolders.createFolder(sortedTabs, {
-        label: folderName,
-        renameFolder: false,
-      });
-      log(`Created folder "${folderName}" with ${sortedTabs.length} tabs`);
-    } catch (e) { log(`Create folder with name failed: ${e}`); }
-    exitSearchMode();
+      gZenFolders.createFolder(sortedTabs, { label: name, renameFolder: false });
+      log(`Created folder "${name}" with ${sortedTabs.length} tabs`);
+    } catch (e) { reportError('Creating folder failed', e); }
   }
 
-  // Duplicate matched tabs
+  // Duplicate matched tabs (each copy goes right after its source, like Zen's own duplicate)
   function duplicateMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    for (const t of validTabs) gBrowser.duplicateTab(t);
-    log(`Duplicated ${validTabs.length} tabs`);
     exitSearchMode();
+    const validTabs = liveTabs(tabs);
+    for (const t of validTabs) gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
+    log(`Duplicated ${validTabs.length} tabs`);
   }
 
   // Pin or unpin matched tabs (smart toggle: if any unpinned, pin all; else unpin all)
   function pinUnpinMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     const anyUnpinned = validTabs.some(t => !t.pinned);
     for (const t of validTabs) {
       if (anyUnpinned) { if (!t.pinned) gBrowser.pinTab(t); }
@@ -6637,7 +6685,7 @@
 
   // Mute or unmute matched tabs
   function muteUnmuteMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     for (const t of validTabs) t.toggleMuteAudio();
     log(`Toggled mute on ${validTabs.length} tabs`);
     exitSearchMode();
@@ -6646,10 +6694,10 @@
   function splitWithTab(tab) {
     try {
       if (window.gZenViewSplitter && tab) {
-        window.gZenViewSplitter.splitTabs([gBrowser.selectedTab, tab]);
+        window.gZenViewSplitter.splitTabs([currentTab(), tab]);
         log(`Split view with tab: ${tab.label}`);
       }
-    } catch (e) { log(`Split failed: ${e}`); }
+    } catch (e) { reportError('Split view failed', e); }
     exitSearchMode();
   }
 
@@ -6657,7 +6705,7 @@
     try {
       if (window.gZenViewSplitter && tabs.length >= 2) {
         const validTabs = tabs.filter(t =>
-          t && !t.closing && t.parentNode &&
+          isLiveTab(t) &&
           !t.hidden && !t.hasAttribute('zen-empty-tab') &&
           !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-glance-tab') &&
           !t.splitView
@@ -6669,90 +6717,35 @@
           log('Not enough valid tabs for split view after filtering');
         }
       }
-    } catch (e) { log(`Browse split failed: ${e}`); }
+    } catch (e) { reportError('Split view failed', e); }
     exitSearchMode();
   }
 
-  function deleteFolder(folder) {
-    try {
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { log('Folder not found for deletion'); exitSearchMode(); return; }
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first
-      if (typeof targetFolder.delete === 'function') {
-        targetFolder.delete();
-      } else if (typeof gBrowser.removeTabGroup === 'function') {
-        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
-      }
-      log(`Deleted folder: ${name}`);
-    } catch (e) { log(`Delete folder failed: ${e}`); }
+  async function deleteWorkspace(workspaceId) {
     exitSearchMode();
-  }
-
-  function deleteWorkspace(workspaceId) {
+    if (!workspacesEnabled()) return;
+    const name = getWorkspaceName(workspaceId) || workspaceId;
     try {
-      if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
-      // Use Zen's workspace removal API
-      if (typeof gZenWorkspaces.removeWorkspace === 'function') {
-        gZenWorkspaces.removeWorkspace(workspaceId);
-      } else if (typeof gZenWorkspaces.deleteWorkspace === 'function') {
-        gZenWorkspaces.deleteWorkspace(workspaceId);
-      } else {
-        log('No API available to delete workspace');
-        exitSearchMode();
-        return;
-      }
-      log(`Deleted workspace: ${workspaceId}`);
-    } catch (e) { log(`Delete workspace failed: ${e}`); }
-    exitSearchMode();
+      const confirmed = await removeWorkspaceWithTimeout(workspaceId);
+      if (!confirmed) log(`Delete workspace "${name}": Zen did not confirm within the timeout`);
+      else log(`Deleted workspace: ${name}`);
+    } catch (e) { reportError(`Deleting workspace "${name}" failed`, e); }
   }
 
   function addTabToFolder(folder) {
-    try {
-      const tabToMove = gBrowser.selectedTab;
-      if (!tabToMove) { exitSearchMode(); return; }
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { log(`Folder not found: ${folder.id}`); exitSearchMode(); return; }
-
-      // Handle cross-workspace moves
-      const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
-      if (targetWorkspaceId && window.gZenWorkspaces) {
-        const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-        if (currentWorkspaceId !== targetWorkspaceId) {
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
-        }
-      }
-
-      // Pin tab if not already pinned (Zen folders require pinned tabs)
-      if (!tabToMove.pinned) {
-        gBrowser.pinTab(tabToMove);
-      }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      targetFolder.addTabs([tabToMove]);
-      log(`Added tab to folder: ${name}`);
-    } catch(e) { log(`Add to folder failed: ${e}`); }
-    exitSearchMode();
+    addTabsToFolder([currentTab()], { folder });
   }
 
   function renameFolder(folderId, newName) {
-    try {
-      const targetFolder = document.getElementById(folderId);
-      if (!targetFolder) { log('Folder not found for rename'); exitSearchMode(); return; }
-      const oldName = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      // Use the folder's name setter which triggers ZenFolderRenamed event
-      if ('name' in targetFolder) {
-        targetFolder.name = newName;
-      } else if (targetFolder.labelElement) {
-        targetFolder.label = newName;
-      } else {
-        targetFolder.setAttribute('zen-folder-name', newName);
-      }
-      log(`Renamed folder: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename folder failed: ${e}`); }
     exitSearchMode();
+    const targetFolder = document.getElementById(folderId);
+    if (!targetFolder?.isZenFolder) { log('Folder not found for rename'); return; }
+    const oldName = folderName(targetFolder);
+    try {
+      // The name setter fires ZenFolderRenamed (Zen syncs/saves the label)
+      targetFolder.name = newName;
+      log(`Renamed folder: "${oldName}" → "${newName}"`);
+    } catch (e) { reportError('Renaming folder failed', e); }
   }
 
   function renameWorkspace(workspaceId, newName) {
@@ -6779,7 +6772,7 @@
         }
       }
       log(`Renamed workspace: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename workspace failed: ${e}`); }
+    } catch (e) { reportError('Renaming workspace failed', e); }
     exitSearchMode();
   }
 
@@ -6812,9 +6805,13 @@
           if (!filePath.endsWith('.json')) continue;
           try {
             const data = await IOUtils.readJSON(filePath);
-            if (data && data.version && data.id) {
+            if (data && data.version && typeof data.id === 'string' && Array.isArray(data.workspaces)) {
               data._filePath = filePath;
+              // Older/hand-edited files may lack stats; derive them
+              if (!_isPlainObject(data.stats)) data.stats = computeSessionStats(data.workspaces);
               sessions.push(data);
+            } else {
+              log(`Skipping session file with unexpected format: ${filePath}`);
             }
           } catch (e) {
             log(`Skipping corrupt session file: ${filePath}: ${e}`);
@@ -6834,12 +6831,25 @@
   }
 
   async function saveSessionToFile(sessionData) {
+    if (isPrivateWindow()) throw new Error('Sessions cannot be saved from a private window');
     const dir = await getSessionsDir();
     const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
-    await IOUtils.writeJSON(filePath, sessionData);
+    await IOUtils.writeJSON(filePath, sessionData, { tmpPath: `${filePath}.tmp` });
     sessionCache = null;
     sessionLoadPromise = null;
     log(`Session saved: ${filePath}`);
+  }
+
+  // Keep only the most recent automatic backups (made before "Replace" restores).
+  const MAX_AUTO_BACKUP_SESSIONS = 5;
+  async function pruneAutoBackupSessions() {
+    try {
+      const sessions = (await loadAllSessions()).filter(s => s.autoBackup);
+      for (const old of sessions.slice(MAX_AUTO_BACKUP_SESSIONS)) {
+        await IOUtils.remove(old._filePath, { ignoreAbsent: true });
+      }
+      if (sessions.length > MAX_AUTO_BACKUP_SESSIONS) { sessionCache = null; sessionLoadPromise = null; }
+    } catch (e) { log(`Pruning auto-backup sessions failed: ${e}`); }
   }
 
   async function deleteSessionFile(sessionId) {
@@ -6849,7 +6859,7 @@
       await IOUtils.remove(filePath);
       log(`Session deleted: ${sessionId}`);
     } catch (e) {
-      log(`Delete session file failed: ${e}`);
+      reportError('Deleting session file failed', e);
     }
     sessionCache = null;
     sessionLoadPromise = null;
@@ -6858,16 +6868,19 @@
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
 
   function collectTabItem(tab, splitGroupMap) {
-    return {
+    const item = {
       type: 'tab',
       url: tab.linkedBrowser?.currentURI?.spec || 'about:blank',
       title: tab.label || 'Untitled',
-      favicon: tab.getAttribute('image') || '',
       pinned: !!tab.pinned,
       essential: tab.hasAttribute('zen-essential'),
       customLabel: (typeof tab.zenStaticLabel === 'string' && tab.zenStaticLabel) ? tab.zenStaticLabel : null,
       splitGroupIndex: splitGroupMap?.get(tab) ?? null,
     };
+    // Custom (user-chosen) tab icon; only small local icons (Zen's picker uses chrome:/data: SVGs)
+    const icon = tab.zenStaticIcon;
+    if (typeof icon === 'string' && /^(chrome|data):/.test(icon) && icon.length < 65536) item.customIcon = icon;
+    return item;
   }
 
   function collectFolderTree(folder, splitGroupMap) {
@@ -6886,13 +6899,13 @@
     } catch (e) { log(`Error collecting folder tree: ${e}`); }
     return {
       type: 'folder',
-      name: folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder',
+      name: folderName(folder),
       collapsed: !!folder.collapsed,
       children,
     };
   }
 
-  function collectWorkspaceLayout(wsData) {
+  function collectWorkspaceLayout(wsData, { includeEssentials = true } = {}) {
     const wsId = wsData?.uuid;
     const layout = [];
 
@@ -6903,7 +6916,7 @@
       if (window.gZenViewSplitter?._data) {
         for (const group of gZenViewSplitter._data) {
           const groupTabs = (group.tabs || []).filter(t =>
-            t && !t.closing && t.parentNode &&
+            isLiveTab(t) &&
             (t.getAttribute('zen-workspace-id') === wsId || t.hasAttribute('zen-essential'))
           );
           if (groupTabs.length >= 2) {
@@ -6917,11 +6930,13 @@
 
     // Essential tabs are shared across workspaces (separate DOM section).
     // Collect them first so they appear at the top of the layout.
-    const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
-      t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
-    );
-    for (const tab of essentialTabs) {
-      layout.push(collectTabItem(tab, splitGroupMap));
+    if (includeEssentials) {
+      const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
+        t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
+      );
+      for (const tab of essentialTabs) {
+        layout.push(collectTabItem(tab, splitGroupMap));
+      }
     }
 
     // Walk workspace-specific DOM containers for folders, pinned tabs, and normal tabs
@@ -6942,7 +6957,7 @@
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             if (child.hasAttribute('zen-essential')) continue; // already collected above
             layout.push(collectTabItem(child, splitGroupMap));
-          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+          } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
@@ -6961,7 +6976,7 @@
           if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             layout.push(collectTabItem(child, splitGroupMap));
-          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+          } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
@@ -6982,7 +6997,7 @@
       }
     }
 
-    const activeTab = gBrowser.selectedTab;
+    const activeTab = currentTab();
     const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId)
       ? (activeTab.linkedBrowser?.currentURI?.spec || '') : '';
 
@@ -7026,9 +7041,10 @@
 
   // Get layout from workspace data (handles v1 and v2 session formats)
   function getWorkspaceLayout(ws) {
-    if (ws.layout) return ws.layout;
+    if (!_isPlainObject(ws)) return [];
+    if (Array.isArray(ws.layout)) return ws.layout;
     // Convert v1 format (flat tabs + folders arrays) to v2 layout tree
-    if (!ws.tabs) return [];
+    if (!Array.isArray(ws.tabs)) return [];
     const layout = [];
     const sorted = [...ws.tabs].sort((a, b) => (a.position || 0) - (b.position || 0));
     const folderTabs = new Map();
@@ -7039,25 +7055,35 @@
       }
     }
     for (const tab of sorted) {
-      if (tab.essential) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: true });
+      if (tab.essential) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: true, essential: true });
     }
     for (const [name, tabs] of folderTabs) {
       const meta = ws.folders?.find(f => f.name === name);
       layout.push({
         type: 'folder', name, collapsed: meta?.collapsed || false,
-        children: tabs.map(t => ({ type: 'tab', url: t.url, title: t.title, favicon: t.favicon || '', pinned: true, essential: false })),
+        children: tabs.map(t => ({ type: 'tab', url: t.url, title: t.title, pinned: true, essential: false })),
       });
     }
     for (const tab of sorted) {
-      if (tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: false });
+      if (tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: true, essential: false });
     }
     for (const tab of sorted) {
-      if (!tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: false, essential: false });
+      if (!tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: false, essential: false });
     }
     return layout;
   }
 
-  function collectSession(scope, comment) {
+  function computeSessionStats(workspaces) {
+    let totalTabCount = 0, totalFolderCount = 0, totalPinnedCount = 0, totalEssentialCount = 0;
+    for (const ws of workspaces) {
+      const st = countLayoutStats(getWorkspaceLayout(ws));
+      totalTabCount += st.tabs; totalFolderCount += st.folders;
+      totalPinnedCount += st.pinned; totalEssentialCount += st.essential;
+    }
+    return { workspaceCount: workspaces.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount };
+  }
+
+  function collectSession(scope, comment, { autoBackup = false } = {}) {
     const timestamp = Date.now();
     const id = `session-${timestamp}`;
     const workspacesData = [];
@@ -7065,9 +7091,8 @@
     if (scope === 'all' && window.gZenWorkspaces) {
       const allWs = window.gZenWorkspaces.getWorkspaces();
       if (allWs && Array.isArray(allWs)) {
-        for (const ws of allWs) {
-          workspacesData.push(collectWorkspaceLayout(ws));
-        }
+        // Essentials are global: record them once (with the first workspace), not per workspace
+        allWs.forEach((ws, i) => workspacesData.push(collectWorkspaceLayout(ws, { includeEssentials: i === 0 })));
       }
     } else {
       let currentWs = null;
@@ -7079,22 +7104,17 @@
       workspacesData.push(collectWorkspaceLayout(currentWs));
     }
 
-    let totalTabCount = 0, totalFolderCount = 0, totalPinnedCount = 0, totalEssentialCount = 0;
-    for (const ws of workspacesData) {
-      const s = countLayoutStats(ws.layout);
-      totalTabCount += s.tabs; totalFolderCount += s.folders;
-      totalPinnedCount += s.pinned; totalEssentialCount += s.essential;
-    }
-
-    return {
+    const session = {
       version: 2,
       id,
       savedAt: new Date(timestamp).toISOString(),
       comment: comment || '',
       scope,
       workspaces: workspacesData,
-      stats: { workspaceCount: workspacesData.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount },
+      stats: computeSessionStats(workspacesData),
     };
+    if (autoBackup) session.autoBackup = true;
+    return session;
   }
 
   // --- Save Flow ---
@@ -7127,12 +7147,18 @@
 
   function handleSaveSession(comment) {
     const scope = commandSubFlow?.data?.scope || 'current';
-    const sessionData = collectSession(scope, comment);
     exitSearchMode();
+    if (isPrivateWindow()) {
+      showZenLeapToast('Sessions are not saved from private windows');
+      return;
+    }
+    const sessionData = collectSession(scope, comment);
     saveSessionToFile(sessionData).then(() => {
+      showZenLeapToast(`Session saved (${sessionData.stats.totalTabCount} tab${sessionData.stats.totalTabCount !== 1 ? 's' : ''})`);
       log(`Session saved: ${sessionData.id} (${scope}, ${sessionData.stats.totalTabCount} tabs)`);
     }).catch(e => {
-      log(`Save session failed: ${e}`);
+      reportError('Saving session failed', e);
+      showZenLeapToast('Saving the session failed \u2014 see the Browser Console');
     });
   }
 
@@ -7163,7 +7189,7 @@
       const tabCount = s.stats?.totalTabCount || 0;
       const folderCount = s.stats?.totalFolderCount || 0;
       const sublabel = `${scopeBadge}${formatSessionDate(s.savedAt)} · ${tabCount} tab${tabCount !== 1 ? 's' : ''}${folderCount > 0 ? ` · ${folderCount} folder${folderCount !== 1 ? 's' : ''}` : ''}`;
-      const icon = s.workspaces?.[0]?.icon || '🗂';
+      const icon = safeIconText(s.workspaces?.[0]?.icon, '🗂');
       return {
         key: `${keyPrefix}:${s.id}`,
         label,
@@ -7175,32 +7201,78 @@
     });
   }
 
-  function getRestoreSessionPickerResults(query) {
-    // loadAllSessions is async, but subflow results are sync — use cached data
-    if (!sessionCache) {
-      // Trigger async load and show loading state
-      loadAllSessions().then(() => renderCommandResults());
-      return [{ key: 'restore:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+  // Sessions for the (synchronous) pickers: the cached list, refreshed in the background
+  // when it is older than the load cache (files may have changed since). Returns null
+  // while nothing has been loaded yet; the picker re-renders once loading finishes.
+  function getSessionsForPicker() {
+    const stale = !sessionCache || Date.now() - sessionCache.loadedAt >= 5000;
+    if (stale && !sessionLoadPromise) {
+      loadAllSessions().then(() => { if (commandSubFlow) renderCommandResults(); });
     }
-    const results = buildSessionPickerResults(sessionCache.sessions, 'restore-session');
-    return fuzzyFilterAndSort(results, query);
+    return sessionCache?.sessions ?? null;
+  }
+
+  function getRestoreSessionPickerResults(query) {
+    const sessions = getSessionsForPicker();
+    if (!sessions) return [{ key: 'restore:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    return fuzzyFilterAndSort(buildSessionPickerResults(sessions, 'restore-session'), query);
   }
 
   function getRestoreSessionModeResults(query) {
     const session = commandSubFlow?.data?.session;
-    const isMultiWs = session && session.workspaces.length > 1;
+    const workspaces = Array.isArray(session?.workspaces) ? session.workspaces : [];
+    if (workspaces.length === 0) {
+      return [{ key: 'restore-mode:invalid', label: 'This session has no workspaces to restore', icon: '\u26A0', tags: [] }];
+    }
+    const isMultiWs = workspaces.length > 1;
     const results = [
       { key: 'restore-mode:new', label: `Create New Workspace${isMultiWs ? 's' : ''}`, icon: '➕', sublabel: 'Opens saved tabs in new workspace(s)', tags: ['new', 'create'] },
     ];
-    // Only offer replace for single-workspace sessions
-    if (!isMultiWs) {
-      results.push({ key: 'restore-mode:replace', label: 'Replace Current Workspace', icon: '🔄', sublabel: 'Replaces tabs in current workspace', tags: ['replace', 'current'] });
+    // Only offer replace for single-workspace sessions (and never in private windows,
+    // where the automatic backup cannot be saved)
+    if (!isMultiWs && !isPrivateWindow()) {
+      results.push({ key: 'restore-mode:replace', label: 'Replace Current Workspace...', icon: '🔄', sublabel: 'Closes the current workspace\u2019s tabs first (a backup session is saved)', tags: ['replace', 'current'], subFlow: 'restore-replace-confirm' });
     }
     return fuzzyFilterAndSort(results, query);
   }
 
+  // What "Replace Current Workspace" would close: folders and non-essential tabs of the active workspace.
+  function getActiveWorkspaceContents() {
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+    const folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
+      const fWsId = f.getAttribute('zen-workspace-id');
+      return !activeWsId || !fWsId || fWsId === activeWsId;
+    });
+    const tabs = getVisibleTabs().filter(t =>
+      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
+      (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
+    );
+    return { folders, tabs };
+  }
+
+  function getRestoreReplaceConfirmResults() {
+    const session = commandSubFlow?.data?.session;
+    const { folders, tabs } = getActiveWorkspaceContents();
+    const wsName = getWorkspaceName(window.gZenWorkspaces?.activeWorkspace) || 'current workspace';
+    const restoreCount = countLayoutStats(getWorkspaceLayout(session?.workspaces?.[0])).tabs;
+    const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
+    return [
+      { key: 'restore-replace:cancel', label: 'Cancel', icon: '↩', sublabel: 'Keep the current workspace as it is', tags: [] },
+      {
+        key: 'restore-replace:confirm',
+        label: `Replace "${wsName}": close ${plural(tabs.length, 'tab')}${folders.length ? ` and ${plural(folders.length, 'folder')}` : ''}`,
+        icon: '🔄',
+        sublabel: `Then restores ${plural(restoreCount, 'tab')}. The current tabs are saved as a backup session first.`,
+        tags: [],
+      },
+    ];
+  }
+
   async function handleRestoreSession(sessionData, mode) {
-    if (!sessionData || !sessionData.workspaces) { log('Invalid session data'); return; }
+    if (!sessionData || !Array.isArray(sessionData.workspaces) || sessionData.workspaces.length === 0) {
+      showZenLeapToast('This session has nothing to restore');
+      return;
+    }
     exitSearchMode();
 
     try {
@@ -7209,11 +7281,33 @@
           await restoreWorkspaceAsNew(wsData);
         }
       } else if (mode === 'replace') {
-        await restoreWorkspaceReplace(sessionData.workspaces[0]);
+        const wsData = sessionData.workspaces[0];
+        if (getWorkspaceLayout(wsData).length === 0) {
+          showZenLeapToast('Nothing to restore: the saved workspace is empty. The current workspace was not changed.');
+          return;
+        }
+        if (isPrivateWindow()) {
+          showZenLeapToast('Replacing a workspace is not available in private windows');
+          return;
+        }
+        // Save what is about to be closed; never replace without a backup
+        const label = sessionData.comment || getWorkspaceName(window.gZenWorkspaces?.activeWorkspace) || sessionData.id;
+        const backup = collectSession('current', `Auto-backup before restoring "${label}"`, { autoBackup: true });
+        try {
+          await saveSessionToFile(backup);
+        } catch (e) {
+          reportError('Could not save a backup session; replace was cancelled', e);
+          showZenLeapToast('Replace cancelled: the backup session could not be saved');
+          return;
+        }
+        pruneAutoBackupSessions();
+        await restoreWorkspaceReplace(wsData);
+        showZenLeapToast('Workspace replaced \u2014 the previous tabs were saved as a backup session');
       }
       log(`Session restored: ${sessionData.id} (${mode})`);
     } catch (e) {
-      log(`Restore session failed: ${e}`);
+      reportError('Restoring session failed', e);
+      showZenLeapToast('Restoring the session failed \u2014 see the Browser Console');
     }
   }
 
@@ -7244,13 +7338,13 @@
 
     try {
       await gZenWorkspaces.createAndSaveWorkspace(
-        wsData.name || 'Restored',
-        wsData.icon || undefined,
+        (typeof wsData.name === 'string' && wsData.name.trim()) ? wsData.name.trim().slice(0, 100) : 'Restored',
+        sanitizeSessionIcon(wsData.icon),
         false, // dontChange = false, so it switches to the new workspace
         0      // containerTabId
       );
     } catch (e) {
-      log(`Create workspace failed: ${e}`);
+      reportError('Creating a workspace for the restored session failed', e);
       return;
     }
 
@@ -7260,46 +7354,38 @@
   }
 
   async function restoreWorkspaceReplace(wsData) {
-    const principal = Services.scriptSecurityManager.getSystemPrincipal();
+    const { folders: existingFolders, tabs: existingTabs } = getActiveWorkspaceContents();
 
-    const existingFolders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
-      const fWsId = f.getAttribute('zen-workspace-id');
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      return !activeWsId || !fWsId || fWsId === activeWsId;
+    const placeholder = gBrowser.addTab('about:blank', {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipRoute: true,
     });
-    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-    const existingTabs = getVisibleTabs().filter(t =>
-      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
-      (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
-    );
-
-    const placeholder = gBrowser.addTab('about:blank', { triggeringPrincipal: principal });
     // Wait for placeholder tab to be in the DOM before selecting it
-    await waitFor(() => placeholder.parentNode && !placeholder.closing);
+    await waitFor(() => isLiveTab(placeholder));
     gBrowser.selectedTab = placeholder;
 
-    for (const folder of existingFolders) {
-      try {
-        if (typeof folder.delete === 'function') folder.delete();
-        else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
-      } catch (e) { log(`Remove folder during replace failed: ${e}`); }
-    }
+    // delete() closes the folder's tabs as one restorable group
+    await Promise.all(existingFolders.map(folder =>
+      Promise.resolve().then(() => folder.delete()).catch(e => reportError(`Removing folder "${folderName(folder)}" during replace failed`, e))
+    ));
     // Wait for folders to be removed from the DOM
     await waitFor(() => existingFolders.every(f => !f.parentNode));
 
-    const tabsToRemove = existingTabs.filter(t => t !== placeholder && !t.closing && t.parentNode);
-    if (tabsToRemove.length > 0) {
-      try { gBrowser.removeTabs(tabsToRemove, { closeWindowWithLastTab: false }); }
-      catch (e) { for (const t of tabsToRemove) { try { gBrowser.removeTab(t); } catch (e2) {} } }
-    }
+    const tabsToRemove = liveTabs(existingTabs).filter(t => t !== placeholder);
+    if (tabsToRemove.length > 0) gBrowser.removeTabs(tabsToRemove);
     // Wait for old tabs to start closing / leave the DOM
     await waitFor(() => tabsToRemove.every(t => t.closing || !t.parentNode));
 
     await restoreLayout(wsData);
 
-    try {
-      if (!placeholder.closing && placeholder.parentNode) gBrowser.removeTab(placeholder);
-    } catch (e) {}
+    if (isLiveTab(placeholder)) gBrowser.removeTab(placeholder);
+  }
+
+  // Space icons read from a session file: emoji text or Zen's own chrome:// SVG icons only
+  function sanitizeSessionIcon(icon) {
+    if (typeof icon !== 'string' || !icon || icon.length > 200 || /[<>&"'`]/.test(icon)) return undefined;
+    if (isImageIcon(icon)) return /^chrome:\/\//.test(icon) ? icon : undefined;
+    return icon.includes(':') ? undefined : icon;
   }
 
   // --- Restore: tree-based layout restoration ---
@@ -7308,19 +7394,18 @@
     const layout = getWorkspaceLayout(wsData);
     if (!layout || layout.length === 0) return;
 
-    const principal = Services.scriptSecurityManager.getSystemPrincipal();
     const openedTabs = []; // [{ item, tab }]
     const normalTabRefs = []; // unpinned tabs for explicit reordering
 
     for (const item of layout) {
-      if (item.type === 'tab') {
-        restoreTabItem(item, openedTabs, normalTabRefs, principal);
-      } else if (item.type === 'folder' && window.gZenFolders) {
-        await restoreFolderFromLayout(item, null, openedTabs, normalTabRefs, principal);
-      } else if (item.type === 'folder') {
+      if (item?.type === 'tab') {
+        restoreTabItem(item, openedTabs, normalTabRefs);
+      } else if (item?.type === 'folder' && window.gZenFolders) {
+        await restoreFolderFromLayout(item, null, openedTabs, normalTabRefs);
+      } else if (item?.type === 'folder') {
         // No folder support: open folder tabs as flat
         for (const child of flattenLayoutTabs(item)) {
-          restoreTabItem(child, openedTabs, normalTabRefs, principal);
+          restoreTabItem(child, openedTabs, normalTabRefs);
         }
       }
     }
@@ -7330,15 +7415,11 @@
     // position, reversing order). Explicitly move them into correct order.
     if (normalTabRefs.length > 1) {
       // Wait for all normal tabs to be in the DOM before reordering
-      await waitFor(() => normalTabRefs.every(t => t && t.parentNode && !t.closing));
+      await waitFor(() => normalTabRefs.every(isLiveTab));
       const normalContainer = gZenWorkspaces?.activeWorkspaceStrip;
       if (normalContainer) {
-        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
         for (const tab of normalTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) {
-            if (periphery) normalContainer.insertBefore(tab, periphery);
-            else normalContainer.appendChild(tab);
-          }
+          if (isLiveTab(tab)) moveTabToSectionEnd(normalContainer, tab);
         }
       }
     }
@@ -7354,11 +7435,11 @@
         const groupTabs = openedTabs
           .filter(o => o.item.splitGroupIndex === i)
           .map(o => o.tab)
-          .filter(t => t && !t.closing && t.parentNode);
+          .filter(isLiveTab);
         if (groupTabs.length >= 2) {
           try {
             gZenViewSplitter.splitTabs(groupTabs, groupInfo.gridType);
-          } catch (e) { log(`Failed to restore split group ${i}: ${e}`); }
+          } catch (e) { reportError(`Restoring split view group ${i} failed`, e); }
         }
       }
     }
@@ -7374,13 +7455,41 @@
   }
 
   function applyCustomLabel(tab, item) {
-    if (item.customLabel) {
+    if (typeof item.customLabel === 'string' && item.customLabel) {
       tab.zenStaticLabel = item.customLabel;
       try { gBrowser._setTabLabel(tab, item.customLabel); } catch (e) {}
     }
   }
 
-  function restoreTabItem(item, openedTabs, normalTabRefs, principal) {
+  function applyCustomIcon(tab, item) {
+    if (typeof item.customIcon === 'string' && /^(chrome|data):/.test(item.customIcon)) {
+      tab.zenStaticIcon = item.customIcon;
+      try { gBrowser.setIcon(tab, item.customIcon); } catch (e) {}
+    }
+  }
+
+  // Open one saved tab: lazily (it loads when first selected, like Firefox's own session
+  // restore), in place (skipRoute: Space Routing must not move restored tabs to other
+  // spaces), never running javascript: URLs read from a file.
+  function addRestoredTab(item) {
+    let url = typeof item.url === 'string' && item.url ? item.url : 'about:blank';
+    if (/^\s*javascript:/i.test(url)) url = 'about:blank';
+    const tab = gBrowser.addTab(url, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipAnimation: true,
+      skipRoute: true,
+      createLazyBrowser: true,
+      lazyTabTitle: typeof item.title === 'string' ? item.title : url,
+    });
+    // Zen assigns a tab's workspace when its browser is inserted, which lazy tabs only
+    // get on first selection; without this they would lose their workspace on restart.
+    if (workspacesEnabled()) tab.setAttribute('zen-workspace-id', gZenWorkspaces.activeWorkspace);
+    applyCustomLabel(tab, item);
+    applyCustomIcon(tab, item);
+    return tab;
+  }
+
+  function restoreTabItem(item, openedTabs, normalTabRefs) {
     if (item.essential) {
       const existing = Array.from(gBrowser.tabs).find(t =>
         t.hasAttribute('zen-essential') && t.linkedBrowser?.currentURI?.spec === item.url
@@ -7389,47 +7498,60 @@
         openedTabs.push({ item, tab: existing });
         return;
       }
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
-      tab.setAttribute('zen-essential', 'true');
-      gBrowser.pinTab(tab);
-      applyCustomLabel(tab, item);
+      const tab = addRestoredTab(item);
+      // Zen's API enforces the essentials limit / container rules and notifies window sync
+      let added = false;
+      try {
+        if (window.gZenPinnedTabManager?.canEssentialBeAdded(tab)) added = gZenPinnedTabManager.addToEssentials(tab) !== false;
+      } catch (e) { reportError('Restoring an essential tab failed', e); }
+      if (!added) {
+        gBrowser.pinTab(tab);
+        log(`Could not add "${item.title}" to essentials (limit reached?); restored as a pinned tab`);
+      }
       openedTabs.push({ item, tab });
     } else if (item.pinned) {
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
+      const tab = addRestoredTab(item);
       gBrowser.pinTab(tab);
-      applyCustomLabel(tab, item);
       openedTabs.push({ item, tab });
     } else {
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
-      applyCustomLabel(tab, item);
+      const tab = addRestoredTab(item);
       openedTabs.push({ item, tab });
       normalTabRefs.push(tab);
     }
   }
 
-  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs, principal) {
+  // Append a tab at the end of a workspace's normal section through Tabbrowser, so its
+  // tab caches, TabMove (SessionStore, window sync) and Zen's invariants stay consistent.
+  function moveTabToSectionEnd(container, tab) {
+    const periphery = container.querySelector('#tabbrowser-arrowscrollbox-periphery');
+    gBrowser.zenHandleTabMove(tab, () => {
+      if (periphery) container.insertBefore(tab, periphery);
+      else container.appendChild(tab);
+    });
+  }
+
+  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs) {
     // Phase 1: create direct tab children, defer subfolders
     const directTabRefs = [];
     const childItems = []; // { type: 'tab'|'folder', ref?, data? }
 
-    for (const child of folderItem.children) {
-      if (child.type === 'tab') {
-        const tab = gBrowser.addTab(child.url, { triggeringPrincipal: principal, skipAnimation: true });
-        applyCustomLabel(tab, child);
+    for (const child of (Array.isArray(folderItem.children) ? folderItem.children : [])) {
+      if (child?.type === 'tab') {
+        const tab = addRestoredTab(child);
         directTabRefs.push(tab);
         openedTabs.push({ item: child, tab });
         childItems.push({ type: 'tab', ref: tab });
-      } else if (child.type === 'folder') {
+      } else if (child?.type === 'folder') {
         childItems.push({ type: 'folder', data: child, ref: null });
       }
     }
 
     // Wait for all folder tabs to be present in the DOM before creating the folder
-    await waitFor(() => directTabRefs.every(t => t.parentNode && !t.closing));
+    await waitFor(() => directTabRefs.every(isLiveTab));
 
     // Phase 2: create folder with its direct tabs
     const folderOpts = {
-      label: folderItem.name,
+      label: (typeof folderItem.name === 'string' && folderItem.name) ? folderItem.name.slice(0, 100) : 'Restored Folder',
       renameFolder: false,
       collapsed: false, // expand first, collapse after children are placed
     };
@@ -7441,7 +7563,7 @@
     try {
       folder = gZenFolders.createFolder(directTabRefs, folderOpts);
     } catch (e) {
-      log(`Create folder "${folderItem.name}" failed: ${e}`);
+      reportError(`Restoring folder "${folderOpts.label}" failed`, e);
       return null;
     }
 
@@ -7458,7 +7580,7 @@
       } else if (childItem.type === 'folder') {
         const subInsertAfter = lastElement || folder.groupStartElement;
         const subFolder = await restoreFolderFromLayout(
-          childItem.data, subInsertAfter, openedTabs, normalTabRefs, principal
+          childItem.data, subInsertAfter, openedTabs, normalTabRefs
         );
         if (subFolder) lastElement = subFolder;
       }
@@ -7554,12 +7676,8 @@
         }
 
         // Reorder by moving each expected tab to correct position
-        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
         for (const tab of expectedTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) {
-            if (periphery) normalContainer.insertBefore(tab, periphery);
-            else normalContainer.appendChild(tab);
-          }
+          if (isLiveTab(tab)) moveTabToSectionEnd(normalContainer, tab);
         }
       }
 
@@ -7572,12 +7690,9 @@
   // --- List / Detail Flow ---
 
   function getListSessionsPickerResults(query) {
-    if (!sessionCache) {
-      loadAllSessions().then(() => renderCommandResults());
-      return [{ key: 'list:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
-    }
-    const results = buildSessionPickerResults(sessionCache.sessions, 'list-session');
-    return fuzzyFilterAndSort(results, query);
+    const sessions = getSessionsForPicker();
+    if (!sessions) return [{ key: 'list:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    return fuzzyFilterAndSort(buildSessionPickerResults(sessions, 'list-session'), query);
   }
 
   function getSessionDetailViewResults(query) {
@@ -7588,22 +7703,24 @@
 
     // Header with session info
     const dateStr = formatSessionDate(session.savedAt);
+    const workspaces = Array.isArray(session.workspaces) ? session.workspaces : [];
+    const stats = _isPlainObject(session.stats) ? session.stats : computeSessionStats(workspaces);
     results.push({
       key: 'detail:info',
       label: `${session.comment || 'No comment'} — saved ${dateStr}`,
       icon: '💾',
-      sublabel: `${session.stats.totalTabCount} tabs · ${session.stats.workspaceCount} workspace${session.stats.workspaceCount !== 1 ? 's' : ''}`,
+      sublabel: `${stats.totalTabCount} tabs · ${stats.workspaceCount} workspace${stats.workspaceCount !== 1 ? 's' : ''}`,
       tags: [],
     });
 
-    for (const ws of session.workspaces) {
-      if (session.workspaces.length > 1) {
+    workspaces.forEach((ws, wsIdx) => {
+      if (workspaces.length > 1) {
         const wsLayout = getWorkspaceLayout(ws);
         const wsTabCount = wsLayout ? countLayoutStats(wsLayout).tabs : 0;
         results.push({
-          key: `detail:ws-${ws.name}`,
-          label: `${ws.icon || '🗂'} ${ws.name}`,
-          icon: '',
+          key: `detail:ws-${wsIdx}`,
+          label: String(ws?.name || 'Unnamed'),
+          icon: safeIconText(ws?.icon, '🗂'),
           sublabel: `${wsTabCount} tabs`,
           tags: [],
           isHeader: true,
@@ -7615,9 +7732,9 @@
       if (layout && layout.length > 0) {
         buildDetailItemsFromLayout(layout, results, 0);
       } else {
-        results.push({ key: 'detail:empty', label: 'No tabs', icon: '', tags: [] });
+        results.push({ key: `detail:empty-${wsIdx}`, label: 'No tabs', icon: '', tags: [] });
       }
-    }
+    });
 
     // Footer hint
     results.push({
@@ -7688,9 +7805,19 @@
   // UPDATE SYSTEM
   // ============================================
 
-  const ZENLEAP_SCRIPT_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js';
-  const ZENLEAP_CSS_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css';
-  const ZENLEAP_CHANGELOG_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHANGELOG.md';
+  // Self-update (disabled for Sine installs). The latest GitHub *release* is found via
+  // the releases API; the script is downloaded ONCE from that tag, verified against the
+  // tag's CHECKSUMS.sha256 (sha256sum format) and its @version, then written atomically
+  // over the file this script was loaded from, keeping the previous file as .bak.
+  // Releases without a checksum entry are never auto-installed.
+  const ZENLEAP_REPO = 'yashas-salankimatt/ZenLeap';
+  const ZENLEAP_RELEASE_API_URL = `https://api.github.com/repos/${ZENLEAP_REPO}/releases/latest`;
+  const ZENLEAP_RAW_BASE_URL = `https://raw.githubusercontent.com/${ZENLEAP_REPO}`;
+  const ZENLEAP_SCRIPT_REPO_PATH = 'JS/zenleap.uc.js';
+  const UPDATE_MAX_BYTES = 10 * 1024 * 1024;
+  const UPDATE_AVAILABLE_TOPIC = 'zenleap-update-available';
+  // URL this script was loaded from (e.g. chrome://userscripts/content/zenleap.uc.js)
+  const ZENLEAP_LOADED_FROM = (() => { try { return Components.stack.filename || ''; } catch (e) { return ''; } })();
 
   let updateModal = null;
   let updateMode = false;
@@ -7706,7 +7833,7 @@
         PathUtils.profileDir, 'chrome', 'sine-mods', 'zenleap-relative-tab-nav'
       );
       isSineManaged = await IOUtils.exists(sinePath);
-      if (isSineManaged) log('Sine-managed installation detected \u2014 self-update disabled');
+      if (isSineManaged) log('Sine-managed installation detected — self-update disabled');
     } catch (e) {
       log(`Sine detection failed (non-critical): ${e}`);
       isSineManaged = false;
@@ -7719,17 +7846,28 @@
     return match ? match[1] : null;
   }
 
-  // Compare semantic versions: true if v1 >= v2
-  function versionGte(v1, v2) {
-    const a = v1.split('.').map(Number);
-    const b = v2.split('.').map(Number);
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const x = a[i] || 0;
-      const y = b[i] || 0;
-      if (x > y) return true;
-      if (x < y) return false;
+  // Compare dotted versions ("3.10.0" > "3.9.1"; a leading "v" is ignored; a
+  // pre-release suffix sorts before its release: "3.5.0-beta" < "3.5.0").
+  // Returns -1, 0, 1, or NaN when either side is unreadable.
+  function compareVersions(v1, v2) {
+    const parse = (v) => {
+      const m = String(v ?? '').trim().match(/^v?(\d+(?:\.\d+)*)(-[0-9A-Za-z.-]+)?$/);
+      return m ? { parts: m[1].split('.').map(Number), pre: !!m[2] } : null;
+    };
+    const a = parse(v1), b = parse(v2);
+    if (!a || !b) return NaN;
+    for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
+      const x = a.parts[i] || 0;
+      const y = b.parts[i] || 0;
+      if (x !== y) return x > y ? 1 : -1;
     }
-    return true; // equal
+    if (a.pre !== b.pre) return a.pre ? -1 : 1;
+    return 0;
+  }
+
+  // true if v1 >= v2 (false when either version is unreadable)
+  function versionGte(v1, v2) {
+    return compareVersions(v1, v2) >= 0;
   }
 
   // Parse changelog for a specific version from CHANGELOG.md content
@@ -7763,52 +7901,95 @@
     return items;
   }
 
-  // HTTP GET via XMLHttpRequest (fetch hangs in Firefox chrome context)
-  function httpGet(url, timeoutMs = 15000) {
+  // HTTP GET via XMLHttpRequest. responseType 'arraybuffer' resolves to a Uint8Array.
+  function httpGet(url, { timeoutMs = 15000, responseType = 'text', headers = {} } = {}) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', url, true);
       xhr.timeout = timeoutMs;
+      xhr.responseType = responseType;
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(xhr.responseText);
+          resolve(responseType === 'arraybuffer' ? new Uint8Array(xhr.response) : xhr.response);
         } else {
-          reject(new Error(`HTTP ${xhr.status}`));
+          const err = new Error(`HTTP ${xhr.status} for ${url}`);
+          err.status = xhr.status;
+          reject(err);
         }
       };
-      xhr.onerror = () => reject(new Error('Network error'));
-      xhr.ontimeout = () => reject(new Error('Request timed out'));
+      xhr.onerror = () => reject(new Error(`Network error for ${url}`));
+      xhr.ontimeout = () => reject(new Error(`Request timed out: ${url}`));
       xhr.send();
     });
   }
 
-  // Check for updates — returns { available, remoteVersion, changelog[] } or null on error
+  // Latest published release: { tag, version }. The tag is validated because it becomes
+  // part of the download URLs.
+  async function fetchLatestRelease() {
+    const text = await httpGet(ZENLEAP_RELEASE_API_URL, { headers: { Accept: 'application/vnd.github+json' } });
+    let data;
+    try { data = JSON.parse(text); } catch (e) { throw new Error('Unreadable response from the GitHub releases API'); }
+    const tag = typeof data?.tag_name === 'string' ? data.tag_name.trim() : '';
+    if (!/^v?\d+(\.\d+){1,3}$/.test(tag)) throw new Error(`Unexpected release tag "${tag}"`);
+    return { tag, version: tag.replace(/^v/i, '') };
+  }
+
+  // Expected SHA-256 for repoPath from a sha256sum-style file ("<hex>  <path>").
+  function findChecksum(checksumsText, repoPath) {
+    for (const line of String(checksumsText || '').split(/\r?\n/)) {
+      const m = line.trim().match(/^([0-9a-fA-F]{64})\s+\*?(?:\.\/)?(\S.*)$/);
+      if (m && m[2].trim() === repoPath) return m[1].toLowerCase();
+    }
+    return null;
+  }
+
+  async function sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // File the running script was loaded from, so an update replaces it (never a second
+  // copy that loads next to it). Falls back to <profile>/chrome/JS/zenleap.uc.js.
+  function resolveRunningScriptPath() {
+    const fallback = PathUtils.join(PathUtils.profileDir, 'chrome', 'JS', 'zenleap.uc.js');
+    try {
+      let uri = Services.io.newURI(ZENLEAP_LOADED_FROM.replace(/[?#].*$/, ''));
+      if (uri.schemeIs('chrome')) {
+        uri = Cc['@mozilla.org/chrome/chrome-registry;1'].getService(Ci.nsIChromeRegistry).convertChromeURL(uri);
+      }
+      if (uri.schemeIs('file')) {
+        const path = uri.QueryInterface(Ci.nsIFileURL).file.path;
+        if (/\.uc\.js$/i.test(path)) return path;
+      }
+    } catch (e) { log(`Could not resolve the running script's path (${ZENLEAP_LOADED_FROM}): ${e}`); }
+    return fallback;
+  }
+
+  // Check for updates — returns { available, remoteVersion, tag, changelog[] } or null on error
   async function checkForZenLeapUpdate() {
     try {
-      const content = await httpGet(ZENLEAP_SCRIPT_URL);
-      const remoteVersion = parseVersionFromContent(content);
-      if (!remoteVersion) throw new Error('Could not parse remote version');
-
-      const available = !versionGte(VERSION, remoteVersion);
+      const { tag, version } = await fetchLatestRelease();
+      const available = compareVersions(version, VERSION) > 0;
 
       // Fetch changelog (best-effort)
       let changelog = [];
       if (available) {
         try {
-          const clContent = await httpGet(ZENLEAP_CHANGELOG_URL);
-          changelog = parseChangelog(clContent, remoteVersion);
+          const clContent = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/CHANGELOG.md`);
+          changelog = parseChangelog(clContent, version);
         } catch (e) { /* changelog fetch failed, non-critical */ }
       }
 
-      return { available, remoteVersion, changelog };
+      return { available, remoteVersion: version, tag, changelog };
     } catch (e) {
-      log(`Update check failed: ${e}`);
+      console.warn('[ZenLeap] Update check failed:', e);
       return null;
     }
   }
 
-  // Download and install the update
-  // Callback: onProgress('downloading' | 'installing-js' | 'installing-css' | 'done' | 'error', detail?)
+  // Download, verify and install the latest release.
+  // Callback: onProgress('downloading' | 'verifying' | 'installing-js' | 'done' | 'error', detail?)
   async function downloadAndInstallUpdate(onProgress) {
     // Hard block: Sine-managed installs must never self-update
     if (isSineManaged) {
@@ -7818,74 +7999,83 @@
       return { success: false, error: msg };
     }
 
+    let partPath = null;
     try {
-      // --- Download JS ---
-      onProgress('downloading', 'Fetching zenleap.uc.js from GitHub');
-      const jsContent = await httpGet(ZENLEAP_SCRIPT_URL);
+      onProgress('downloading', 'Looking up the latest release');
+      const { tag, version } = await fetchLatestRelease();
+      if (compareVersions(version, VERSION) <= 0) throw new Error(`The latest release (${version}) is not newer than ${VERSION}`);
 
-      const newVersion = parseVersionFromContent(jsContent);
-      if (!newVersion) throw new Error('Downloaded JS has no version');
+      // --- Download the script once; these exact bytes are verified and installed ---
+      onProgress('downloading', `Downloading zenleap.uc.js ${tag}`);
+      const bytes = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/${ZENLEAP_SCRIPT_REPO_PATH}`, { responseType: 'arraybuffer', timeoutMs: 60000 });
+      if (bytes.length === 0 || bytes.length > UPDATE_MAX_BYTES) throw new Error(`Unexpected download size (${bytes.length} bytes)`);
 
-      // --- Download CSS ---
-      onProgress('downloading', 'Fetching chrome.css from GitHub');
-      const cssContent = await httpGet(ZENLEAP_CSS_URL);
-
-      // --- Install JS ---
-      onProgress('installing-js', 'Writing zenleap.uc.js to profile');
-      const jsDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'JS');
-      await IOUtils.makeDirectory(jsDir, { createAncestors: true, ignoreExisting: true });
-      const jsPath = PathUtils.join(jsDir, 'zenleap.uc.js');
-      await IOUtils.write(jsPath, new TextEncoder().encode(jsContent));
-      log(`Updated zenleap.uc.js to v${newVersion}`);
-
-      // --- Install CSS ---
-      onProgress('installing-css', 'Updating styles in userChrome.css');
-      const chromeDir = PathUtils.join(PathUtils.profileDir, 'chrome');
-      const userChromePath = PathUtils.join(chromeDir, 'userChrome.css');
-
-      let existingCSS = '';
+      onProgress('verifying', 'Verifying checksum');
+      let checksums = '';
       try {
-        const existingBytes = await IOUtils.read(userChromePath);
-        existingCSS = new TextDecoder().decode(existingBytes);
+        checksums = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/CHECKSUMS.sha256`);
       } catch (e) {
-        // File doesn't exist yet — that's fine
+        if (e.status !== 404) throw e;
       }
-
-      // Remove old ZenLeap styles (between markers)
-      const markerStart = '/* === ZenLeap Styles === */';
-      const markerEnd = '/* === End ZenLeap Styles === */';
-      const startIdx = existingCSS.indexOf(markerStart);
-      const endIdx = existingCSS.indexOf(markerEnd);
-      if (startIdx !== -1 && (endIdx === -1 || endIdx >= startIdx)) {
-        // Remove from just before the marker (including leading newlines) to end of end-marker
-        let removeStart = startIdx;
-        while (removeStart > 0 && existingCSS[removeStart - 1] === '\n') removeStart--;
-        const removeEnd = endIdx !== -1 ? endIdx + markerEnd.length : existingCSS.length;
-        existingCSS = existingCSS.slice(0, removeStart) + existingCSS.slice(removeEnd);
+      const expected = findChecksum(checksums, ZENLEAP_SCRIPT_REPO_PATH);
+      if (!expected) {
+        throw new Error(`Release ${tag} has no published checksum for ${ZENLEAP_SCRIPT_REPO_PATH}, so it cannot be installed automatically. Update with the installer instead.`);
       }
+      const actual = await sha256Hex(bytes);
+      if (actual !== expected) throw new Error(`Checksum mismatch for ${tag} (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…). Nothing was installed.`);
 
-      // Append new styles
-      const newCSS = existingCSS.trimEnd() + '\n\n' + markerStart + '\n' + cssContent + '\n' + markerEnd + '\n';
-      await IOUtils.write(userChromePath, new TextEncoder().encode(newCSS));
-      log('Updated styles in userChrome.css');
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch (e) { throw new Error('Downloaded script is not valid UTF-8'); }
+      const fileVersion = parseVersionFromContent(text);
+      if (fileVersion !== version) throw new Error(`Downloaded script is version ${fileVersion || '(none)'}, but release ${tag} was expected. Nothing was installed.`);
 
-      onProgress('done', newVersion);
-      return { success: true, version: newVersion };
+      // --- Install over the running script: backup, atomic write, verify, roll back on failure ---
+      const jsPath = resolveRunningScriptPath();
+      const backupPath = `${jsPath}.bak`;
+      partPath = `${jsPath}.part`;
+      onProgress('installing-js', `Writing ${PathUtils.filename(jsPath)}`);
+      await IOUtils.makeDirectory(PathUtils.parent(jsPath), { createAncestors: true, ignoreExisting: true });
+      const hadOriginal = await IOUtils.exists(jsPath);
+      if (hadOriginal) await IOUtils.copy(jsPath, backupPath);
+      try {
+        await IOUtils.write(jsPath, bytes, { tmpPath: partPath });
+        const written = await IOUtils.read(jsPath);
+        if (await sha256Hex(written) !== expected) throw new Error('The installed file does not match the verified download');
+      } catch (e) {
+        if (hadOriginal) {
+          try { await IOUtils.copy(backupPath, jsPath); }
+          catch (restoreError) { reportError(`Update: restoring the previous version from ${backupPath} failed`, restoreError); }
+        }
+        throw new Error(`Writing the update failed (${e.message}); the previous version was kept.`);
+      }
+      log(`Updated ${jsPath} to v${version} (previous version saved as ${PathUtils.filename(backupPath)})`);
+
+      onProgress('done', version);
+      return { success: true, version, path: jsPath, backupPath: hadOriginal ? backupPath : null };
     } catch (e) {
-      log(`Update install failed: ${e}`);
+      reportError('Update install failed', e);
       onProgress('error', e.message);
       return { success: false, error: e.message };
+    } finally {
+      if (partPath) IOUtils.remove(partPath, { ignoreAbsent: true }).catch(() => {});
     }
   }
 
-  // Should we auto-check based on settings?
+  // Should we auto-check based on settings? S mirrors the shared pref, so a check done
+  // by another window moments ago is visible here.
   function shouldAutoCheckForUpdates() {
     if (!S['updates.autoCheck']) return false;
     const freq = S['updates.checkFrequency'];
     const lastCheck = S['updates.lastCheckTime'] || 0;
     const now = Date.now();
 
-    if (freq === 'startup') return true;
+    if (freq === 'startup') {
+      // Once per browser session (not once per window)
+      let processStart = 0;
+      try { processStart = Services.startup.getStartupInfo().process?.getTime() || 0; } catch (e) {}
+      return lastCheck < processStart;
+    }
     if (freq === 'daily') return (now - lastCheck) > 24 * 60 * 60 * 1000;
     if (freq === 'weekly') return (now - lastCheck) > 7 * 24 * 60 * 60 * 1000;
     return false;
@@ -7911,7 +8101,11 @@
     // Header
     const header = document.createElement('div');
     header.className = 'zenleap-update-header';
-    header.innerHTML = `<div><h2 id="zenleap-update-title">Checking for Updates</h2><span class="zenleap-update-subtitle" id="zenleap-update-subtitle">Contacting GitHub...</span></div>`;
+    const title = updateEl('h2', null, 'Checking for Updates');
+    title.id = 'zenleap-update-title';
+    const subtitle = updateEl('span', 'zenleap-update-subtitle', 'Contacting GitHub...');
+    subtitle.id = 'zenleap-update-subtitle';
+    header.appendChild(updateEl('div', null, title, subtitle));
     const closeBtn = document.createElement('button');
     closeBtn.className = 'zenleap-update-close-btn';
     closeBtn.title = 'Close';
@@ -8001,9 +8195,7 @@
         padding: 16px 24px; border-bottom: 1px solid var(--zl-border-subtle);
         max-height: 180px; overflow-y: auto;
       }
-      .zenleap-update-changelog::-webkit-scrollbar { width: 6px; }
-      .zenleap-update-changelog::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-update-changelog::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+      .zenleap-update-changelog { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-update-changelog h3 {
         font-size: 11px; font-weight: 600; text-transform: uppercase;
         letter-spacing: 0.8px; color: var(--zl-accent); margin: 0 0 10px;
@@ -8129,17 +8321,31 @@
         font-size: 13px; color: var(--zl-text-primary);
       }
       .zenleap-toast-text strong { color: var(--zl-accent); font-weight: 600; }
-      .zenleap-toast-keys {
-        display: flex; align-items: center; gap: 8px;
-        margin-left: 4px; font-size: 11px; color: var(--zl-text-muted);
+      .zenleap-toast-btn {
+        font-family: var(--zl-font-ui); font-size: 12px; font-weight: 600; cursor: pointer;
+        padding: 4px 12px; border-radius: var(--zl-r-sm);
+        background: transparent; color: var(--zl-text-primary);
+        border: 1px solid var(--zl-border-strong);
       }
-      .zenleap-toast-keys kbd {
-        display: inline-block; font-family: var(--zl-font-mono); font-size: 10px; font-weight: 600;
-        background: var(--zl-bg-elevated); color: var(--zl-text-secondary);
-        padding: 2px 6px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-border-subtle);
+      .zenleap-toast-btn:hover { background: var(--zl-bg-elevated); }
+      .zenleap-toast-btn.primary {
+        background: var(--zl-accent-dim); color: var(--zl-accent); border-color: var(--zl-accent-border);
       }
+      .zenleap-toast-btn.primary:hover { background: var(--zl-accent-mid); }
     `;
     document.head.appendChild(style);
+  }
+
+  // Build an element with class and children (strings become text nodes). The chrome
+  // document is XHTML, where innerHTML with HTML-only markup such as <br> throws.
+  function updateEl(tag, className, ...children) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    for (const child of children) {
+      if (child == null) continue;
+      el.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return el;
   }
 
   function setUpdateHeader(title, subtitle) {
@@ -8151,7 +8357,7 @@
 
   function setUpdateBody() {
     const body = document.getElementById('zenleap-update-body');
-    if (body) body.innerHTML = '';
+    if (body) body.replaceChildren();
     return body;
   }
 
@@ -8162,26 +8368,23 @@
     if (!body) return;
 
     // Version comparison
-    const versions = document.createElement('div');
-    versions.className = 'zenleap-update-versions';
-    versions.innerHTML = `
-      <div class="zenleap-version-pill">
-        <span class="zenleap-version-pill-label">Installed</span>
-        <span class="zenleap-version-pill-number">${VERSION}</span>
-      </div>
-      <span class="zenleap-version-arrow">\u2192</span>
-      <div class="zenleap-version-pill new">
-        <span class="zenleap-version-pill-label">Available</span>
-        <span class="zenleap-version-pill-number">${remoteVersion}</span>
-      </div>
-    `;
+    const versions = updateEl('div', 'zenleap-update-versions',
+      updateEl('div', 'zenleap-version-pill',
+        updateEl('span', 'zenleap-version-pill-label', 'Installed'),
+        updateEl('span', 'zenleap-version-pill-number', VERSION)),
+      updateEl('span', 'zenleap-version-arrow', '\u2192'),
+      updateEl('div', 'zenleap-version-pill new',
+        updateEl('span', 'zenleap-version-pill-label', 'Available'),
+        updateEl('span', 'zenleap-version-pill-number', String(remoteVersion))));
     body.appendChild(versions);
 
     // Sine notice — shown prominently between version pills and changelog
     if (isSineManaged) {
       const sineBar = document.createElement('div');
       sineBar.style.cssText = 'padding:10px 24px;border-bottom:1px solid var(--zl-border-subtle);display:flex;align-items:center;justify-content:center;gap:8px;background:var(--zl-accent-dim);';
-      sineBar.innerHTML = '<span style="font-size:13px;color:var(--zl-accent);font-weight:600;">Update through the Sine mod settings page</span>';
+      const sineText = updateEl('span', null, 'Update through the Sine mod settings page');
+      sineText.style.cssText = 'font-size:13px;color:var(--zl-accent);font-weight:600;';
+      sineBar.appendChild(sineText);
       body.appendChild(sineBar);
     }
 
@@ -8197,7 +8400,7 @@
         row.className = 'zenleap-update-changelog-item';
         if (item.tag) {
           const tagClass = { new: 'new', fix: 'fix', improved: 'improved', changed: 'changed' }[item.tag] || 'improved';
-          row.innerHTML = `<span class="zenleap-changelog-tag ${tagClass}">${item.tag}</span>`;
+          row.appendChild(updateEl('span', `zenleap-changelog-tag ${tagClass}`, item.tag));
         }
         const desc = document.createElement('span');
         desc.textContent = item.desc;
@@ -8219,7 +8422,9 @@
 
       const sineNotice = document.createElement('div');
       sineNotice.style.cssText = 'font-size:12px;color:var(--zl-text-secondary);text-align:center;line-height:1.5;';
-      sineNotice.innerHTML = 'This installation is managed by <strong style="color:var(--zl-accent)">Sine</strong>.<br>Update through the Sine mod settings page.';
+      const sineName = updateEl('strong', null, 'Sine');
+      sineName.style.color = 'var(--zl-accent)';
+      sineNotice.append('This installation is managed by ', sineName, '.', document.createElement('br'), 'Update through the Sine mod settings page.');
       actions.appendChild(sineNotice);
 
       const closeBtn = document.createElement('button');
@@ -8259,7 +8464,8 @@
 
   function renderUpdateProgress(status, detail) {
     updateModalState = 'progress';
-    setUpdateHeader('Updating ZenLeap', status === 'downloading' ? 'Downloading from GitHub' : 'Installing to profile');
+    const headerText = { downloading: 'Downloading from GitHub', verifying: 'Verifying the download' }[status] || 'Installing to profile';
+    setUpdateHeader('Updating ZenLeap', headerText);
     const body = setUpdateBody();
     if (!body) return;
 
@@ -8268,7 +8474,7 @@
 
     const statusText = document.createElement('span');
     statusText.className = 'zenleap-update-progress-status';
-    statusText.textContent = status === 'downloading' ? 'Downloading update...' : 'Installing update...';
+    statusText.textContent = { downloading: 'Downloading update...', verifying: 'Verifying update...' }[status] || 'Installing update...';
 
     const track = document.createElement('div');
     track.className = 'zenleap-update-progress-bar-track';
@@ -8277,7 +8483,7 @@
     if (status === 'downloading') {
       fill.classList.add('indeterminate');
     } else {
-      fill.style.width = '75%';
+      fill.style.width = status === 'verifying' ? '55%' : '80%';
     }
     track.appendChild(fill);
 
@@ -8297,13 +8503,13 @@
     const body = setUpdateBody();
     if (!body) return;
 
-    const result = document.createElement('div');
-    result.className = 'zenleap-update-result';
-    result.innerHTML = `
-      <div class="zenleap-update-result-icon success">\u2713</div>
-      <div class="zenleap-update-result-title success">Updated to v${newVersion}</div>
-      <div class="zenleap-update-result-detail">ZenLeap has been updated. Restart Zen Browser<br>to activate the new version.</div>
-    `;
+    const result = updateEl('div', 'zenleap-update-result',
+      updateEl('div', 'zenleap-update-result-icon success', '\u2713'),
+      updateEl('div', 'zenleap-update-result-title success', `Updated to v${newVersion}`),
+      updateEl('div', 'zenleap-update-result-detail',
+        'ZenLeap has been updated (the previous version was kept as a .bak file).',
+        document.createElement('br'),
+        'Restart Zen Browser to activate the new version.'));
     body.appendChild(result);
 
     const actions = document.createElement('div');
@@ -8320,7 +8526,7 @@
       try {
         Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart);
       } catch (e) {
-        log(`Restart failed: ${e}`);
+        reportError('Restarting the browser failed', e);
       }
     });
 
@@ -8392,13 +8598,10 @@
     const body = setUpdateBody();
     if (!body) return;
 
-    const result = document.createElement('div');
-    result.className = 'zenleap-update-result';
-    result.innerHTML = `
-      <div class="zenleap-update-result-icon uptodate">\u2713</div>
-      <div class="zenleap-update-result-title uptodate">You're up to date</div>
-      <div class="zenleap-update-result-detail">ZenLeap v${VERSION} is the latest version</div>
-    `;
+    const result = updateEl('div', 'zenleap-update-result',
+      updateEl('div', 'zenleap-update-result-icon uptodate', '\u2713'),
+      updateEl('div', 'zenleap-update-result-title uptodate', "You're up to date"),
+      updateEl('div', 'zenleap-update-result-detail', `ZenLeap v${VERSION} is the latest version`));
     body.appendChild(result);
 
     const actions = document.createElement('div');
@@ -8449,7 +8652,7 @@
     renderUpdateProgress('downloading', 'Fetching files from GitHub');
     const result = await downloadAndInstallUpdate((status, detail) => {
       if (!updateMode) return;
-      if (status === 'downloading' || status.startsWith('installing')) {
+      if (status === 'downloading' || status === 'verifying' || status.startsWith('installing')) {
         renderUpdateProgress(status, detail);
       }
     });
@@ -8495,7 +8698,17 @@
     if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
   }
 
-  // Show update toast notification — persistent centered bar
+  // Update toast: a centered bar with Update/Details and Dismiss buttons. Enter/Escape
+  // also work while nothing else has keyboard focus. It hides itself after a while
+  // (hover pauses that); only "Dismiss" (or Escape) skips this version for good.
+  const UPDATE_TOAST_AUTOHIDE_MS = 15000;
+  let _updateToastTimer = null;
+
+  function armUpdateToastTimer() {
+    clearTimeout(_updateToastTimer);
+    _updateToastTimer = setTimeout(() => dismissUpdateToast(false), UPDATE_TOAST_AUTOHIDE_MS);
+  }
+
   function showUpdateToast(remoteVersion) {
     // Don't show if user explicitly dismissed the toast for this version
     if (S['updates.dismissedVersion'] === remoteVersion) return;
@@ -8505,28 +8718,30 @@
 
     const toast = document.createElement('div');
     toast.id = 'zenleap-update-toast';
+    toast.setAttribute('role', 'status');
 
-    const text = document.createElement('span');
-    text.className = 'zenleap-toast-text';
-    text.innerHTML = isSineManaged
-      ? `ZenLeap <strong>v${remoteVersion}</strong> available \u2014 update via <strong>Sine</strong>`
-      : `ZenLeap <strong>v${remoteVersion}</strong> available`;
+    const text = updateEl('span', 'zenleap-toast-text', 'ZenLeap ', updateEl('strong', null, `v${remoteVersion}`), ' available');
+    if (isSineManaged) text.append(' \u2014 update via ', updateEl('strong', null, 'Sine'));
 
-    const keys = document.createElement('span');
-    keys.className = 'zenleap-toast-keys';
-    keys.innerHTML = isSineManaged
-      ? `<kbd>\u21B5</kbd> info <kbd>Esc</kbd> dismiss`
-      : `<kbd>\u21B5</kbd> update <kbd>Esc</kbd> dismiss`;
+    const open = updateEl('button', 'zenleap-toast-btn primary', isSineManaged ? 'Details' : 'Update');
+    open.addEventListener('click', () => { dismissUpdateToast(false); enterUpdateMode(); });
+    const dismiss = updateEl('button', 'zenleap-toast-btn', 'Dismiss');
+    dismiss.title = `Don't show this again for v${remoteVersion}`;
+    dismiss.addEventListener('click', () => dismissUpdateToast(true));
 
-    toast.appendChild(text);
-    toast.appendChild(keys);
+    toast.append(text, open, dismiss);
+    toast.addEventListener('mouseenter', () => clearTimeout(_updateToastTimer));
+    toast.addEventListener('mouseleave', () => { if (updateToast === toast) armUpdateToastTimer(); });
 
     document.documentElement.appendChild(toast);
     updateToast = toast;
     updateToastVersion = remoteVersion;
+    armUpdateToastTimer();
   }
 
   function dismissUpdateToast(suppress) {
+    clearTimeout(_updateToastTimer);
+    _updateToastTimer = null;
     if (updateToast) {
       if (suppress && updateToastVersion) {
         S['updates.dismissedVersion'] = updateToastVersion;
@@ -8540,10 +8755,11 @@
     }
   }
 
-  // Auto-check for updates (called from init)
+  // Auto-check for updates (called from init in every window). The persisted check time
+  // doubles as a cross-window lock: it is claimed synchronously before the request, and
+  // other windows see it through the settings observer, so only one window checks.
   async function autoCheckForUpdates() {
     if (!shouldAutoCheckForUpdates()) return;
-
 
     // Record check time (only auto-checks count for cooldown, not manual checks)
     S['updates.lastCheckTime'] = Date.now();
@@ -8557,20 +8773,150 @@
         S['updates.dismissedVersion'] = '';
         saveSettings();
       }
-      showUpdateToast(result.remoteVersion);
+      // Show the toast once, in the window the user is looking at
+      Services.obs.notifyObservers(null, UPDATE_AVAILABLE_TOPIC, result.remoteVersion);
     }
   }
+
+  function _onUpdateAvailableBroadcast(subject, topic, version) {
+    if (!/^\d+(\.\d+)*$/.test(version || '')) return;
+    try {
+      const top = BrowserWindowTracker.getTopWindow();
+      if (top && top !== window) return;
+    } catch (e) { /* no tracker: show it here */ }
+    showUpdateToast(version);
+  }
+  Services.obs.addObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
+  onRegionTeardown(() => Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC));
 
   // ============================================
   // FOLDER DELETE MODAL (browse mode)
   // ============================================
 
+  // Undo entries for folder deletions (newest last). Entries expire after 30 s; the
+  // undo shortcut falls through to the native "reopen closed tab" when none applies.
+  const FOLDER_UNDO_WINDOW_MS = 30000;
+  const FOLDER_UNDO_MAX_ENTRIES = 10;
+
+  function pushFolderUndo(entry) {
+    folderUndoStack.push({ ...entry, timestamp: Date.now() });
+    if (folderUndoStack.length > FOLDER_UNDO_MAX_ENTRIES) {
+      folderUndoStack.splice(0, folderUndoStack.length - FOLDER_UNDO_MAX_ENTRIES);
+    }
+  }
+
+  // Everything needed to rebuild a folder later: its tree (tabs by URL, subfolders),
+  // label, collapsed state, workspace and position.
+  function snapshotFolder(folder) {
+    return {
+      folderLabel: folderName(folder),
+      folderId: folder.id,
+      workspaceId: folder.getAttribute('zen-workspace-id'),
+      tree: collectFolderTree(folder, null),
+      anchor: folder.previousElementSibling,
+      parentFolder: folder.group?.isZenFolder ? folder.group : null,
+    };
+  }
+
+  // Delete a folder and close its tabs (undoable via the undo-folder-delete shortcut).
+  async function deleteFolderWithTabs(folder) {
+    const target = folder?.isConnected ? folder : document.getElementById(folder?.id);
+    if (!target?.isZenFolder) return false;
+    const snapshot = snapshotFolder(target);
+    pushFolderUndo({ type: 'folder-and-contents', tabCount: folderTabCount(target), ...snapshot });
+    await target.delete();
+    log(`Deleted folder and contents: ${snapshot.folderLabel}`);
+    return true;
+  }
+
+  // Delete a folder but keep its tabs (undo re-creates the folder around them).
+  async function dissolveFolder(folder) {
+    const target = folder?.isConnected ? folder : document.getElementById(folder?.id);
+    if (!target?.isZenFolder) return false;
+    const tabs = target.tabs.filter(t => !t.hasAttribute('zen-empty-tab'));
+    pushFolderUndo({
+      type: 'folder-only',
+      folderLabel: folderName(target),
+      folderId: target.id,
+      collapsed: !!target.collapsed,
+      tabRefs: tabs,
+    });
+    await target.unpackTabs();
+    log(`Deleted folder (kept tabs): ${folderName(target)} (${tabs.length} tabs freed)`);
+    return true;
+  }
+
+  // Port of Zen's private ZenFolders.#convertFolderToSpace (zen-omni ZenFolders.mjs:593,
+  // used by the folder context menu) — keep in sync with upstream. Includes upstream's
+  // final pass that re-tags every tab with the new workspace id; without it the tabs
+  // return to the old workspace after a restart. Additionally re-tags moved subfolders.
+  async function convertFolderToWorkspace(folder) {
+    if (!folder?.isZenFolder || !folder.isConnected || !window.gZenWorkspaces) return null;
+    const currentWorkspace = gZenWorkspaces.getActiveWorkspaceFromCache();
+    const selectedTab = folder.tabs.find(tab => tab.selected);
+    const icon = folder.icon?.querySelector('svg .icon image');
+    const label = folderName(folder);
+    const movedFolders = [];
+
+    const newSpace = await gZenWorkspaces.createAndSaveWorkspace(
+      label,
+      icon?.getAttribute('href'),
+      /* dontChange */ false,
+      currentWorkspace?.containerTabId || 0,
+      {
+        beforeChangeCallback: async (newWorkspace) => {
+          await new Promise((resolve) => {
+            requestAnimationFrame(async () => {
+              try {
+                const workspacePinnedContainer = gZenWorkspaces.workspaceElement(newWorkspace.uuid).pinnedTabsContainer;
+                const items = folder.allItems.filter(tab => !tab.hasAttribute('zen-empty-tab'));
+                for (const item of items) {
+                  if (item.isZenFolder) movedFolders.push(item, ...item.querySelectorAll('zen-folder'));
+                }
+                workspacePinnedContainer.append(...items);
+                await folder.delete();
+                gBrowser.tabContainer._invalidateCachedTabs();
+                if (selectedTab) {
+                  selectedTab.setAttribute('zen-workspace-id', newWorkspace.uuid);
+                  selectedTab.removeAttribute('folder-active');
+                  gZenWorkspaces.lastSelectedWorkspaceTabs[newWorkspace.uuid] = selectedTab;
+                }
+              } catch (e) {
+                reportError('Convert folder to workspace: moving the folder contents failed', e);
+              } finally {
+                resolve();
+              }
+            });
+          });
+        },
+      }
+    );
+    if (!newSpace) return null;
+
+    // Change the ID for all tabs (the new workspace is active now)
+    for (const tab of gBrowser.tabs) {
+      if (!tab.hasAttribute('zen-essential')) {
+        tab.setAttribute('zen-workspace-id', newSpace.uuid);
+        tab.style.opacity = '';
+        tab.style.height = '';
+      }
+      gBrowser.TabStateFlusher.flush(tab.linkedBrowser);
+      if (gZenWorkspaces.lastSelectedWorkspaceTabs[currentWorkspace?.uuid] === tab) {
+        // No longer the last selected tab of the previous workspace
+        delete gZenWorkspaces.lastSelectedWorkspaceTabs[currentWorkspace.uuid];
+      }
+    }
+    for (const sub of movedFolders) sub.setAttribute('zen-workspace-id', newSpace.uuid);
+    log(`Converted folder "${label}" to workspace`);
+    return newSpace;
+  }
+
   function showFolderDeleteModal(folder) {
     folderDeleteMode = true;
     folderDeleteTarget = folder;
 
-    const folderName = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-    const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+    const name = folderName(folder);
+    const tabCount = folderTabCount(folder);
 
     if (!folderDeleteModal) {
       folderDeleteModal = document.createElement('div');
@@ -8589,17 +8935,19 @@
 
     const title = document.createElement('div');
     title.className = 'zenleap-folder-delete-title';
-    title.textContent = `Delete "${folderName}" (${tabCount} tab${tabCount !== 1 ? 's' : ''})?`;
+    title.textContent = `Delete "${name}" (${tabCount} tab${tabCount !== 1 ? 's' : ''})?`;
     container.appendChild(title);
 
-    container.appendChild(createDeleteOption('1', 'Delete folder and all tabs', 'Removes the folder and closes all tabs inside it', () => deleteFolderAndContents(folderDeleteTarget)));
+    const deleteAll = createDeleteOption('1', `Delete folder and close ${tabCount} tab${tabCount !== 1 ? 's' : ''}`, 'Removes the folder and closes all tabs inside it', () => deleteFolderAndContents(folderDeleteTarget));
+    deleteAll.classList.add('destructive');
+    container.appendChild(deleteAll);
     container.appendChild(createDeleteOption('2', 'Delete folder only (keep tabs)', 'Removes the folder but keeps all tabs', () => deleteFolderKeepTabs(folderDeleteTarget)));
     container.appendChild(createDeleteOption('Esc', 'Cancel', '', () => closeFolderDeleteModal()));
 
     folderDeleteModal.appendChild(backdrop);
     folderDeleteModal.appendChild(container);
     folderDeleteModal.classList.add('active');
-    log(`Showing folder delete modal for "${folderName}"`);
+    log(`Showing folder delete modal for "${name}"`);
   }
 
   function createDeleteOption(shortcut, label, sublabel, action) {
@@ -8640,79 +8988,24 @@
     updateHighlight();
   }
 
+  // Browse-mode modal option 1
   function deleteFolderAndContents(folder) {
-    try {
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { closeFolderDeleteModal(); return; }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
-
-      // Store undo data BEFORE deleting
-      folderUndoStack.push({
-        type: 'folder-and-contents',
-        folderLabel: name,
-        folderId: folder.id,
-        tabCount: tabs.length,
-        timestamp: Date.now(),
-      });
-
-      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first,
-      // matching the command bar's deleteFolder() behavior
-      if (typeof targetFolder.delete === 'function') {
-        targetFolder.delete();
-      } else if (typeof gBrowser.removeTabGroup === 'function') {
-        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
-      }
-
-      log(`Deleted folder and contents: ${name} (${tabs.length} tabs)`);
-    } catch (e) { log(`Delete folder+contents failed: ${e}`); }
-
     closeFolderDeleteModal();
-    adjustHighlightAfterDeletion();
+    deleteFolderWithTabs(folder)
+      .catch(e => reportError('Deleting folder and its tabs failed', e))
+      .finally(() => adjustHighlightAfterDeletion());
   }
 
+  // Browse-mode modal option 2
   function deleteFolderKeepTabs(folder) {
-    try {
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { closeFolderDeleteModal(); return; }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
-
-      // Store undo data: folder metadata + tab references for recreation
-      folderUndoStack.push({
-        type: 'folder-only',
-        folderLabel: name,
-        folderId: folder.id,
-        tabRefs: tabs.map(t => t),
-        timestamp: Date.now(),
-      });
-
-      // Unpack tabs from the folder (keeps tabs, removes folder structure)
-      if (typeof targetFolder.unpackTabs === 'function') {
-        targetFolder.unpackTabs();
-      } else {
-        // Fallback: manually ungroup each tab, then delete the empty folder
-        for (const tab of tabs) {
-          try { gBrowser.ungroupTab(tab); } catch (e) { /* tab may already be ungrouped */ }
-        }
-        // Now delete the empty folder shell
-        if (typeof gBrowser.removeTabGroup === 'function') {
-          gBrowser.removeTabGroup(targetFolder, { isUserTriggered: false });
-        } else if (typeof targetFolder.delete === 'function') {
-          targetFolder.delete();
-        }
-      }
-
-      log(`Deleted folder (kept tabs): ${name} (${tabs.length} tabs freed)`);
-    } catch (e) { log(`Delete folder (keep tabs) failed: ${e}`); }
-
     closeFolderDeleteModal();
-    adjustHighlightAfterDeletion();
+    dissolveFolder(folder)
+      .catch(e => reportError('Deleting folder failed', e))
+      .finally(() => adjustHighlightAfterDeletion());
   }
 
   function adjustHighlightAfterDeletion() {
+    if (!browseMode) return;
     _visibleItemsCache = null; // Invalidate after DOM mutation (folder/tab deletion)
     const newItems = getVisibleItems();
     if (newItems.length === 0) {
@@ -8726,47 +9019,65 @@
     updateLeapOverlayState();
   }
 
-  // Undo the last folder deletion. Returns true if handled, false to let browser handle.
+  // Rebuild a folder deleted together with its tabs from its snapshot: its tabs are
+  // reopened (lazily) and the Zen folder structure (subfolders, order, collapsed
+  // state) is recreated at its old position. Firefox's closed-group entry for it is
+  // dropped: restoring that would bring back a plain tab group, not a Zen folder.
+  async function restoreDeletedFolder(entry) {
+    if (!window.gZenFolders) return;
+    if (entry.workspaceId && workspacesEnabled() && entry.workspaceId !== gZenWorkspaces.activeWorkspace &&
+        gZenWorkspaces.getWorkspaces().some(w => w.uuid === entry.workspaceId)) {
+      await gZenWorkspaces.changeWorkspaceWithID(entry.workspaceId);
+    }
+    try { SessionStore.forgetClosedTabGroup(window, entry.folderId); } catch (e) { /* no closed-group entry */ }
+
+    const anchor = (entry.anchor?.isConnected && !entry.anchor.closing) ? entry.anchor : null;
+    const insertAfter = anchor || (entry.parentFolder?.isConnected ? entry.parentFolder.groupStartElement : null);
+    const openedTabs = [];
+    const folder = await restoreFolderFromLayout(entry.tree, insertAfter, openedTabs, []);
+    if (folder) {
+      const current = openedTabs.find(o => o.tab && !o.tab.closing)?.tab;
+      if (current && !entry.tree.collapsed) gBrowser.selectedTab = current;
+      log(`Undo: restored folder "${entry.folderLabel}" with ${openedTabs.length} tabs`);
+    }
+  }
+
+  // Undo the last folder deletion. Returns true if handled, false to let the browser
+  // handle the shortcut (native "reopen closed tab").
   function undoLastFolderDelete() {
     if (folderUndoStack.length === 0) {
-      return false; // Nothing to undo, let browser's native Cmd+Shift+T handle it
+      return false; // Nothing to undo, let the browser's native shortcut handle it
     }
 
     const entry = folderUndoStack[folderUndoStack.length - 1];
 
-    // Only undo if recent (within 30 seconds)
-    if (Date.now() - entry.timestamp > 30000) {
+    // Only undo if recent
+    if (Date.now() - entry.timestamp > FOLDER_UNDO_WINDOW_MS) {
       folderUndoStack.length = 0;
       return false;
     }
+    folderUndoStack.pop();
 
     if (entry.type === 'folder-and-contents') {
-      // For folder+contents: native SessionStore handles this since we used isUserTriggered: true
-      // Pop the entry and let the browser's Cmd+Shift+T restore it
-      folderUndoStack.pop();
-      return false; // Do NOT prevent default — let browser handle
+      // Entries without a snapshot (pushed by code that deleted the folder itself):
+      // let the native shortcut reopen the closed tab group.
+      if (!entry.tree) return false;
+      restoreDeletedFolder(entry).catch(e => reportError('Undo folder delete failed', e));
+      return true;
     }
 
     if (entry.type === 'folder-only') {
       // Recreate folder with the tabs that are still alive
-      folderUndoStack.pop();
-      const liveTabs = entry.tabRefs.filter(t => t && !t.closing && t.parentNode);
-      if (liveTabs.length === 0) {
+      const remaining = liveTabs(entry.tabRefs);
+      if (remaining.length === 0) {
         log('Undo: all tabs from deleted folder are gone');
         return true;
       }
+      if (!window.gZenFolders) return false;
       try {
-        if (window.gZenFolders) {
-          gZenFolders.createFolder(liveTabs, {
-            label: entry.folderLabel,
-            renameFolder: false,
-          });
-          log(`Undo: recreated folder "${entry.folderLabel}" with ${liveTabs.length} tabs`);
-        } else {
-          log('Undo: gZenFolders not available');
-          return false;
-        }
-      } catch (e) { log(`Undo folder recreation failed: ${e}`); }
+        gZenFolders.createFolder(remaining, { label: entry.folderLabel, renameFolder: false, collapsed: entry.collapsed });
+        log(`Undo: recreated folder "${entry.folderLabel}" with ${remaining.length} tabs`);
+      } catch (e) { reportError('Undo folder delete failed', e); }
       return true; // We handled it
     }
 
@@ -8782,8 +9093,8 @@
       const viewData = splitter?._data?.[splitter.currentView];
       if (!viewData?.tabs || viewData.tabs.length < 2) return false;
 
-      const currentTab = gBrowser.selectedTab;
-      const currentNode = splitter.getSplitNodeFromTab(currentTab);
+      const current = currentTab();
+      const currentNode = splitter.getSplitNodeFromTab(current);
       if (!currentNode?.positionToRoot) return false;
 
       const cur = currentNode.positionToRoot;
@@ -8794,7 +9105,7 @@
       let bestDistance = Infinity;
 
       for (const tab of viewData.tabs) {
-        if (tab === currentTab) continue;
+        if (tab === current) continue;
 
         const node = splitter.getSplitNodeFromTab(tab);
         if (!node?.positionToRoot) continue;
@@ -8865,8 +9176,8 @@
   // first non-split tab outside the group.
   function quickSwitchTab(direction, skipSplitGroup = false) {
     const items = getVisibleItems().filter(item => !isFolder(item));
-    const currentTab = gBrowser.selectedTab;
-    const currentIndex = items.indexOf(currentTab);
+    // During a Glance the selected tab is the glance child; move from its parent
+    const currentIndex = items.indexOf(currentTab());
     if (currentIndex === -1) return;
 
     let splitTabs = null;
@@ -17232,17 +17543,6 @@
         exitLeapMode();
       }
     }, ms);
-  }
-
-  // The tab the user is "on". While a Glance preview is open, selectedTab is
-  // the glance child; numbering and navigation must use its parent tab.
-  function currentTab() {
-    const tab = gBrowser.selectedTab;
-    try {
-      return window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab;
-    } catch (e) {
-      return tab;
-    }
   }
 
   // gTile needs an active split view with at least two panes.
