@@ -2168,12 +2168,25 @@
   // TAB SEARCH FUNCTIONS
   // ============================================
 
+  // Lowercase without changing the string length, so match indices computed on the
+  // lowered string stay valid for the original (e.g. 'İ'.toLowerCase() is 2 units long).
+  function lowerSameLength(text) {
+    const lower = text.toLowerCase();
+    if (lower.length === text.length) return lower;
+    let out = '';
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i].toLowerCase();
+      out += c.length === 1 ? c : c[0];
+    }
+    return out;
+  }
+
   // Fuzzy match algorithm for a single term - returns { score, indices } or null if no match
   function fuzzyMatchSingle(query, text) {
     if (!query || !text) return null;
 
-    const queryLower = query.toLowerCase();
-    const textLower = text.toLowerCase();
+    const queryLower = lowerSameLength(query);
+    const textLower = lowerSameLength(text);
     const queryLen = queryLower.length;
     const textLen = textLower.length;
 
@@ -2245,15 +2258,17 @@
     return { score, indices };
   }
 
-  // Score, filter, and sort picker results by fuzzy match relevance
+  // Score, filter, and sort picker results by fuzzy match relevance.
+  // Matched characters inside the label are returned as labelIndices for highlighting.
   function fuzzyFilterAndSort(results, query) {
     if (!query) return results;
     const scored = [];
     for (const r of results) {
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
-      const match = fuzzyMatchSingle(query.toLowerCase(), target.toLowerCase());
+      const match = fuzzyMatchSingle(query, target);
       if (match) {
-        scored.push({ ...r, score: match.score });
+        const labelLen = r.label.length;
+        scored.push({ ...r, score: match.score, labelIndices: match.indices.filter(i => i < labelLen) });
       }
     }
     scored.sort((a, b) => b.score - a.score);
@@ -2262,8 +2277,11 @@
 
   // Parse search query into exact terms (quoted) and fuzzy terms (unquoted)
   // Example: '"YouTube" test "GitHub"' → { exactTerms: ["YouTube", "GitHub"], fuzzyTerms: ["test"] }
+  let _parsedQueryCache = { query: null, parsed: null };
   function parseSearchQuery(query) {
     if (!query) return { exactTerms: [], fuzzyTerms: [] };
+    // fuzzyMatch() runs once per tab per keystroke with the same query; parse it once
+    if (_parsedQueryCache.query === query) return _parsedQueryCache.parsed;
 
     const exactTerms = [];
     // Match double-quoted strings as exact match terms
@@ -2273,15 +2291,17 @@
     });
 
     const fuzzyTerms = remaining.trim().split(/\s+/).filter(w => w.length > 0);
-    return { exactTerms, fuzzyTerms };
+    const parsed = { exactTerms, fuzzyTerms };
+    _parsedQueryCache = { query, parsed };
+    return parsed;
   }
 
   // Exact match - finds all occurrences of term in text (case-insensitive)
   // Returns array of character indices where the term matches
   function exactMatchIndices(term, text) {
     if (!term || !text) return null;
-    const termLower = term.toLowerCase();
-    const textLower = text.toLowerCase();
+    const termLower = lowerSameLength(term);
+    const textLower = lowerSameLength(text);
     const idx = textLower.indexOf(termLower);
     if (idx === -1) return null;
 
@@ -2683,10 +2703,8 @@
 
       #zenleap-search-results {
         max-height: 60vh; overflow-y: auto;
+        scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent;
       }
-      #zenleap-search-results::-webkit-scrollbar { width: 6px; }
-      #zenleap-search-results::-webkit-scrollbar-track { background: transparent; }
-      #zenleap-search-results::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
 
       .zenleap-search-result {
         display: flex; align-items: center; padding: 10px 20px; gap: 12px;
@@ -2960,25 +2978,30 @@
     log('Search modal created');
   }
 
-  // Highlight matched characters in text
+  // Highlight matched characters in text. Consecutive matches share one span, and a
+  // match on either half of a surrogate pair (emoji) highlights the whole character.
   function highlightMatches(text, indices) {
     if (!indices || indices.length === 0) return escapeHtml(text);
 
-    let result = '';
-    let lastIdx = 0;
-
+    const isHigh = (i) => { const c = text.charCodeAt(i); return c >= 0xD800 && c <= 0xDBFF; };
+    const isLow = (i) => { const c = text.charCodeAt(i); return c >= 0xDC00 && c <= 0xDFFF; };
+    const marked = new Set();
     for (const idx of indices) {
-      if (idx > lastIdx) {
-        result += escapeHtml(text.slice(lastIdx, idx));
-      }
-      result += `<span class="match">${escapeHtml(text[idx])}</span>`;
-      lastIdx = idx + 1;
+      if (idx < 0 || idx >= text.length) continue;
+      marked.add(idx);
+      if (isHigh(idx) && isLow(idx + 1)) marked.add(idx + 1);
+      if (isLow(idx) && idx > 0 && isHigh(idx - 1)) marked.add(idx - 1);
     }
 
-    if (lastIdx < text.length) {
-      result += escapeHtml(text.slice(lastIdx));
+    let result = '';
+    let i = 0;
+    while (i < text.length) {
+      const start = i;
+      const inMatch = marked.has(i);
+      while (i < text.length && marked.has(i) === inMatch) i++;
+      const chunk = escapeHtml(text.slice(start, i));
+      result += inMatch ? `<span class="match">${chunk}</span>` : chunk;
     }
-
     return result;
   }
 
