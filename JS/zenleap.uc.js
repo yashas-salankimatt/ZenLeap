@@ -11627,7 +11627,7 @@
         [[k('keys.browse.confirm')], 'Open tab / toggle folder'],
         [[k('keys.browse.close')], 'Close tab(s); on a folder: delete dialog'],
         [combo('keys.global.commandPalette'), 'Command palette for the selection'],
-        [['1-9'], 'Open the tab N items from where browsing started'],
+        [['1-9'], 'Open the item badged N'],
         [['Esc'], 'Clear selection, then return to original tab'],
       ] },
       { title: '\u{1F4CD} G-Mode', trigger: ['~After', k('keys.leap.gMode'), '~in leap mode'], items: [
@@ -11655,7 +11655,7 @@
         [['Esc'], S['display.vimModeInBars'] ? 'Normal mode (j/k, 1-9, x, vim motions); Esc again closes' : 'Close search'],
       ] },
       { title: '⚙ Command Palette', trigger: [...combo('keys.global.commandPalette'), '~or type', k('keys.search.commandPrefix'), '~in search'], items: [
-        [['↑', '~/', '↓', '~or', 'j', '~/', 'k'], 'Navigate commands'],
+        [['↑', '~/', '↓', '~or', 'Ctrl', '~+j/k'], 'Navigate commands (j/k in normal mode)'],
         [['Enter'], 'Run command / choose'],
         [['1-9'], 'Quick jump + run (normal mode)'],
         [['Esc'], 'Back / close'],
@@ -11673,7 +11673,7 @@
         [combo('keys.global.splitResize'), 'gTile split layout overlay'],
         [combo('keys.global.undoFolderDelete'), 'Undo the last folder deletion'],
       ] },
-      ...(isUrlbarVimEnabled() ? [{ title: '⌨ URL Bar Vim', trigger: ['Ctrl', '~+', 'L', '~starts in INSERT'], items: [
+      ...(isUrlbarVimEnabled() ? [{ title: '⌨ URL Bar Vim', trigger: [IS_MACOS ? 'Cmd' : 'Ctrl', '~+', 'L', '~starts in INSERT'], items: [
         [['Esc'], 'NORMAL mode (after typing; otherwise closes as usual)'],
         [['j', '~/', 'k', '~/', 'g', '~/', 'G'], 'Select suggestion'],
         [['h l w b e 0 $'], 'Move cursor'],
@@ -16963,9 +16963,11 @@
   // LEAP / BROWSE MODES
   // ============================================
 
-  // Update overlay state
+  // Update overlay state. The key hints follow the current bindings.
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
+    const k = (id) => formatKeyDisplay(S[id], SETTINGS_SCHEMA[id]);
+    const move = `${k('keys.browse.down')}/${k('keys.browse.up')}=move`;
 
     // Set mark mode attribute for CSS styling
     if (markMode || gotoMarkMode) {
@@ -17006,15 +17008,15 @@
       } else {
         // Show contextual hints based on highlighted item type
         if (onFolder && yankItems.length > 0) {
-          overlayHintLabel.textContent = 'p=paste after  P=paste before  Enter=toggle fold  j/k=move  Esc=cancel';
+          overlayHintLabel.textContent = `${k('keys.browse.pasteAfter')}=paste after  ${k('keys.browse.pasteBefore')}=paste before  ${k('keys.browse.confirm')}=toggle fold  ${move}  Esc=cancel`;
         } else if (onFolder) {
-          overlayHintLabel.textContent = 'Space=select  Enter=toggle fold  y=yank  x=delete  j/k=move  Esc=cancel';
+          overlayHintLabel.textContent = `${k('keys.browse.select')}=select  ${k('keys.browse.confirm')}=toggle fold  ${k('keys.browse.yank')}=yank  ${k('keys.browse.close')}=delete  ${move}  Esc=cancel`;
         } else if (yankItems.length > 0) {
-          overlayHintLabel.textContent = 'p=paste after  P=paste before  j/k=move  Esc=cancel';
+          overlayHintLabel.textContent = `${k('keys.browse.pasteAfter')}=paste after  ${k('keys.browse.pasteBefore')}=paste before  ${move}  Esc=cancel`;
         } else if (selectedItems.size > 0) {
-          overlayHintLabel.textContent = 'y=yank  x=close sel  Ctrl+Shift+/=cmds  Space=toggle  Esc=cancel';
+          overlayHintLabel.textContent = `${k('keys.browse.yank')}=yank  ${k('keys.browse.close')}=close sel  ${k('keys.global.commandPalette').replace(/ \+ /g, '+')}=cmds  ${k('keys.browse.select')}=toggle  Esc=cancel`;
         } else {
-          overlayHintLabel.textContent = "j/k=move  Space=select  m=mark  '=goto mark  Enter=open  x=close  Esc=cancel";
+          overlayHintLabel.textContent = `${move}  ${k('keys.browse.select')}=select  ${k('keys.leap.setMark')}=mark  ${k('keys.leap.gotoMark')}=goto mark  ${k('keys.browse.confirm')}=open  ${k('keys.browse.close')}=close  Esc=cancel`;
         }
       }
     } else if (markMode) {
@@ -17035,18 +17037,18 @@
         overlayHintLabel.textContent = 'type number, then Enter or wait';
       } else {
         overlayDirectionLabel.textContent = 'g';
-        overlayHintLabel.textContent = 'g=first  G=last  0-9=go to tab #';
+        overlayHintLabel.textContent = `${k('keys.gMode.first')}=first  ${k('keys.gMode.last')}=last  0-9=go to tab #`;
       }
     } else if (zMode) {
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = 'z';
-      overlayHintLabel.textContent = 'z=center  t=top  b=bottom';
+      overlayHintLabel.textContent = `${k('keys.zMode.center')}=center  ${k('keys.zMode.top')}=top  ${k('keys.zMode.bottom')}=bottom`;
     } else {
       leapOverlay.classList.remove('leap-direction-set');
       overlayModeLabel.textContent = 'LEAP';
       overlayDirectionLabel.textContent = '';
-      overlayHintLabel.textContent = "j/k=browse  g=goto  m=mark  M=clear  '=jump  o/i=hist";
+      overlayHintLabel.textContent = `${k('keys.leap.browseDown')}/${k('keys.leap.browseUp')}=browse  ${k('keys.leap.gMode')}=goto  ${k('keys.leap.setMark')}=mark  ${k('keys.leap.clearMarks')}=clear  ${k('keys.leap.gotoMark')}=jump  ${k('keys.leap.jumpBack')}/${k('keys.leap.jumpForward')}=hist`;
     }
   }
 
