@@ -10977,9 +10977,7 @@
     helpModal.appendChild(container);
 
     // Inject styles
-    const style = document.createElement('style');
-    style.id = 'zenleap-help-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-help-styles', `
       #zenleap-help-modal {
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
         z-index: 100001; display: none; justify-content: center; align-items: center; padding: 20px;
@@ -11064,9 +11062,8 @@
         padding: 2px 6px; border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 10px;
       }
       .zenleap-help-content { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
-    `;
+    `);
 
-    document.head.appendChild(style);
     document.documentElement.appendChild(helpModal);
 
     // Create settings button programmatically (innerHTML strips <button> in chrome context)
@@ -11169,9 +11166,7 @@
     modal.appendChild(container);
 
     // Styles
-    const style = document.createElement('style');
-    style.id = 'zenleap-reorg-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-reorg-styles', `
       #zenleap-reorg-modal {
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
         z-index: 100001; display: none; justify-content: center; align-items: center; padding: 20px;
@@ -11302,9 +11297,8 @@
         box-shadow: var(--zl-shadow-kbd);
       }
 
-    `;
+    `);
 
-    document.head.appendChild(style);
     document.documentElement.appendChild(modal);
 
     reorgModal = modal;
@@ -11863,9 +11857,7 @@
     modal.appendChild(container);
 
     // Inject styles
-    const style = document.createElement('style');
-    style.id = 'zenleap-settings-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-settings-styles', `
       #zenleap-settings-modal {
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
         z-index: 100002; display: none; justify-content: center; align-items: center; padding: 20px;
@@ -12451,8 +12443,7 @@
       .zenleap-settings-toast svg { width: 15px; height: 15px; flex-shrink: 0; }
       .zenleap-settings-toast.success { border-color: color-mix(in srgb, var(--zl-success) 15%, transparent); color: var(--zl-success); }
       .zenleap-settings-toast.error { border-color: color-mix(in srgb, var(--zl-error) 15%, transparent); color: var(--zl-error); }
-    `;
-    document.head.appendChild(style);
+    `);
     document.documentElement.appendChild(modal);
 
     // Only assign after successful creation so failures allow retry
@@ -15327,9 +15318,7 @@
     // Prevent double-initialization of CSS
     if (document.getElementById('zenleap-urlbar-vim-styles')) return;
 
-    const style = document.createElement('style');
-    style.id = 'zenleap-urlbar-vim-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-urlbar-vim-styles', `
       #zenleap-urlbar-vim-indicator {
         font-family: var(--zl-font-mono, 'JetBrains Mono', monospace);
         font-size: 9px;
@@ -15360,8 +15349,7 @@
         background-color: var(--zl-gold, #d4a754) !important;
         color: var(--zl-bg-deep, #13131f) !important;
       }
-    `;
-    document.head.appendChild(style);
+    `);
 
     log('URL bar vim mode CSS injected');
     // Attach now so the INSERT badge shows on focus, not on the first keystroke
@@ -15840,9 +15828,7 @@
     previewPanel.appendChild(thumbContainer);
     previewPanel.appendChild(info);
 
-    const style = document.createElement('style');
-    style.id = 'zenleap-preview-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-preview-styles', `
       #zenleap-preview-panel {
         position: fixed;
         z-index: 100003;
@@ -15914,8 +15900,7 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-    `;
-    document.head.appendChild(style);
+    `);
     document.documentElement.appendChild(previewPanel);
     log('Preview panel created');
   }
@@ -18964,6 +18949,17 @@
 
   // Legacy compat wrapper
   function applyThemeColors() { applyTheme(); }
+
+  // Inject a named stylesheet once. Lazily created UI (help, reorganize,
+  // settings, preview, URL bar) adds its styles on first use; teardown removes
+  // every ZenLeap style element with the rest of its DOM.
+  function injectStyleBlock(id, css) {
+    if (document.getElementById(id)) return;
+    const style = document.createElement('style');
+    style.id = id;
+    style.textContent = css;
+    document.head.appendChild(style);
+  }
 
   function injectStyles() {
     // Remove any existing style element for idempotent reinjection
