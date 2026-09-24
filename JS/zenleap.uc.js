@@ -14879,6 +14879,19 @@
     return !!S['display.vimModeInBars'] && S['display.urlbarVim'] !== false;
   }
 
+  // Did the user edit the URL bar text since it was focused? Firefox's
+  // valueIsTyped is not enough: URL autofill (typing "gith" completes to
+  // "github.com/") resets it although the text is the user's (REV-LCORE-02).
+  let urlbarEditedSinceFocus = false;
+
+  // Text the user typed that Escape should keep (switching to NORMAL): typed
+  // since focus, or typed earlier and still shown (Firefox keeps a tab's typed
+  // URL-bar text). An untouched bar, including Zen's empty Ctrl+T bar, closes.
+  function urlbarHasTypedText() {
+    return urlbarEditedSinceFocus || (gURLBar.valueIsTyped && !!gURLBar.value &&
+      gURLBar.getAttribute('pageproxystate') === 'invalid');
+  }
+
   // --- jj helpers for URL bar ---
   function cancelUrlbarJJ() {
     if (urlbarJjPendingTimeout) {
@@ -14900,6 +14913,7 @@
     input.value = (savedVal !== null ? savedVal : '').slice(0, savedCur) + 'j' +
                   (savedVal !== null ? savedVal : '').slice(savedCur);
     input.setSelectionRange(savedCur + 1, savedCur + 1);
+    urlbarEditedSinceFocus = true; // the user typed that 'j'
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
@@ -14960,15 +14974,12 @@
     // Escape handling runs, so a single Escape still closes the URL bar
     // (incl. Zen's floating Ctrl+T bar) as it does without ZenLeap.
     if (e.key === 'Escape') {
-      if (!gURLBar.valueIsTyped || gURLBar.searchMode) {
-        flushUrlbarJ();
-        return;
-      }
+      flushUrlbarJ(); // Commit any pending 'j' before deciding
+      if (!urlbarHasTypedText() || gURLBar.searchMode) return;
       urlbarSuppressKeypress = true;
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-      flushUrlbarJ(); // Commit any pending 'j' before switching modes
       const input = getUrlbarInput();
       urlbarCursorPos = input ? (input.selectionStart || 0) : 0;
       urlbarVimMode = 'normal';
@@ -15055,7 +15066,9 @@
     if (!urlbarVimActive || !isUrlbarVimEnabled()) return;
     if (urlbarVimMode === 'normal') {
       e.preventDefault();
+      return;
     }
+    urlbarEditedSinceFocus = true; // typing, deleting, pasting, IME
   }
 
   // --- Focus/blur handlers attached to inputField ---
@@ -15065,6 +15078,7 @@
     urlbarVimMode = 'insert';
     urlbarCursorPos = 0;
     urlbarSuppressKeypress = false;
+    urlbarEditedSinceFocus = false;
     cancelUrlbarJJ();
     if (isUrlbarVimEnabled()) {
       ensureUrlbarVimIndicator();
