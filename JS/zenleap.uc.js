@@ -17590,6 +17590,9 @@
     return /^[0-9]$/.test(k) ? k : null;
   }
 
+  // Whether the last (non-repeat) undo-folder-delete press undid something.
+  let _undoChordHandled = false;
+
   // Global trigger combos (keys.global.*), in the order they are checked.
   const GLOBAL_COMBO_IDS = Object.keys(SETTINGS_SCHEMA).filter(id => SETTINGS_SCHEMA[id].type === 'combo');
   // Holding these chords may auto-repeat (tab/pane navigation); every other
@@ -17967,15 +17970,18 @@
       return;
     }
 
-    // Check for undo folder delete (Cmd+Shift+T)
+    // Check for undo folder delete (Ctrl/Cmd+Shift+T)
     if (comboId === 'keys.global.undoFolderDelete') {
-      if (event.repeat) return;
-      const handled = undoLastFolderDelete();
-      if (handled) {
-        consumeEvent(event);
+      // Holding the chord: the repeats belong to the first press. After an
+      // undo they are swallowed (they would reopen closed tabs natively);
+      // otherwise the native shortcut keeps them (REV-LCORE-12).
+      if (event.repeat) {
+        if (_undoChordHandled) consumeEvent(event);
         return;
       }
-      // If not handled, let browser's native Cmd+Shift+T proceed
+      _undoChordHandled = undoLastFolderDelete();
+      // If not handled, let browser's native Ctrl/Cmd+Shift+T proceed
+      if (_undoChordHandled) consumeEvent(event);
       return;
     }
 
