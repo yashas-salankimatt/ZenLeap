@@ -11152,10 +11152,7 @@
         background: var(--zl-bg-elevated); color: var(--zl-text-secondary);
         padding: 2px 6px; border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 10px;
       }
-      .zenleap-help-content::-webkit-scrollbar { width: 8px; }
-      .zenleap-help-content::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-help-content::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 4px; }
-      .zenleap-help-content::-webkit-scrollbar-thumb:hover { background: var(--zl-text-muted); }
+      .zenleap-help-content { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
     `;
 
     document.head.appendChild(style);
@@ -11295,9 +11292,7 @@
       #zenleap-reorg-list {
         padding: 8px 0; max-height: 60vh; overflow-y: auto;
       }
-      #zenleap-reorg-list::-webkit-scrollbar { width: 6px; }
-      #zenleap-reorg-list::-webkit-scrollbar-track { background: transparent; }
-      #zenleap-reorg-list::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+      #zenleap-reorg-list { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
 
       .zenleap-reorg-item {
         display: flex; align-items: center; padding: 10px 20px; gap: 12px;
@@ -12019,10 +12014,7 @@
         color: var(--zl-accent); border-bottom-color: var(--zl-accent);
       }
       #zenleap-settings-body { flex: 1; overflow-y: auto; padding: 16px 24px; }
-      #zenleap-settings-body::-webkit-scrollbar { width: 8px; }
-      #zenleap-settings-body::-webkit-scrollbar-track { background: transparent; }
-      #zenleap-settings-body::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 4px; }
-      #zenleap-settings-body::-webkit-scrollbar-thumb:hover { background: var(--zl-text-muted); }
+      #zenleap-settings-body { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-settings-group { margin-bottom: 20px; }
       .zenleap-settings-group h3 {
         margin: 0 0 10px; font-size: 11px; font-weight: 600; color: var(--zl-accent);
@@ -12071,24 +12063,6 @@
       }
       .zenleap-settings-control input[type="text"] { width: 50px; text-align: center; font-family: var(--zl-font-mono); }
       .zenleap-settings-control input:focus { border-color: var(--zl-accent); }
-      /* Toggle switch */
-      .zenleap-toggle {
-        position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer;
-      }
-      .zenleap-toggle input { opacity: 0; width: 0; height: 0; }
-      .zenleap-toggle-slider {
-        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-        background: var(--zl-border-strong); border-radius: 11px; transition: background 0.2s;
-      }
-      .zenleap-toggle-slider::before {
-        content: ''; position: absolute; height: 16px; width: 16px;
-        left: 3px; bottom: 3px; background: var(--zl-text-secondary); border-radius: 50%;
-        transition: all 0.2s;
-      }
-      .zenleap-toggle input:checked + .zenleap-toggle-slider { background: var(--zl-accent-40); }
-      .zenleap-toggle input:checked + .zenleap-toggle-slider::before {
-        transform: translateX(18px); background: var(--zl-accent);
-      }
       .zenleap-settings-reset-btn {
         background: none; border: none; color: var(--zl-text-muted); font-size: 16px; cursor: pointer;
         padding: 4px 6px; border-radius: var(--zl-r-sm); transition: all 0.15s; flex-shrink: 0;
@@ -12509,9 +12483,7 @@
       .zenleap-import-changes {
         padding: 0 20px; max-height: 220px; overflow-y: auto;
       }
-      .zenleap-import-changes::-webkit-scrollbar { width: 6px; }
-      .zenleap-import-changes::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-import-changes::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+      .zenleap-import-changes { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-import-change-row {
         display: flex; align-items: center; gap: 10px;
         padding: 8px 10px; border-radius: var(--zl-r-sm); font-size: 12px; transition: background 0.1s;
@@ -19098,12 +19070,10 @@
         position: relative;
       }
 
-      /* ═══ Themed scrollbars ═══ */
-      .zenleap-themed-scroll::-webkit-scrollbar { width: 6px; }
-      .zenleap-themed-scroll::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-themed-scroll::-webkit-scrollbar-thumb {
-        background: var(--zl-border-strong);
-        border-radius: 3px;
+      /* ═══ Themed scrollbars (Firefox: scrollbar-width/-color, not ::-webkit-scrollbar) ═══ */
+      .zenleap-themed-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: var(--zl-border-strong) transparent;
       }
 
       /* ═══ Icons: emoji text or Zen's chrome:// SVG space icons ═══ */
@@ -19117,6 +19087,35 @@
       @keyframes zenleap-modal-enter {
         from { opacity: 0; transform: scale(0.96) translateY(-8px); }
         to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      /* Used by the plugin manager and plugin toasts, which can open before the
+         settings or update styles were ever injected */
+      @keyframes zenleap-settings-appear {
+        from { opacity: 0; transform: scale(0.97); }
+        to { opacity: 1; transform: scale(1); }
+      }
+      @keyframes zenleap-toast-in {
+        from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+        to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+
+      /* Toggle switch */
+      .zenleap-toggle {
+        position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer;
+      }
+      .zenleap-toggle input { opacity: 0; width: 0; height: 0; }
+      .zenleap-toggle-slider {
+        position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+        background: var(--zl-border-strong); border-radius: 11px; transition: background 0.2s;
+      }
+      .zenleap-toggle-slider::before {
+        content: ''; position: absolute; height: 16px; width: 16px;
+        left: 3px; bottom: 3px; background: var(--zl-text-secondary); border-radius: 50%;
+        transition: all 0.2s;
+      }
+      .zenleap-toggle input:checked + .zenleap-toggle-slider { background: var(--zl-accent-40); }
+      .zenleap-toggle input:checked + .zenleap-toggle-slider::before {
+        transform: translateX(18px); background: var(--zl-accent);
       }
 
       /* ═══ Browse Mode: Highlighted tab ═══ */
@@ -19186,7 +19185,6 @@
         text-overflow: ellipsis !important;
         white-space: nowrap !important;
         mask-image: linear-gradient(to right, black calc(100% - 30px), transparent 100%) !important;
-        -webkit-mask-image: linear-gradient(to right, black calc(100% - 30px), transparent 100%) !important;
       }
       zen-folder[data-zenleap-rel] > .tab-group-label-container::after {
         content: attr(data-zenleap-rel) !important;
@@ -19204,7 +19202,7 @@
         border-radius: 4px !important;
         font-family: var(--zl-font-mono) !important;
         position: absolute !important;
-        right: 8px !important;
+        right: 11px !important; /* lines up with the tab badges' right edge */
         top: 50% !important;
         transform: translateY(-50%) !important;
       }
@@ -19327,7 +19325,7 @@
       }
 
       /* Expanded sidebar mode */
-      @media (-moz-bool-pref: "zen.view.sidebar-expanded") {
+      @media -moz-pref("zen.view.sidebar-expanded") {
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::after {
           content: attr(data-zenleap-rel) !important;
           font-weight: bold !important;
@@ -19367,16 +19365,58 @@
           display: none !important;
         }
 
-        /* Hide close button by default */
-        tab .tab-close-button {
+        /* The badge sits where the close button is: on badged tabs, show the
+           close button on hover only (untouched when badges are off) */
+        tab:has(> .tab-stack > .tab-content[data-zenleap-rel]):not(:hover) .tab-close-button {
           display: none !important;
         }
-
-        /* Show close button on hover */
-        tab:hover .tab-close-button {
+        tab:has(> .tab-stack > .tab-content[data-zenleap-rel]):hover .tab-close-button {
           display: flex !important;
           visibility: visible !important;
           opacity: 1 !important;
+        }
+
+        /* Split views render as one row of mini tabs: the full-size inline
+           badge overflows there, use a small pill at the tab's right edge */
+        tab-group[split-view-group] tab > .tab-stack > .tab-content[data-zenleap-rel]::after {
+          display: none !important;
+        }
+        tab-group[split-view-group] tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          content: attr(data-zenleap-rel) !important;
+          position: absolute !important;
+          top: 50% !important;
+          right: 2px !important;
+          transform: translateY(-50%) !important;
+          min-width: 14px !important;
+          height: 14px !important;
+          line-height: 14px !important;
+          padding: 0 2px !important;
+          border-radius: 3px !important;
+          font-weight: bold !important;
+          font-size: 9px !important;
+          text-align: center !important;
+          z-index: 100 !important;
+          background-color: var(--zl-badge-bg) !important;
+          color: var(--zl-badge-color) !important;
+          font-family: var(--zl-font-mono) !important;
+        }
+        tab-group[split-view-group] tab[data-zenleap-direction="current"] > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          background-color: var(--zl-current-bg) !important;
+          color: var(--zl-current-color) !important;
+        }
+        tab-group[split-view-group] tab[data-zenleap-direction="up"] > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          background-color: var(--zl-up-bg) !important;
+          color: var(--zl-current-color) !important;
+        }
+        tab-group[split-view-group] tab[data-zenleap-direction="down"] > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          background-color: var(--zl-down-bg) !important;
+          color: var(--zl-current-color) !important;
+        }
+        tab-group[split-view-group] tab[data-zenleap-highlight="true"] > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          background-color: var(--zl-highlight) !important;
+        }
+        tab-group[split-view-group] tab[data-zenleap-has-mark="true"] > .tab-stack > .tab-content[data-zenleap-rel]::before {
+          background-color: var(--zl-mark) !important;
         }
 
         /* Highlighted tab badge */
@@ -19396,7 +19436,7 @@
       }
 
       /* ═══ Compact sidebar mode ═══ */
-      @media not (-moz-bool-pref: "zen.view.sidebar-expanded") {
+      @media not -moz-pref("zen.view.sidebar-expanded") {
         tab:not([zen-glance-tab="true"]) > .tab-stack > .tab-content[data-zenleap-rel]::before {
           content: attr(data-zenleap-rel) !important;
           position: absolute !important;
@@ -19919,12 +19959,7 @@
         80% { transform: translateX(2px); }
       }
 
-      #zenleap-gtile-panel::-webkit-scrollbar { width: 6px; }
-      #zenleap-gtile-panel::-webkit-scrollbar-track { background: transparent; }
-      #zenleap-gtile-panel::-webkit-scrollbar-thumb {
-        background: var(--zl-border-strong);
-        border-radius: 3px;
-      }
+      #zenleap-gtile-panel { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
     `;
     document.head.appendChild(style);
     applyTheme();
