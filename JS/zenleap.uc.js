@@ -4019,7 +4019,9 @@
     return true;
   }
 
-  // Evaluate an external plugin's script in its own sandbox.
+  // Evaluate an external plugin's script in its own sandbox. freshCompartment:
+  // a system-principal sandbox otherwise shares the window's compartment, and
+  // Cu.nukeSandbox() then throws instead of cutting the plugin off (REV-LCMDS-01).
   async function loadPluginScript(entry) {
     const { manifest } = entry;
     const source = await IOUtils.readUTF8(manifest._scriptPath);
@@ -4027,7 +4029,9 @@
       sandboxName: `ZenLeap plugin: ${manifest.id}`,
       sandboxPrototype: window,
       wantXrays: false,
+      freshCompartment: true,
     });
+    trackPluginTimers(entry, sandbox);
     try {
       Cu.evalInSandbox(source, sandbox, 'latest', PathUtils.toFileURI(manifest._scriptPath), 1);
       const exported = sandbox.ZenLeapPlugin;
@@ -4036,9 +4040,42 @@
       entry.exports = exported;
       entry.loaded = true;
     } catch (e) {
-      Cu.nukeSandbox(sandbox);
-      throw e;
+      clearPluginTimers(entry);
+      nukePluginSandbox(sandbox, manifest);
+      throw e; // the plugin's own error
     }
+  }
+
+  // The plugin's global setTimeout/setInterval (and clear*): timers it leaves
+  // running are cleared when it is disabled, instead of calling into its dead
+  // sandbox on every tick.
+  function trackPluginTimers(entry, sandbox) {
+    const timers = entry._timers = new Set();
+    sandbox.setTimeout = (fn, ms, ...args) => {
+      if (typeof fn !== 'function') return window.setTimeout(fn, ms, ...args);
+      const id = window.setTimeout((...a) => { timers.delete(id); fn(...a); }, ms, ...args);
+      timers.add(id);
+      return id;
+    };
+    sandbox.setInterval = (fn, ms, ...args) => {
+      const id = window.setInterval(fn, ms, ...args);
+      timers.add(id);
+      return id;
+    };
+    sandbox.clearTimeout = (id) => { timers.delete(id); window.clearTimeout(id); };
+    sandbox.clearInterval = (id) => { timers.delete(id); window.clearInterval(id); };
+  }
+
+  function clearPluginTimers(entry) {
+    for (const id of entry._timers || []) window.clearTimeout(id); // clears intervals too
+    entry._timers?.clear();
+  }
+
+  // Cut a plugin's code off: its functions (timers, listeners, observers it
+  // left behind) become dead wrappers.
+  function nukePluginSandbox(sandbox, manifest) {
+    try { Cu.nukeSandbox(sandbox); }
+    catch (e) { reportError(`Plugin "${manifest.name}": releasing its sandbox failed`, e); }
   }
 
   // Load (if needed) and init a plugin in this window.
@@ -4072,8 +4109,9 @@
     _pluginEventBus.removeAllForPlugin(manifest.id);
     entry.instance = null;
     entry._dynamicCommands = [];
+    clearPluginTimers(entry);
     if (entry.sandbox) {
-      try { Cu.nukeSandbox(entry.sandbox); } catch (e) {}
+      nukePluginSandbox(entry.sandbox, manifest);
       entry.sandbox = null;
       entry.exports = null;
       entry.loaded = false;
