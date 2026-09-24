@@ -39,10 +39,19 @@ same()     { cmp -s "$1" "$2"; }
 # ---------------------------------------------------------------- fixtures
 
 mkdir -p "$FAKEBIN" "$T/fixtures"
-for c in pgrep pkill killall sudo flatpak; do
+for c in pgrep pkill killall sudo; do
     printf '#!/bin/sh\necho "%s $*" >> "%s/stub-calls.log"\nexit 1\n' "$c" "$T" > "$FAKEBIN/$c"
     chmod +x "$FAKEBIN/$c"
 done
+# flatpak: "info app.zen_browser.zen" succeeds with FAKE_FLATPAK_INSTALLED=1,
+# everything else fails (no `flatpak run`, no arch: the installers use uname -m)
+cat > "$FAKEBIN/flatpak" <<EOF
+#!/bin/sh
+echo "flatpak \$*" >> "$T/flatpak-calls.log"
+if [ "\$1" = info ] && [ "\$2" = app.zen_browser.zen ] && [ "\${FAKE_FLATPAK_INSTALLED:-}" = 1 ]; then exit 0; fi
+exit 1
+EOF
+chmod +x "$FAKEBIN/flatpak"
 
 # Fake fx-autoconfig archive with the layout of the real one (all files the
 # installers copy, plus example files that must not be copied)
@@ -220,6 +229,7 @@ run() {
         FAKE_ROOT="$T" FAKE_FXAC_ZIP="${FAKE_FXAC_ZIP:-$T/fixtures/fxac.zip}" \
         FAKE_TAG="${FAKE_TAG:-v$VERSION}" FAKE_RELEASE="${FAKE_RELEASE:-$T/fixtures/release-good}" \
         FAKE_API_FAIL="${FAKE_API_FAIL:-}" FAKE_FXAC_FAIL="${FAKE_FXAC_FAIL:-}" \
+        FAKE_FLATPAK_INSTALLED="${FAKE_FLATPAK_INSTALLED:-}" \
         ${EXTRA_ENV:+$EXTRA_ENV} \
         "$TEST_BASH" "$REPO/$script" "$@" > "$OUT" 2>&1 < /dev/null
     RC=$?
@@ -238,6 +248,7 @@ run_tty() {
     printf '%b' "$input" | env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" TMPDIR="$T" LANG=C.UTF-8 \
         FAKE_ROOT="$T" FAKE_FXAC_ZIP="${FAKE_FXAC_ZIP:-$T/fixtures/fxac.zip}" \
         FAKE_TAG="${FAKE_TAG:-v$VERSION}" FAKE_RELEASE="${FAKE_RELEASE:-$T/fixtures/release-good}" \
+        FAKE_FLATPAK_INSTALLED="${FAKE_FLATPAK_INSTALLED:-}" ${EXTRA_ENV:+$EXTRA_ENV} \
         script -qec "$cmd" /dev/null > "$OUT" 2>&1
     RC=$?
 }

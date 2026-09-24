@@ -440,12 +440,12 @@ RC=$?
 check "piped: exit 0" rc_is 0
 check "piped: ignores ./JS in the current directory, installs the release" same "$T/fixtures/release-good/JS/zenleap.uc.js" "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 
-# 24. Flatpak layout (no native Zen)
+# 24. Flatpak layout (Flatpak Zen installed, no native Zen)
 new_home flatpak
 FR="$H/.var/app/app.zen_browser.zen/.zen"
 mk_two_profiles "$FR"
 mkdir -p "$H/.var/app/app.zen_browser.zen/cache/zen/gdgcari8.Default (release)/startupCache"
-run install.sh install --yes
+FAKE_FLATPAK_INSTALLED=1 run install.sh install --yes
 check "flatpak: exit 0" rc_is 0
 check "flatpak: installs into the flatpak profile" exists "$FR/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 check "flatpak: program files go to the systemconfig extension" exists "$H/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/$(uname -m)/stable/config.js"
@@ -568,6 +568,37 @@ printf '[Profile0]\n  Name=one\n\tIsRelative=1\n  Path=aaaa.one\n; Path=bbbb.two
 run install.sh install --yes --all-profiles --zen-path "$APP"
 check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
+
+# 30. The Flatpak is used only when it is installed and no native Zen is in use  [REV-LINST-03]
+new_home fpleft
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+APP2="$T/fpleft/custom/zen"
+mk_app "$APP2"
+printf '[Compatibility]\nLastPlatformDir=%s\n' "$APP2" > "$P/compatibility.ini"
+mk_two_profiles "$H/.var/app/app.zen_browser.zen/.zen"
+FP="$H/.var/app/app.zen_browser.zen/.zen/gdgcari8.Default (release)"
+run install.sh install --yes
+check "leftover Flatpak data, Flatpak not installed: the native profile" exists "$P/chrome/JS/zenleap.uc.js"
+check "... fx-autoconfig into the native Zen that ran it" exists "$APP2/config.js"
+check "... the stale Flatpak profile untouched" missing "$FP/chrome"
+check "... no systemconfig extension written" missing "$H/.local/share/flatpak"
+rm -rf "$P/chrome"
+FAKE_FLATPAK_INSTALLED=1 run install.sh install --yes
+check "Flatpak installed too, a native Zen ran the profile: the native profile" exists "$P/chrome/JS/zenleap.uc.js"
+check "... says the Flatpak's profiles were not used" has "$OUT" "The Flatpak Zen is installed too"
+check "... the Flatpak profile untouched" missing "$FP/chrome"
+rm -f "$P/compatibility.ini"
+rm -rf "$P/chrome"
+FAKE_FLATPAK_INSTALLED=1 run install.sh install --yes
+check "Flatpak installed, no sign of a native Zen: the Flatpak profile" exists "$FP/chrome/JS/zenleap.uc.js"
+check "... the native profile untouched" missing "$P/chrome"
+rm -rf "$FP/chrome"
+printf '[Compatibility]\nLastPlatformDir=%s\n' "$APP2" > "$P/compatibility.ini"
+FAKE_FLATPAK_INSTALLED=1 run install.sh install --yes --profile-dir "$FP"
+check "--profile-dir inside the Flatpak's folder: the Flatpak" exists "$FP/chrome/JS/zenleap.uc.js"
+check "... config.js into its systemconfig extension" exists "$H/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/$(uname -m)/stable/config.js"
 
 # 31. The loader that runs a profile decides, not stray Sine files  [REV-LINST-05, REV-LINST-09]
 new_home loaders

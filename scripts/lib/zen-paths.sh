@@ -775,6 +775,12 @@ zp_leftover_files() {
     return 0
 }
 
+# True if the Flatpak Zen is installed. Its data folder in ~/.var/app is no
+# evidence: `flatpak uninstall` leaves it behind.
+zp_flatpak_installed() {
+    command -v flatpak >/dev/null 2>&1 && flatpak info "$ZP_FLATPAK_ID" >/dev/null 2>&1
+}
+
 # --- Zen installation and fx-autoconfig ------------------------------------
 
 # True if <dir> is a Zen installation directory (GRE): where config.js goes.

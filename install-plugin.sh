@@ -101,7 +101,9 @@ find_profiles() {
             ;;
     esac
 
-    if ! zp_discover native && ! zp_discover flatpak && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
+    # Native profiles first, else those of an installed Flatpak Zen (its data
+    # folder stays behind after `flatpak uninstall`)
+    if ! zp_discover native && ! { zp_flatpak_installed && zp_discover flatpak; } && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
         zp_discover native || true
         echo -e "${RED}Error: $ZP_ERROR${NC}"
         echo "Please run Zen Browser at least once to create a profile"

@@ -130,6 +130,7 @@ FXAC_VERIFIED=false
 FXAC_FAILED=false
 FXAC_PROGRAM_PENDING=false
 FXAC_PROGRAM_CMDS=""
+FLATPAK_ALSO=false
 GRE_DIRS=()
 GRE_STATES=()
 RUNNING=()
@@ -917,6 +918,12 @@ zp_leftover_files() {
     return 0
 }
 
+# True if the Flatpak Zen is installed. Its data folder in ~/.var/app is no
+# evidence: `flatpak uninstall` leaves it behind.
+zp_flatpak_installed() {
+    command -v flatpak >/dev/null 2>&1 && flatpak info "$ZP_FLATPAK_ID" >/dev/null 2>&1
+}
+
 # --- Zen installation and fx-autoconfig ------------------------------------
 
 # True if <dir> is a Zen installation directory (GRE): where config.js goes.
@@ -1413,29 +1420,10 @@ detect_os() {
                         fi
                     fi
                 fi
-
-                # Flatpak install (only when there is no native one)
-                if [ -z "$ZEN_RESOURCES" ]; then
-                    if [ -d "$HOME/.var/app/$ZP_FLATPAK_ID" ] || \
-                       { command -v flatpak >/dev/null 2>&1 && flatpak list --app 2>/dev/null | grep -q "$ZP_FLATPAK_ID"; }; then
-                        IS_FLATPAK=true
-                    fi
-                fi
             fi
-
-            if [ "$IS_FLATPAK" = true ]; then
-                # Flatpak: the app dir is read-only, use the systemconfig extension
-                # (mounted at /app/etc/zen, which Firefox reads as its system config dir)
-                local flatpak_arch
-                flatpak_arch=$(flatpak --default-arch 2>/dev/null || uname -m)
-                case "$flatpak_arch" in
-                    x86_64|amd64) flatpak_arch="x86_64" ;;
-                    aarch64|arm64) flatpak_arch="aarch64" ;;
-                    i386|i686) flatpak_arch="i386" ;;
-                esac
-                ZEN_RESOURCES="$HOME/.local/share/flatpak/extension/$ZP_FLATPAK_ID.systemconfig/$flatpak_arch/stable"
-                ok "Detected Flatpak installation (experimental support)"
-            elif [ -z "$ZEN_RESOURCES" ] && [ "$prompt" = true ]; then
+            # Whether the Flatpak Zen is the one in use is decided with the
+            # profiles (choose_profiles)
+            if [ -z "$ZEN_RESOURCES" ] && [ "$prompt" = true ]; then
                 prompt_zen_path
             fi
             ;;
@@ -1452,9 +1440,53 @@ detect_os() {
             ;;
     esac
     ok "Detected OS: $OS"
-    if [ -n "$ZEN_RESOURCES" ] && [ "$IS_FLATPAK" != true ]; then
+    if [ -n "$ZEN_RESOURCES" ]; then
         ok "Zen installation: $ZEN_RESOURCES"
     fi
+}
+
+# Where fx-autoconfig's program files go for the Flatpak Zen: its read-only
+# app directory can't take them, but the systemconfig extension (mounted at
+# /app/etc/zen, which Firefox reads as its system config dir) can.
+flatpak_config_dir() {
+    local arch
+    arch=$(flatpak --default-arch 2>/dev/null || uname -m)
+    case "$arch" in
+        x86_64|amd64) arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        i386|i686) arch="i386" ;;
+    esac
+    echo "$HOME/.local/share/flatpak/extension/$ZP_FLATPAK_ID.systemconfig/$arch/stable"
+}
+
+# Is the Flatpak Zen the one to use? Only if it is installed and nothing points
+# to a native Zen (no --zen-path, no native Zen found on this system, and no
+# native profile that a still existing native Zen ran), and it has profiles.
+# A --profile-dir inside the Flatpak's data folder always means the Flatpak.
+# Sets FLATPAK_ALSO when the Flatpak is installed but a native Zen wins.
+use_flatpak() {
+    local i d fp_home
+    fp_home=$(zp__physical_dir "$HOME/.var/app/$ZP_FLATPAK_ID")
+    for d in "${PROFILE_DIR_ARGS[@]}"; do
+        if [ -n "$fp_home" ]; then
+            case "$(zp__physical_dir "$d")/" in "$fp_home"/*) return 0 ;; esac
+        fi
+    done
+    if [ -n "$CUSTOM_ZEN_PATH" ] || ! zp_flatpak_installed || ! zp_discover flatpak; then
+        return 1
+    fi
+    # The Flatpak is installed and has profiles, but a native Zen still wins
+    FLATPAK_ALSO=true
+    if [ -n "$ZEN_RESOURCES" ]; then
+        return 1
+    fi
+    if zp_discover native; then
+        for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+            if zp_profile_zen_dir "$i" >/dev/null; then return 1; fi
+        done
+    fi
+    FLATPAK_ALSO=false
+    return 0
 }
 
 # Status note for the profile list: which profiles already have ZenLeap
@@ -1475,12 +1507,22 @@ zenleap_status() {
 # Usage: choose_profiles <install|uninstall|check>
 choose_profiles() {
     local action="$1" i d mode=native suggested=() existing=()
-    [ "$IS_FLATPAK" = true ] && mode=flatpak
+
+    if [ "$OS" = linux ] && use_flatpak; then
+        mode=flatpak
+        IS_FLATPAK=true
+        ZEN_RESOURCES=$(flatpak_config_dir)
+        ok "Detected Flatpak installation (experimental support)"
+    fi
 
     if ! zp_discover "$mode" "$ZEN_RESOURCES" && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
         echo -e "${RED}Error: $ZP_ERROR${NC}"
         echo "Start Zen Browser once to create a profile (or check about:profiles), then run this again."
         exit 1
+    fi
+    if [ "$FLATPAK_ALSO" = true ] && [ "$action" != check ]; then
+        warn "The Flatpak Zen is installed too; this run uses the profiles of the Zen installed on the system."
+        echo "  For a Flatpak profile, pass --profile-dir <its folder> (about:support > Profile Folder)."
     fi
 
     if [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
