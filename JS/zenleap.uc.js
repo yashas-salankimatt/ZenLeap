@@ -13501,9 +13501,8 @@
     githubRow.appendChild(ghUrl);
 
     githubRow.addEventListener('click', () => {
-      gBrowser.addTab('https://github.com/yashas-salankimatt/ZenLeap', {
-        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-      });
+      // A web page: open it like a web link (null principal), not as system
+      openWebLinkIn('https://github.com/yashas-salankimatt/ZenLeap', 'tab');
       exitSettingsMode();
     });
 
