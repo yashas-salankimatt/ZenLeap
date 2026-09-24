@@ -5004,50 +5004,47 @@
   function getStaticCommands() {
     return [
       // --- Tab Management ---
-      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { gBrowser.addTab('about:newtab', { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() }); } },
+      // Same as Zen's Ctrl+T (may open Zen's floating URL bar instead of a blank tab)
+      { key: 'new-tab', label: 'New Tab', icon: '+', tags: ['tab', 'create', 'open', 'mk'], command: () => { BrowserCommands.openTab(); } },
       { key: 'close-tab', label: 'Close Current Tab', icon: '✕', tags: ['tab', 'close', 'remove', 'del', 'rm', 'cl'], command: () => { gBrowser.removeTab(gBrowser.selectedTab); } },
-      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'], command: () => {
-        const current = gBrowser.selectedTab;
-        const tabs = getVisibleTabs().filter(t => t !== current && !t.pinned);
-        for (const t of tabs) gBrowser.removeTab(t);
+      // Bulk closes: confirm step (counts, Cancel first) when more than one tab would close;
+      // removeTabs() closes them as one batch (one "Reopen closed tabs" restores them all)
+      { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getOtherUnpinnedTabs(), n => `Close ${n} other tabs`),
+        command: () => { closeTabsNow(getOtherUnpinnedTabs()); } },
+      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('right'), n => `Close ${n} tabs to the right`),
+        command: () => { closeTabsNow(getUnpinnedTabsBeside('right')); } },
+      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'],
+        confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('left'), n => `Close ${n} tabs to the left`),
+        command: () => { closeTabsNow(getUnpinnedTabsBeside('left')); } },
+      // Inserted next to the source tab, like Zen's own duplicate command
+      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => {
+        const tab = gBrowser.selectedTab;
+        gBrowser.duplicateTab(tab, true, { tabIndex: tab.index + 1 });
       }},
-      { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'], command: () => {
-        const tabs = getVisibleTabs();
-        const idx = tabs.indexOf(gBrowser.selectedTab);
-        if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
-      }},
-      { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'], command: () => {
-        const tabs = getVisibleTabs();
-        const idx = tabs.indexOf(gBrowser.selectedTab);
-        if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
-      }},
-      { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => { gBrowser.duplicateTab(gBrowser.selectedTab); } },
       { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
         const tab = gBrowser.selectedTab;
         if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
       }},
 
       // --- Zen Essential / Pinned Tab ---
+      // Zen enforces the essentials limit and container-specific essentials
       { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
         condition: () => {
           try {
             const tab = gBrowser.selectedTab;
-            return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group;
+            return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
+              gZenPinnedTabManager.canEssentialBeAdded(tab);
           } catch(e) { return false; }
         },
-        command: () => {
-          try { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); }
-          catch(e) { log(`Add to essentials failed: ${e}`); }
-      }},
+        command: () => { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); } },
       { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
         condition: () => {
           try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'); }
           catch(e) { return false; }
         },
-        command: () => {
-          try { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); }
-          catch(e) { log(`Remove from essentials failed: ${e}`); }
-      }},
+        command: () => { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); } },
       { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
         command: () => {
           const tab = gBrowser.selectedTab;
@@ -5055,8 +5052,8 @@
           setTimeout(() => {
             try {
               TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-title')?.doCommand();
-            } catch(e) { log(`Rename tab failed: ${e}`); }
+              document.getElementById('context_zen-edit-tab-title').doCommand();
+            } catch(e) { reportError('Rename tab failed', e); }
           }, 100);
       }},
       { key: 'edit-tab-icon', label: 'Edit Tab Icon', icon: '🎨', tags: ['tab', 'icon', 'emoji', 'edit', 'custom', 'zen'],
@@ -5066,8 +5063,8 @@
           setTimeout(() => {
             try {
               TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-icon')?.doCommand();
-            } catch(e) { log(`Edit tab icon failed: ${e}`); }
+              document.getElementById('context_zen-edit-tab-icon').doCommand();
+            } catch(e) { reportError('Edit tab icon failed', e); }
           }, 100);
       }},
       { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
@@ -5075,92 +5072,38 @@
           try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
           catch(e) { return false; }
         },
-        command: () => {
-          try { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); }
-          catch(e) { log(`Reset pinned tab failed: ${e}`); }
-      }},
+        command: () => { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); } },
       { key: 'replace-pinned-url', label: 'Replace Pinned URL with Current', icon: '📌', tags: ['tab', 'pinned', 'replace', 'url', 'current', 'update', 'zen'],
         condition: () => {
           try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
           catch(e) { return false; }
         },
-        command: () => {
-          try { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); }
-          catch(e) { log(`Replace pinned URL failed: ${e}`); }
-      }},
+        command: () => { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); } },
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
       { key: 'find-playing-tab', label: 'Find Playing Tab', icon: '🔊', tags: ['tab', 'audio', 'media', 'sound', 'playing', 'music', 'video', 'find', 'go'],
         command: async () => {
-          // Always search ALL workspaces for the initial check
-          let allTabs;
-          try {
-            if (window.gZenWorkspaces) {
-              const stored = gZenWorkspaces.allStoredTabs;
-              allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
-            } else {
-              allTabs = Array.from(gBrowser.tabs);
-            }
-          } catch (e) { allTabs = Array.from(gBrowser.tabs); }
-
-          const playingTabs = allTabs.filter(tab =>
-            tab && !tab.closing && tab.parentNode &&
-            !tab.hasAttribute('zen-empty-tab') &&
-            tab.hasAttribute('soundplaying')
-          );
-
+          const playingTabs = getPlayingTabs();
           if (playingTabs.length === 0) {
             log('No tabs currently playing audio');
             return;
           }
-
           if (playingTabs.length === 1) {
-            const tab = playingTabs[0];
-            recordJump(gBrowser.selectedTab);
-            const tabWsId = tab.getAttribute('zen-workspace-id');
-            if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace) {
-              await gZenWorkspaces.changeWorkspaceWithID(tabWsId);
-            }
-            gBrowser.selectedTab = tab;
-            recordJump(tab);
+            await switchToTabAcrossWorkspaces(playingTabs[0]);
             return;
           }
-
-          // Multiple playing tabs — re-enter search to show sub-flow
-          // Ensure cross-workspace search is on so all playing tabs are visible
-          if (!S['display.searchAllWorkspaces']) {
-            S['display.searchAllWorkspaces'] = true;
-            saveSettings();
-          }
+          // Multiple playing tabs — re-enter the palette to pick one (lists all workspaces)
           enterSearchMode(true);
           enterSubFlow('playing-tabs', 'Find Playing Tab');
         }
       },
-      { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'], command: () => {
-        const current = gBrowser.selectedTab;
-        // Find the most recently accessed tab to switch to
-        const tabs = Array.from(gBrowser.tabs)
-          .filter(t => t !== current && !t.hasAttribute('pending') && !t.hidden);
-        tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-        const target = tabs[0];
-        if (target) {
-          gBrowser.selectedTab = target;
-        }
-        // Discard after a short delay to let the tab switch complete
-        setTimeout(() => {
-          try { gBrowser.discardBrowser(current); } catch(e) { log(`Unload tab failed: ${e}`); }
-        }, S['timing.unloadTabDelay']);
-      }},
+      // Firefox selects another tab first (and handles split views / beforeunload)
+      { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'],
+        command: () => gBrowser.explicitUnloadTabs([gBrowser.selectedTab]) },
 
       // --- Tab Actions (Context Menu Parity) ---
       { key: 'reload-tab', label: 'Reload Tab', icon: '🔄', tags: ['tab', 'reload', 'refresh', 'r'], command: () => { gBrowser.reloadTab(gBrowser.selectedTab); } },
-      { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => {
-        try { PlacesCommandHook.bookmarkPage(); }
-        catch(e) { log(`Bookmark tab failed: ${e}`); }
-      }},
-      { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => {
-        try { SessionStore.undoCloseTab(window, 0); }
-        catch(e) { log(`Reopen closed tab failed: ${e}`); }
-      }},
+      { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => { PlacesCommandHook.bookmarkPage(); } },
+      { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => { SessionStore.undoCloseTab(window, 0); } },
       { key: 'select-all-tabs', label: 'Select All Tabs (Browse Mode)', icon: '☑', tags: ['tab', 'select', 'all', 'sel'], command: () => {
         const allTabs = getVisibleTabs().filter(t => !t.closing && t.parentNode);
         selectTabsInBrowseMode(allTabs);
@@ -5228,11 +5171,9 @@
 
       // --- View & Browser ---
       { key: 'toggle-fullscreen', label: 'Toggle Fullscreen', icon: '⛶', tags: ['view', 'fullscreen', 'screen'], command: () => { window.fullScreen = !window.fullScreen; } },
+      // Zen's own toggle (same as its keyboard shortcut)
       { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle', 'tog', 'sb'], command: () => {
-        try {
-          const current = Services.prefs.getBoolPref('zen.view.sidebar-expanded');
-          Services.prefs.setBoolPref('zen.view.sidebar-expanded', !current);
-        } catch (e) { log(`Toggle sidebar failed: ${e}`); }
+        document.getElementById('cmd_zenToggleSidebar').doCommand();
       }},
       { key: 'zoom-in', label: 'Zoom In', icon: '🔍+', tags: ['zoom', 'in', 'bigger'], command: () => { ZoomManager.enlarge(); } },
       { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => { ZoomManager.reduce(); } },
@@ -5240,7 +5181,7 @@
 
       // --- Split View ---
       { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close', 'cl'], command: () => {
-        try { if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView(); } catch (e) { log(`Unsplit failed: ${e}`); }
+        if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView();
       }, condition: () => { try { return window.gZenViewSplitter?.splitViewActive; } catch(e) { return false; } } },
       { key: 'split-with-tab', label: 'Split View with Tab...', icon: '◫', tags: ['split', 'view', 'side'], subFlow: 'split-tab-picker' },
       { key: 'split-rotate-tabs', label: 'Split View: Rotate Tabs', icon: '🔄', tags: ['split', 'view', 'swap', 'rotate', 'tabs', 'panes'], command: () => {
@@ -5268,7 +5209,7 @@
               splitter.applyGridLayout(viewData.layoutTree);
             }
           }
-        } catch (e) { log(`Split rotate tabs failed: ${e}`); }
+        } catch (e) { reportError('Split rotate tabs failed', e); }
       }, condition: () => {
         try {
           return window.gZenViewSplitter?.splitViewActive &&
@@ -5278,7 +5219,7 @@
       { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '\u27F3', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
         try {
           rotateSplitLayout();
-        } catch (e) { log(`Split rotate layout failed: ${e}`); }
+        } catch (e) { reportError('Split rotate layout failed', e); }
       }, condition: () => {
         try {
           const splitter = window.gZenViewSplitter;
@@ -5290,7 +5231,7 @@
       { key: 'split-reset-sizes', label: 'Split View: Reset Layout Sizes', icon: '\u2B1C', tags: ['split', 'view', 'reset', 'sizes', 'equal', 'normalize', 'balance'], command: () => {
         try {
           resetLayoutSizes();
-        } catch (e) { log(`Split reset sizes failed: ${e}`); }
+        } catch (e) { reportError('Split reset sizes failed', e); }
       }, condition: () => {
         try {
           const splitter = window.gZenViewSplitter;
@@ -5300,10 +5241,9 @@
         } catch(e) { return false; }
       }},
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
-        try {
-          const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
-          if (container) window.gZenViewSplitter.removeTabFromSplit(container);
-        } catch (e) { log(`Remove tab from split failed: ${e}`); }
+        const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
+        // Zen >= 1.19b: removeTabFromSplit(event, container); a non-Shift event keeps the tab selected
+        if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
       }, condition: () => {
         try {
           if (!window.gZenViewSplitter?.splitViewActive) return false;
@@ -5322,90 +5262,55 @@
 
       // --- Workspace Management ---
       { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'],
+        condition: () => workspacesEnabled(),
         subFlow: 'create-workspace-input' },
+      // Zen does not allow deleting the last workspace; deleting closes all of the workspace's tabs
       { key: 'delete-workspace', label: 'Delete Workspace...', icon: '🗑', tags: ['workspace', 'delete', 'remove', 'destroy', 'del', 'rm', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         subFlow: 'delete-workspace-picker' },
       { key: 'switch-workspace', label: 'Switch to Workspace...', icon: '🗂', tags: ['workspace', 'switch', 'change', 'sw', 'ws', 'go'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 0,
         subFlow: 'switch-workspace-picker' },
       { key: 'move-to-workspace', label: 'Move Tab to Workspace...', icon: '🗂', tags: ['workspace', 'move', 'tab', 'mv', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         subFlow: 'move-to-workspace-picker' },
       { key: 'rename-workspace', label: 'Rename Workspace...', icon: '✏', tags: ['workspace', 'rename', 'edit', 'name', 'ren', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 0; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 0,
         subFlow: 'rename-workspace-picker' },
       { key: 'reorganize-workspaces', label: 'Reorganize Workspaces', icon: '↕', tags: ['workspace', 'reorder', 'reorganize', 'sort', 'move', 'arrange', 'order', 'ws'],
-        condition: () => {
-          try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; }
-        },
+        condition: () => workspaceCount() > 1,
         command: () => { exitSearchMode(); setTimeout(() => enterReorgMode(), 50); } },
 
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
-        condition: () => !!window.gZenFolders,
-        command: () => {
-          try {
-            const tab = gBrowser.selectedTab;
-            gZenFolders.createFolder([tab], { renameFolder: true });
-          } catch(e) { log(`Create folder failed: ${e}`); }
-      }},
+        condition: () => !!window.gZenFolders && !gBrowser.selectedTab.hasAttribute('zen-essential'),
+        command: () => { gZenFolders.createFolder([gBrowser.selectedTab], { renameFolder: true }); } },
       { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group', 'del', 'rm', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'delete-folder-picker' },
       { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group', 'mv', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !gBrowser.selectedTab.hasAttribute('zen-essential') && getWorkspaceFolders().some(f => f !== gBrowser.selectedTab.group),
         subFlow: 'add-to-folder-picker' },
       { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group', 'ren', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'rename-folder-picker' },
       { key: 'change-folder-icon', label: 'Change Folder Icon...', icon: '🎨', tags: ['folder', 'icon', 'emoji', 'edit', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'change-folder-icon-picker' },
       { key: 'unload-folder-tabs', label: 'Unload All Tabs in Folder...', icon: '💤', tags: ['folder', 'unload', 'discard', 'memory', 'suspend', 'fld', 'fol'],
-        condition: () => {
-          try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'unload-folder-picker' },
       { key: 'create-subfolder', label: 'Create Subfolder...', icon: '📁', tags: ['folder', 'subfolder', 'create', 'new', 'nested', 'mk', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'create-subfolder-picker' },
       { key: 'convert-folder-to-workspace', label: 'Convert Folder to Workspace...', icon: '🗂', tags: ['folder', 'workspace', 'convert', 'space', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && !!window.gZenWorkspaces && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && workspacesEnabled() && getWorkspaceFolders().length > 0,
         subFlow: 'folder-to-workspace-picker' },
       { key: 'unpack-folder', label: 'Unpack Folder (Keep Tabs)...', icon: '📦', tags: ['folder', 'unpack', 'dissolve', 'remove', 'keep', 'tabs', 'fld', 'fol'],
-        condition: () => {
-          try { return !!window.gZenFolders && gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && getWorkspaceFolders().length > 0,
         subFlow: 'unpack-folder-picker' },
       { key: 'move-folder-to-workspace', label: 'Move Folder to Workspace...', icon: '🗂', tags: ['folder', 'move', 'workspace', 'space', 'mv', 'fld', 'fol'],
-        condition: () => {
-          try {
-            return !!window.gZenFolders && !!window.gZenWorkspaces &&
-              (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1 &&
-              gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0;
-          } catch(e) { return false; }
-        },
+        condition: () => !!window.gZenFolders && workspaceCount() > 1 && getWorkspaceFolders().length > 0,
         subFlow: 'move-folder-to-ws-folder-picker' },
 
       // --- ZenLeap Meta ---
@@ -5441,7 +5346,15 @@
         const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
         const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
         file.initWithPath(themesPath);
-        try { file.launch(); } catch (e) { console.warn('[ZenLeap] Could not open themes file:', e); }
+        try {
+          file.launch(); // the desktop's default editor for .json files
+        } catch (e) {
+          // No handler registered: show the file in a tab instead
+          gBrowser.selectedTab = gBrowser.addTab(PathUtils.toFileURI(themesPath), {
+            triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+            skipRoute: true,
+          });
+        }
       }},
 
       // --- Plugin Management ---
@@ -5450,10 +5363,13 @@
         setTimeout(() => enterPluginManagerMode(), 100);
       }},
 
-      // --- Session Management ---
-      { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'], subFlow: 'save-session-scope' },
-      { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'], subFlow: 'restore-session-picker' },
-      { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'], subFlow: 'list-sessions-picker' },
+      // --- Session Management --- (not in private windows: nothing from them may be written to disk)
+      { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'],
+        condition: () => !isPrivateWindow(), subFlow: 'save-session-scope' },
+      { key: 'restore-session', label: 'Restore Workspace Session...', icon: '📥', tags: ['session', 'restore', 'load', 'resume', 'workspace', 'resurrect'],
+        condition: () => workspacesEnabled(), subFlow: 'restore-session-picker' },
+      { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'],
+        condition: () => !isPrivateWindow(), subFlow: 'list-sessions-picker' },
     ];
   }
 
@@ -5469,10 +5385,10 @@
       { key: 'browse:close', label: `Close ${tabLabel}`, icon: '✕', tags: [...browseTags, 'close', 'remove', 'delete'],
         command: () => { closeMatchedTabs(browseCommandTabs); } },
       { key: 'browse:move-workspace', label: `Move ${tabLabel} to Workspace...`, icon: '🗂', tags: [...browseTags, 'move', 'workspace'],
-        condition: () => { try { return !!window.gZenWorkspaces && (window.gZenWorkspaces.getWorkspaces()?.length || 0) > 1; } catch(e) { return false; } },
+        condition: () => workspaceCount() > 1,
         subFlow: 'browse-workspace-picker' },
       { key: 'browse:add-folder', label: `Add ${tabLabel} to Folder...`, icon: '📂', tags: [...browseTags, 'folder', 'add', 'group'],
-        condition: () => { try { return gBrowser.tabContainer.querySelectorAll('zen-folder').length > 0; } catch(e) { return false; } },
+        condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'browse-folder-picker' },
       { key: 'browse:create-folder', label: `Create Folder with ${tabLabel}`, icon: '📁', tags: [...browseTags, 'folder', 'create', 'new', 'group'],
         condition: () => !!window.gZenFolders,
@@ -5587,6 +5503,13 @@
       const recencyMult = calculateCommandRecencyMultiplier(cmd.key);
       totalScore *= recencyMult;
 
+      // A label containing the whole query as typed outranks fuzzy matches, whatever
+      // their recency (typing a command's exact name must find that command first)
+      const phrase = words.join(' ').toLowerCase();
+      const labelLower = cmd.label.toLowerCase();
+      if (labelLower.startsWith(phrase)) totalScore += 2000;
+      else if (labelLower.includes(phrase)) totalScore += 1000;
+
       results.push({
         ...cmd,
         score: totalScore,
@@ -5598,6 +5521,13 @@
     return results;
   }
 
+  // Failures users care about: always to the console, plus a short toast.
+  function notifyCommandFailure(cmd, error) {
+    reportError(`Command "${cmd.label}" (${cmd.key}) failed`, error);
+    showZenLeapToast(`${cmd.label} failed \u2014 see the Browser Console`);
+    _pluginEventBus.emit('command:failed', { key: cmd.key, error: error?.message || String(error) });
+  }
+
   // Execute a command or enter its sub-flow
   function executeCommand(cmd) {
     // Track recency for all commands (including sub-flow commands)
@@ -5607,37 +5537,94 @@
       enterSubFlow(cmd.subFlow, cmd.label);
       return;
     }
-    if (typeof cmd.command === 'function') {
-      // Save browse command tabs before exitSearchMode clears them,
-      // so browse command closures can still reference browseCommandTabs
-      const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
-      exitSearchMode();
-      if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
-      try {
-        const result = cmd.command();
-        if (result && typeof result.then === 'function') {
-          result.then(() => {
-            _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
-            log(`Executed async command: ${cmd.key}`);
-          }).catch(e => {
-            _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
-            log(`Async command failed: ${cmd.key}: ${e}`);
-          });
-        } else {
-          _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
-          log(`Executed command: ${cmd.key}`);
-        }
-      } catch (e) {
-        _pluginEventBus.emit('command:failed', { key: cmd.key, error: e.message });
-        log(`Command failed: ${cmd.key}: ${e}`);
+    // Destructive commands describe what they will do; ask first when they return a description
+    if (typeof cmd.confirm === 'function') {
+      let confirmation = null;
+      try { confirmation = cmd.confirm(); } catch (e) { notifyCommandFailure(cmd, e); return; }
+      if (confirmation) {
+        enterSubFlow('command-confirm', cmd.label);
+        commandSubFlow.data = { cmd, ...confirmation };
+        renderCommandResults();
+        return;
       }
-      browseCommandTabs = [];
     }
+    runCommand(cmd);
+  }
+
+  function runCommand(cmd) {
+    if (typeof cmd.command !== 'function') return;
+    // Save browse command tabs before exitSearchMode clears them,
+    // so browse command closures can still reference browseCommandTabs
+    const savedBrowseTabs = browseCommandTabs.length > 0 ? [...browseCommandTabs] : null;
+    exitSearchMode();
+    if (savedBrowseTabs) browseCommandTabs = savedBrowseTabs;
+    try {
+      const result = cmd.command();
+      if (result && typeof result.then === 'function') {
+        result.then(() => {
+          _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+          log(`Executed async command: ${cmd.key}`);
+        }).catch(e => notifyCommandFailure(cmd, e));
+      } else {
+        _pluginEventBus.emit('command:executed', { key: cmd.key, label: cmd.label });
+        log(`Executed command: ${cmd.key}`);
+      }
+    } catch (e) {
+      notifyCommandFailure(cmd, e);
+    }
+    browseCommandTabs = [];
+  }
+
+  // Confirmation results for 'command-confirm': Cancel is first, so a stray Enter is harmless.
+  function getCommandConfirmResults() {
+    const data = commandSubFlow?.data;
+    if (!data) return [];
+    return [
+      { key: 'command-confirm:cancel', label: 'Cancel', icon: '↩', sublabel: data.cancelLabel || 'Do nothing', tags: [] },
+      { key: 'command-confirm:run', label: data.label, icon: data.icon || '\u26A0', sublabel: data.sublabel || '', tags: [] },
+    ];
+  }
+
+  // ── Bulk tab closing (Close Other / Left / Right) ──
+  function getOtherUnpinnedTabs() {
+    const current = gBrowser.selectedTab;
+    return getVisibleTabs().filter(t => t !== current && !t.pinned);
+  }
+
+  function getUnpinnedTabsBeside(side) {
+    const tabs = getVisibleTabs();
+    const idx = tabs.indexOf(gBrowser.selectedTab);
+    if (idx < 0) return [];
+    return (side === 'right' ? tabs.slice(idx + 1) : tabs.slice(0, idx)).filter(t => !t.pinned);
+  }
+
+  // Ask before closing more than one tab (returns null = no confirmation needed)
+  function bulkCloseConfirmation(tabs, describe) {
+    if (tabs.length <= 1) return null;
+    return {
+      label: describe(tabs.length),
+      icon: '✕',
+      sublabel: 'Closed tabs can be reopened with Reopen Closed Tab',
+      cancelLabel: 'Keep all tabs open',
+    };
+  }
+
+  // One batch: a single "reopen closed tabs" brings all of them back
+  function closeTabsNow(tabs) {
+    const valid = tabs.filter(t => t && !t.closing && t.isConnected);
+    if (valid.length > 0) gBrowser.removeTabs(valid);
+    return valid.length;
   }
 
   // ============================================
   // COMMAND SUB-FLOW SYSTEM
   // ============================================
+
+  // Sub-flows that show a fixed list (preview/confirmation): the input can't be typed into
+  const READ_ONLY_SUBFLOWS = new Set([
+    'dedup-preview', 'session-detail-view', 'delete-session-confirm', 'command-confirm',
+    'delete-workspace-confirm', 'delete-folder-confirm', 'restore-replace-confirm',
+  ]);
 
   function enterSubFlow(type, label) {
     commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery, data: commandSubFlow?.data || null });
@@ -5660,7 +5647,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = getSubFlowPlaceholder(type);
-      searchInput.readOnly = (type === 'dedup-preview' || type === 'session-detail-view' || type === 'delete-session-confirm');
+      searchInput.readOnly = READ_ONLY_SUBFLOWS.has(type);
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5676,13 +5663,8 @@
     if (currentType === 'dedup-preview') {
       hidePreviewPanel(true);
       dedupTabsToClose = [];
-      if (searchInput) searchInput.readOnly = false;
     }
-
-    // Clean up session readonly state when leaving session views
-    if (currentType === 'session-detail-view' || currentType === 'delete-session-confirm') {
-      if (searchInput) searchInput.readOnly = false;
-    }
+    if (searchInput) searchInput.readOnly = false;
 
     // Restore original theme when backing out of theme-picker
     if (currentType === 'theme-picker' && _themePreviewOriginal) {
@@ -5716,7 +5698,8 @@
       commandSubFlow = null;
       commandQuery = prev.query || '';
     } else {
-      commandSubFlow = { type: prev.type, label: prev.label, data: null };
+      // Restore the previous step's data (e.g. the session being restored)
+      commandSubFlow = { type: prev.type, label: prev.label, data: prev.data || null };
       commandQuery = prev.query || '';
     }
     // Only clear matched tabs when going back to tab-search or to root
@@ -5727,6 +5710,7 @@
     if (searchInput) {
       searchInput.value = commandQuery;
       searchInput.placeholder = commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...';
+      searchInput.readOnly = READ_ONLY_SUBFLOWS.has(commandSubFlow?.type);
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5746,6 +5730,10 @@
       case 'folder-name-input': return 'Enter folder name...';
       case 'delete-folder-picker': return 'Select a folder to delete...';
       case 'delete-workspace-picker': return 'Select a workspace to delete...';
+      case 'delete-workspace-confirm': return 'Deleting a workspace closes its tabs — choose with ↓ and Enter';
+      case 'delete-folder-confirm': return 'What should happen to the folder\u2019s tabs?';
+      case 'restore-replace-confirm': return 'Replacing closes the current workspace\u2019s tabs — choose with ↓ and Enter';
+      case 'command-confirm': return 'Confirm — choose with ↓ and Enter';
       case 'switch-workspace-picker': return 'Select a workspace to switch to...';
       case 'move-to-workspace-picker': return 'Select a workspace to move tab to...';
       case 'add-to-folder-picker': return 'Select a folder to add tab to...';
@@ -5767,7 +5755,6 @@
       case 'sort-picker': return 'Sort by...';
       case 'change-folder-icon-picker': return 'Select a folder to change icon...';
       case 'unload-folder-picker': return 'Select a folder to unload tabs...';
-      case 'unload-folder-progress': return 'Unloading...';
       case 'create-subfolder-picker': return 'Select a parent folder...';
       case 'folder-to-workspace-picker': return 'Select a folder to convert to workspace...';
       case 'unpack-folder-picker': return 'Select a folder to unpack...';
@@ -5825,6 +5812,14 @@
         return getDeleteFolderPickerResults(query);
       case 'delete-workspace-picker':
         return getDeleteWorkspacePickerResults(query);
+      case 'delete-workspace-confirm':
+        return getDeleteWorkspaceConfirmResults();
+      case 'delete-folder-confirm':
+        return getDeleteFolderConfirmResults();
+      case 'restore-replace-confirm':
+        return getRestoreReplaceConfirmResults();
+      case 'command-confirm':
+        return getCommandConfirmResults();
       case 'switch-workspace-picker':
         return getSwitchWorkspacePickerResults(query);
       case 'move-to-workspace-picker':
@@ -5867,15 +5862,8 @@
         return getFolderPickerForAction(query, '🎨', 'change-icon');
       case 'unload-folder-picker':
         return getFolderPickerForAction(query, '💤', 'unload');
-      case 'unload-folder-progress': {
-        const data = commandSubFlow?.data;
-        const count = data?.getCount?.() || 0;
-        const total = data?.total || 0;
-        const done = count >= total;
-        return [{ key: 'unload-progress', label: done ? `Done — unloaded ${total} tab${total !== 1 ? 's' : ''}` : `Unloading... ${count} / ${total}`, icon: done ? '✓' : '💤', tags: [] }];
-      }
       case 'create-subfolder-picker':
-        return getFolderPickerForAction(query, '📁', 'subfolder');
+        return getFolderPickerForAction(query, '📁', 'subfolder', { canNest: true });
       case 'folder-to-workspace-picker':
         return getFolderPickerForAction(query, '🗂', 'convert');
       case 'unpack-folder-picker':
@@ -5931,27 +5919,24 @@
     return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
   }
 
-  // Generic folder picker for context-menu-parity sub-flows
-  function getFolderPickerForAction(query, icon, actionPrefix) {
+  // Generic folder picker for context-menu-parity sub-flows (active workspace, no live folders)
+  function getFolderPickerForAction(query, icon, actionPrefix, { canNest = false } = {}) {
+    const maxDepth = Services.prefs.getIntPref('zen.folders.max-subfolders', 5);
     const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `${actionPrefix}-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon,
-          tags: ['folder', actionPrefix, name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for ${actionPrefix}: ${e}`); }
+    for (const folder of getWorkspaceFolders()) {
+      // Zen refuses subfolders beyond its nesting limit (same rule as its context menu)
+      if (canNest && (folder.level ?? 0) >= maxDepth - 1) continue;
+      const name = folderName(folder);
+      const tabCount = folderTabCount(folder);
+      results.push({
+        key: `${actionPrefix}-folder:${folder.id}`,
+        label: name,
+        sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+        icon,
+        tags: ['folder', actionPrefix, name.toLowerCase()],
+        folder: folder,
+      });
+    }
     if (results.length === 0) {
       return [{ key: `${actionPrefix}-folder:none`, label: 'No folders found', icon: '📂', tags: [] }];
     }
@@ -5959,65 +5944,77 @@
   }
 
   function getDeleteFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        // Only show folders in the current workspace
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        // Exclude zen-empty-tab placeholders from count
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `delete-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '🗑',
-          tags: ['folder', 'delete', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for delete: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'delete-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
+    return getFolderPickerForAction(query, '🗑', 'delete');
   }
 
+  // Deleting a workspace closes all of its tabs, so the picker never pre-selects the
+  // current workspace (it is listed last) and a confirmation step follows.
   function getDeleteWorkspacePickerResults(query) {
     const results = [];
+    const activeId = window.gZenWorkspaces?.activeWorkspace;
     try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `delete-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '🗑',
-              tags: ['workspace', 'delete', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
+      for (const ws of (gZenWorkspaces.getWorkspaces() || [])) {
+        const name = ws.name || 'Unnamed';
+        const isActive = ws.uuid === activeId;
+        results.push({
+          key: `delete-workspace:${ws.uuid}`,
+          label: `${name}${isActive ? ' (current)' : ''}`,
+          icon: safeIconText(ws.icon, '🗑'),
+          tags: ['workspace', 'delete', name.toLowerCase()],
+          workspaceId: ws.uuid,
+          workspaceName: name,
+          isActive,
+        });
       }
-    } catch (e) { log(`Error getting workspaces for delete: ${e}`); }
+    } catch (e) { reportError('Listing workspaces failed', e); }
     if (results.length === 0) {
       return [{ key: 'delete-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
     }
-    // Put current workspace first so it's the default selection
-    results.sort((a, b) => {
-      const aActive = a.label.endsWith('(current)') ? 0 : 1;
-      const bActive = b.label.endsWith('(current)') ? 0 : 1;
-      return aActive - bActive;
-    });
+    results.sort((a, b) => (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0));
     return fuzzyFilterAndSort(results, query);
+  }
+
+  // What deleting a workspace closes (same selection as Zen's removeWorkspace()).
+  function getWorkspaceOwnedItems(workspaceId) {
+    let stored = [];
+    try { stored = Array.from(gZenWorkspaces.allStoredTabs || []); } catch (e) { stored = []; }
+    const tabs = stored.filter(t =>
+      t.getAttribute('zen-workspace-id') === workspaceId &&
+      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab')
+    );
+    const folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder'))
+      .filter(f => f.getAttribute('zen-workspace-id') === workspaceId);
+    return { tabs, folders, pinned: tabs.filter(t => t.pinned).length };
+  }
+
+  function getDeleteWorkspaceConfirmResults() {
+    const data = commandSubFlow?.data;
+    if (!data?.workspaceId) return [];
+    const { tabs, folders, pinned } = getWorkspaceOwnedItems(data.workspaceId);
+    const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
+    const details = [pinned ? `${pinned} pinned` : '', folders.length ? plural(folders.length, 'folder') : ''].filter(Boolean).join(', ');
+    return [
+      { key: 'delete-workspace:cancel', label: 'Cancel', icon: '↩', sublabel: `Keep "${data.workspaceName}"`, tags: [] },
+      {
+        key: 'delete-workspace:confirm',
+        label: `Delete "${data.workspaceName}" and close ${plural(tabs.length, 'tab')}${details ? ` (${details})` : ''}`,
+        icon: '🗑',
+        sublabel: 'Closed tabs can be reopened one at a time (up to your recently-closed limit); the workspace itself cannot be restored',
+        tags: [],
+      },
+    ];
+  }
+
+  function getDeleteFolderConfirmResults() {
+    const folder = commandSubFlow?.data?.folder;
+    if (!folder?.isConnected) return [{ key: 'delete-folder:gone', label: 'The folder no longer exists', icon: '📂', tags: [] }];
+    const n = folderTabCount(folder);
+    const tabsText = `${n} tab${n !== 1 ? 's' : ''}`;
+    return [
+      { key: 'delete-folder:cancel', label: 'Cancel', icon: '↩', sublabel: `Keep "${folderName(folder)}"`, tags: [] },
+      { key: 'delete-folder:keep-tabs', label: `Delete folder only (keep ${tabsText})`, icon: '📦', sublabel: 'The tabs stay in the workspace', tags: [] },
+      { key: 'delete-folder:with-tabs', label: `Delete folder and close ${tabsText}`, icon: '🗑', sublabel: `Undo with ${formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete'])} within 30 seconds`, tags: [] },
+    ];
   }
 
   function getSwitchWorkspacePickerResults(query) {
@@ -6033,7 +6030,7 @@
             results.push({
               key: `switch-workspace:${ws.uuid}`,
               label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '🗂',
+              icon: safeIconText(ws.icon, '🗂'),
               tags: ['workspace', 'switch', name.toLowerCase()],
               workspaceId: ws.uuid,
             });
@@ -6059,7 +6056,7 @@
             results.push({
               key: `move-to-workspace:${ws.uuid}`,
               label: name,
-              icon: ws.icon || '🗂',
+              icon: safeIconText(ws.icon, '🗂'),
               tags: ['workspace', 'move', name.toLowerCase()],
               workspaceId: ws.uuid,
             });
@@ -6085,7 +6082,7 @@
             results.push({
               key: `rename-workspace:${ws.uuid}`,
               label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: ws.icon || '✏',
+              icon: safeIconText(ws.icon, '✏'),
               tags: ['workspace', 'rename', name.toLowerCase()],
               workspaceId: ws.uuid,
             });
@@ -6100,28 +6097,22 @@
   }
 
   function getAddToFolderPickerResults(query) {
+    const activeTab = gBrowser.selectedTab;
     const results = [];
-    try {
-      const activeTab = gBrowser.selectedTab;
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-        // Skip if tab is already in this folder
-        if (activeTab && activeTab.group === folder) continue;
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `add-to-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '📂',
-          tags: ['folder', 'add', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for add: ${e}`); }
+    for (const folder of getWorkspaceFolders()) {
+      // Skip if tab is already in this folder
+      if (activeTab && activeTab.group === folder) continue;
+      const name = folderName(folder);
+      const tabCount = folderTabCount(folder);
+      results.push({
+        key: `add-to-folder:${folder.id}`,
+        label: name,
+        sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
+        icon: '📂',
+        tags: ['folder', 'add', name.toLowerCase()],
+        folder: folder,
+      });
+    }
     if (results.length === 0) {
       return [{ key: 'add-to-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
     }
@@ -6129,30 +6120,7 @@
   }
 
   function getRenameFolderPickerResults(query) {
-    const results = [];
-    try {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const folderWsId = folder.getAttribute('zen-workspace-id');
-        if (activeWsId && folderWsId && folderWsId !== activeWsId) continue;
-
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-        results.push({
-          key: `rename-folder:${folder.id}`,
-          label: name,
-          sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-          icon: '✏',
-          tags: ['folder', 'rename', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
+    return getFolderPickerForAction(query, '✏', 'rename');
   }
 
   function getRenameFolderInputResults(query) {
@@ -6184,7 +6152,7 @@
     const results = searchTabs(query, { includeCurrent: true });
     commandMatchedTabs = results.map(r => r.tab);
     return results.map(r => ({
-      key: `matched-tab:${r.tab._tPos}`,
+      key: `matched-tab:${tabKey(r.tab)}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '☑',
@@ -6233,7 +6201,7 @@
             results.push({
               key: `ws:${ws.uuid}`,
               label: name,
-              icon: ws.icon || '🗂',
+              icon: safeIconText(ws.icon, '🗂'),
               tags: ['workspace', name.toLowerCase()],
               workspaceId: ws.uuid,
             });
@@ -6248,19 +6216,16 @@
 
   function getFolderPickerResults(query) {
     const results = [];
-    try {
-      const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-      for (const folder of folders) {
-        const name = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-        results.push({
-          key: `folder:${folder.id}`,
-          label: name,
-          icon: '📂',
-          tags: ['folder', name.toLowerCase()],
-          folder: folder,
-        });
-      }
-    } catch (e) { log(`Error getting folders: ${e}`); }
+    for (const folder of getWorkspaceFolders()) {
+      const name = folderName(folder);
+      results.push({
+        key: `folder:${folder.id}`,
+        label: name,
+        icon: '📂',
+        tags: ['folder', name.toLowerCase()],
+        folder: folder,
+      });
+    }
     results.push({ key: 'folder:new', label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
     return fuzzyFilterAndSort(results, query);
   }
@@ -6269,7 +6234,7 @@
     // Reuse tab search for split view picker
     const results = searchTabs(query);
     return results.map(r => ({
-      key: `split-tab:${r.tab._tPos}`,
+      key: `split-tab:${tabKey(r.tab)}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '◫',
@@ -6282,27 +6247,26 @@
     }));
   }
 
-  function getPlayingTabsResults(query) {
-    // Get tabs based on current cross-workspace setting
+  // Tabs currently playing audio, across all workspaces (finding one is the point,
+  // so this ignores the search-scope setting instead of flipping it).
+  function getPlayingTabs() {
     let allTabs;
-    if (S['display.searchAllWorkspaces'] && window.gZenWorkspaces) {
-      try {
-        const stored = gZenWorkspaces.allStoredTabs;
-        allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
-      } catch (e) { allTabs = Array.from(gBrowser.tabs); }
-    } else {
-      allTabs = getVisibleTabs();
-    }
-
-    // Filter to tabs currently playing audio
-    const playingTabs = allTabs.filter(tab =>
+    try {
+      const stored = window.gZenWorkspaces?.allStoredTabs;
+      allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
+    } catch (e) { allTabs = Array.from(gBrowser.tabs); }
+    return allTabs.filter(tab =>
       tab && !tab.closing && tab.parentNode &&
       !tab.hasAttribute('zen-empty-tab') &&
       tab.hasAttribute('soundplaying')
     );
+  }
+
+  function getPlayingTabsResults(query) {
+    const playingTabs = getPlayingTabs();
 
     let results = playingTabs.map(tab => ({
-      key: `playing-tab:${tab._tPos}`,
+      key: `playing-tab:${tabKey(tab)}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: tab.hasAttribute('muted') ? '🔇' : '🔊',
@@ -6373,7 +6337,7 @@
     dedupTabsToClose = tabsToClose;
 
     return tabsToClose.map(tab => ({
-      key: `dedup-tab:${tab._tPos}`,
+      key: `dedup-tab:${tabKey(tab)}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: '🧹',
@@ -6430,9 +6394,9 @@
         break;
 
       case 'folder-name-input': {
-        const folderName = (commandQuery || '').trim();
-        if (folderName) {
-          createFolderWithName(commandMatchedTabs, folderName);
+        const newFolderName = (commandQuery || '').trim();
+        if (newFolderName) {
+          createFolderWithName(commandMatchedTabs, newFolderName);
         }
         break;
       }
@@ -6441,56 +6405,74 @@
         splitWithTab(result.tab);
         break;
 
-      case 'playing-tabs':
-        if (result.tab) {
-          recordJump(gBrowser.selectedTab);
-          const ptTab = result.tab;
-          const ptWsId = ptTab.getAttribute('zen-workspace-id');
-          if (ptWsId && window.gZenWorkspaces && ptWsId !== gZenWorkspaces.activeWorkspace) {
-            gZenWorkspaces.changeWorkspaceWithID(ptWsId).then(() => {
-              gBrowser.selectedTab = ptTab;
-              recordJump(ptTab);
-            });
-          } else {
-            gBrowser.selectedTab = ptTab;
-            recordJump(ptTab);
-          }
-        }
+      case 'playing-tabs': {
+        const ptTab = result.tab;
         exitSearchMode();
+        if (ptTab) switchToTabAcrossWorkspaces(ptTab).catch(e => reportError('Switching to playing tab failed', e));
         break;
+      }
 
-      case 'dedup-preview':
-        if (dedupTabsToClose.length > 0) {
-          const count = dedupTabsToClose.length;
-          for (const t of dedupTabsToClose) {
-            try { gBrowser.removeTab(t); } catch (e) { log(`Failed to close duplicate tab: ${e}`); }
-          }
-          log(`Deduplicated: closed ${count} duplicate tab(s)`);
-          dedupTabsToClose = [];
-        }
+      case 'dedup-preview': {
+        // The preview list is the confirmation; close them as one batch
+        const count = closeTabsNow(dedupTabsToClose);
+        if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
+        dedupTabsToClose = [];
         hidePreviewPanel(true);
         exitSearchMode();
         break;
+      }
+
+      case 'command-confirm': {
+        const cmd = commandSubFlow.data?.cmd;
+        if (result.key === 'command-confirm:run' && cmd) runCommand(cmd);
+        else exitSubFlow();
+        break;
+      }
 
       case 'delete-folder-picker':
         if (result.folder) {
-          deleteFolder(result.folder);
+          enterSubFlow('delete-folder-confirm', `Delete: ${result.label}`);
+          commandSubFlow.data = { folder: result.folder };
+          renderCommandResults();
         }
         break;
 
-      case 'delete-workspace-picker':
-        if (result.workspaceId) {
-          deleteWorkspace(result.workspaceId);
+      case 'delete-folder-confirm': {
+        const folder = commandSubFlow.data?.folder;
+        if (result.key === 'delete-folder:keep-tabs' && folder) {
+          exitSearchMode();
+          dissolveFolder(folder).catch(e => reportError('Deleting folder failed', e));
+        } else if (result.key === 'delete-folder:with-tabs' && folder) {
+          exitSearchMode();
+          deleteFolderWithTabs(folder).catch(e => reportError('Deleting folder failed', e));
+        } else {
+          exitSubFlow();
         }
         break;
+      }
+
+      case 'delete-workspace-picker':
+        if (result.workspaceId) {
+          enterSubFlow('delete-workspace-confirm', `Delete: ${result.workspaceName}`);
+          commandSubFlow.data = { workspaceId: result.workspaceId, workspaceName: result.workspaceName };
+          renderCommandResults();
+        }
+        break;
+
+      case 'delete-workspace-confirm': {
+        const wsId = commandSubFlow.data?.workspaceId;
+        if (result.key === 'delete-workspace:confirm' && wsId) deleteWorkspace(wsId);
+        else exitSubFlow();
+        break;
+      }
 
       case 'switch-workspace-picker':
         if (result.key === 'switch-workspace:create-new') {
           enterSubFlow('create-workspace-input', 'New Workspace');
           commandSubFlow.data = { originFlow: 'switch-workspace-picker' };
         } else if (result.workspaceId) {
-          window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
           exitSearchMode();
+          gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
         }
         break;
 
@@ -6500,13 +6482,10 @@
           commandSubFlow.data = { originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab };
         } else if (result.workspaceId) {
           const tabToMove = gBrowser.selectedTab;
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, result.workspaceId);
-          // Switch to the target workspace and focus the moved tab
-          setTimeout(() => {
-            window.gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
-            setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
-          }, S['timing.workspaceSwitchDelay'] || 100);
           exitSearchMode();
+          // Move, then follow the tab into the target workspace
+          moveTabsToWorkspaceOrdered([tabToMove], result.workspaceId);
+          switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
         }
         break;
 
@@ -6584,10 +6563,18 @@
         if (result.key === 'restore-mode:new') {
           handleRestoreSession(restoreSession, 'new');
         } else if (result.key === 'restore-mode:replace') {
-          handleRestoreSession(restoreSession, 'replace');
+          // Destructive: confirm (with counts) first
+          enterSubFlow('restore-replace-confirm', 'Replace Current Workspace');
+          commandSubFlow.data = { session: restoreSession };
+          renderCommandResults();
         }
         break;
       }
+
+      case 'restore-replace-confirm':
+        if (result.key === 'restore-replace:confirm') handleRestoreSession(commandSubFlow.data?.session, 'replace');
+        else exitSubFlow();
+        break;
 
       case 'list-sessions-picker':
         if (result.sessionData) {
@@ -6616,7 +6603,7 @@
               sessionLoadPromise = null;
               exitSubFlow();
             }).catch(e => {
-              log(`Delete session failed: ${e}`);
+              reportError('Deleting session failed', e);
               exitSubFlow();
             });
           }
@@ -6665,10 +6652,8 @@
           const targetFolder = result.folder;
           exitSearchMode();
           setTimeout(() => {
-            try {
-              if (typeof gZenFolders?.changeFolderUserIcon === 'function') gZenFolders.changeFolderUserIcon(targetFolder);
-              else log('changeFolderUserIcon not available');
-            } catch(e) { log(`Change folder icon failed: ${e}`); }
+            try { gZenFolders.changeFolderUserIcon(targetFolder); }
+            catch (e) { reportError('Change folder icon failed', e); }
           }, 100);
         }
         break;
@@ -6676,31 +6661,13 @@
       case 'unload-folder-picker':
         if (result.folder) {
           const targetFolder = result.folder;
-          if (targetFolder) {
-            // Show "Unloading..." sub-flow while tabs are being discarded
-            enterSubFlow('unload-folder-progress', `Unload: ${targetFolder.label || 'folder'}`);
-            const folderTabs = (targetFolder.tabs || []).filter(t =>
-              t && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('pending') && !t.closing
-            );
-            const total = folderTabs.length;
-            let count = 0;
-            // Unload tabs one at a time with a small delay so the UI stays responsive
-            function unloadNext() {
-              if (count < total) {
-                try { gBrowser.discardBrowser(folderTabs[count]); } catch(e) {}
-                count++;
-                renderCommandResults();
-                setTimeout(unloadNext, 50);
-              } else {
-                log(`Unloaded ${count} tabs in folder: ${targetFolder.label || 'folder'}`);
-                exitSearchMode();
-              }
-            }
-            // Store progress state for the sub-flow results to read
-            commandSubFlow.data = { total, getCount: () => count };
-            renderCommandResults();
-            setTimeout(unloadNext, 50);
-          }
+          exitSearchMode();
+          // Zen's own "Unload all tabs" for folders: unloads (per the pinned-tab close
+          // behavior pref) and collapses the folder
+          try {
+            targetFolder.unloadAllTabs(new CustomEvent('ZenLeapUnloadFolder'));
+            log(`Unloaded tabs in folder: ${folderName(targetFolder)}`);
+          } catch (e) { reportError('Unloading folder tabs failed', e); }
         }
         break;
 
@@ -6709,72 +6676,26 @@
           const targetFolder = result.folder;
           exitSearchMode();
           setTimeout(() => {
-            try {
-              if (typeof targetFolder.createSubfolder === 'function') targetFolder.createSubfolder();
-              else if (typeof gZenFolders?.createSubfolder === 'function') gZenFolders.createSubfolder(targetFolder);
-              else log('createSubfolder not available');
-            } catch(e) { log(`Create subfolder failed: ${e}`); }
+            try { targetFolder.createSubfolder(); }
+            catch (e) { reportError('Create subfolder failed', e); }
           }, 100);
         }
         break;
 
       case 'folder-to-workspace-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          if (targetFolder && window.gZenWorkspaces) {
-            (async () => {
-              try {
-                const folderName = targetFolder.label || 'Untitled';
-                const currentWorkspace = gZenWorkspaces.getActiveWorkspaceFromCache();
-                const icon = targetFolder.icon?.querySelector('svg .icon image');
-                let selectedTab = targetFolder.tabs?.find(t => t.selected);
-
-                const newSpace = await gZenWorkspaces.createAndSaveWorkspace(
-                  folderName,
-                  icon?.getAttribute('href'),
-                  false,
-                  currentWorkspace?.containerTabId || 0,
-                  {
-                    beforeChangeCallback: async (newWorkspace) => {
-                      await new Promise((resolve) => {
-                        requestAnimationFrame(async () => {
-                          const wsPinnedContainer = gZenWorkspaces.workspaceElement(newWorkspace.uuid)?.pinnedTabsContainer;
-                          const tabs = (targetFolder.allItems || targetFolder.tabs || []).filter(t => !t.hasAttribute('zen-empty-tab'));
-                          if (wsPinnedContainer) wsPinnedContainer.append(...tabs);
-                          if (typeof targetFolder.delete === 'function') await targetFolder.delete();
-                          gBrowser.tabContainer._invalidateCachedTabs();
-                          if (selectedTab) {
-                            selectedTab.setAttribute('zen-workspace-id', newWorkspace.uuid);
-                            selectedTab.removeAttribute('folder-active');
-                            gZenWorkspaces.lastSelectedWorkspaceTabs[newWorkspace.uuid] = selectedTab;
-                          }
-                          resolve();
-                        });
-                      });
-                    },
-                  }
-                );
-                log(`Converted folder "${folderName}" to workspace`);
-              } catch(e) { log(`Convert folder to workspace failed: ${e}`); }
-            })();
-          }
-        }
         exitSearchMode();
+        if (result.folder) {
+          convertFolderToWorkspace(result.folder).catch(e => reportError('Convert folder to workspace failed', e));
+        }
         break;
 
       case 'unpack-folder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          try {
-            if (typeof targetFolder.unpackTabs === 'function') targetFolder.unpackTabs();
-            else if (typeof gZenFolders?.ungroupTabsFromActiveGroups === 'function') {
-              const tabs = (targetFolder.tabs || []).filter(t => t && !t.hasAttribute('zen-empty-tab'));
-              gZenFolders.ungroupTabsFromActiveGroups(tabs);
-            }
-            log(`Unpacked folder: ${targetFolder.label || 'folder'}`);
-          } catch(e) { log(`Unpack folder failed: ${e}`); }
-        }
         exitSearchMode();
+        if (result.folder) {
+          Promise.resolve(result.folder.unpackTabs())
+            .then(() => log(`Unpacked folder: ${folderName(result.folder)}`))
+            .catch(e => reportError('Unpack folder failed', e));
+        }
         break;
 
       case 'move-folder-to-ws-folder-picker':
@@ -6791,13 +6712,13 @@
           commandSubFlow.data = { originFlow: 'move-folder-to-ws-workspace-picker', folder: prevData?.folder, folderName: prevData?.folderName };
         } else if (result.workspaceId) {
           const folderData = commandSubFlow?.data;
+          exitSearchMode();
           if (folderData?.folder && window.gZenFolders) {
             try {
               gZenFolders.changeFolderToSpace(folderData.folder, result.workspaceId);
               log(`Moved folder "${folderData.folderName}" to workspace`);
-            } catch(e) { log(`Move folder to workspace failed: ${e}`); }
+            } catch (e) { reportError('Move folder to workspace failed', e); }
           }
-          exitSearchMode();
         }
         break;
 
@@ -6855,54 +6776,31 @@
     }, 100);
   }
 
+  // Close a user-selected set of tabs as one batch; Firefox's own warning appears when
+  // more tabs than can be reopened would close.
   function closeMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    const count = validTabs.length;
-    for (const t of validTabs) gBrowser.removeTab(t);
-    log(`Closed ${count} matching tabs`);
     exitSearchMode();
+    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    if (validTabs.length === 0) return;
+    if (!gBrowser.warnAboutClosingTabs(validTabs.length, gBrowser.closingTabsEnum.MULTI_SELECTED)) return;
+    const count = closeTabsNow(validTabs);
+    log(`Closed ${count} matching tabs`);
   }
 
-  // Unload (discard) matched tabs to save memory
+  // Unload (discard) matched tabs to save memory. Firefox picks another tab to select
+  // first when the current one is included, and handles split views/beforeunload.
   function unloadMatchedTabs(tabs) {
+    exitSearchMode();
     const validTabs = tabs.filter(t =>
-      t && !t.closing && t.parentNode && !t.hasAttribute('pending')
+      t && !t.closing && t.isConnected && !t.hasAttribute('pending')
     );
     if (validTabs.length === 0) {
       log('No tabs to unload (all already unloaded or invalid)');
-      exitSearchMode();
       return;
     }
-
-    const currentTab = gBrowser.selectedTab;
-    const currentIsMatched = validTabs.includes(currentTab);
-
-    if (currentIsMatched) {
-      // Switch to the most recently accessed non-matched, non-pending tab
-      const matchedSet = new Set(validTabs);
-      const alternates = Array.from(gBrowser.tabs)
-        .filter(t => t && !t.closing && t.parentNode && !matchedSet.has(t) &&
-                      !t.hasAttribute('pending') && !t.hidden);
-      alternates.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-      if (alternates[0]) {
-        gBrowser.selectedTab = alternates[0];
-      }
-    }
-
-    const count = validTabs.length;
-    // Discard after delay to let any tab switch complete
-    setTimeout(() => {
-      for (const tab of validTabs) {
-        try {
-          gBrowser.discardBrowser(tab);
-        } catch (e) {
-          log(`Failed to unload tab: ${e}`);
-        }
-      }
-      log(`Unloaded ${count} matching tabs`);
-    }, S['timing.unloadTabDelay']);
-
-    exitSearchMode();
+    gBrowser.explicitUnloadTabs(validTabs)
+      .then(() => log(`Unloaded ${validTabs.length} matching tabs`))
+      .catch(e => reportError('Unloading tabs failed', e));
   }
 
   function reloadMatchedTabs(tabs) {
@@ -6917,16 +6815,8 @@
     try {
       // Use bookmarkTabs() which is the same API the context menu uses
       PlacesCommandHook.bookmarkTabs(validTabs);
-    } catch(e) { log(`Bookmark tabs failed: ${e}`); }
+    } catch(e) { reportError('Bookmarking tabs failed', e); }
     exitSearchMode();
-  }
-
-  // Sort tabs by their current sidebar position to preserve relative order
-  function sortTabsBySidebarPosition(tabs) {
-    const visibleTabs = getVisibleTabs();
-    const positionMap = new Map();
-    visibleTabs.forEach((t, idx) => positionMap.set(t, idx));
-    return [...tabs].sort((a, b) => (positionMap.get(a) ?? 0) - (positionMap.get(b) ?? 0));
   }
 
   // --- Tab Sorting Helpers ---
@@ -6961,12 +6851,9 @@
       const firstRegularIdx = visibleTabs.findIndex(t => !t.pinned && !t.hasAttribute('zen-essential'));
       if (firstRegularIdx < 0) return;
 
-      // Place first sorted tab at the first regular position
-      gBrowser.moveTabBefore(sortedTabs[0], visibleTabs[firstRegularIdx]);
-      for (let i = 1; i < sortedTabs.length; i++) {
-        gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-      }
-    } catch (e) { log(`Tab reorder failed: ${e}`); }
+      // Place the sorted tabs, in order, at the first regular position
+      gBrowser.moveTabsBefore(sortedTabs, visibleTabs[firstRegularIdx]);
+    } catch (e) { reportError('Reordering tabs failed', e); }
   }
 
   // Sort all loose tabs by domain, grouping same-domain tabs together
@@ -7062,18 +6949,17 @@
   }
 
   function moveMatchedTabsToPosition(tabs, position) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+    exitSearchMode();
+    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    if (validTabs.length === 0) return;
 
-    // Move tabs from other workspaces into the current workspace first
-    if (window.gZenWorkspaces) {
+    // Move tabs from other workspaces into the current workspace first (one ordered batch)
+    if (workspacesEnabled()) {
       const currentWsId = gZenWorkspaces.activeWorkspace;
-      for (const tab of validTabs) {
-        const tabWsId = tab.getAttribute('zen-workspace-id');
-        if (tabWsId && tabWsId !== currentWsId) {
-          gZenWorkspaces.moveTabToWorkspace(tab, currentWsId);
-        }
-      }
+      moveTabsToWorkspaceOrdered(validTabs.filter(t => {
+        const wsId = t.getAttribute('zen-workspace-id');
+        return wsId && wsId !== currentWsId && !t.hasAttribute('zen-essential');
+      }), currentWsId);
     }
 
     // Unpin any pinned tabs (except essentials) so they can cross the pinned/unpinned DOM boundary
@@ -7084,56 +6970,29 @@
     }
 
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     const sortedSet = new Set(sortedTabs);
     const visibleTabs = getVisibleTabs();
     try {
       if (position === 'top') {
-        // Find the first non-pinned, non-essential tab that is NOT being moved
-        const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t));
-        if (anchor && sortedTabs.length > 0) {
-          // Move first tab before the anchor, then chain each subsequent tab after the previous
-          gBrowser.moveTabBefore(sortedTabs[0], anchor);
-          for (let i = 1; i < sortedTabs.length; i++) {
-            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-          }
-        } else {
-          // All regular tabs are being moved (or single tab) — find first regular tab as anchor
-          const firstRegular = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
-          if (firstRegular) {
-            gBrowser.moveTabBefore(sortedTabs[0], firstRegular);
-            for (let i = 1; i < sortedTabs.length; i++) {
-              gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-            }
-          }
-        }
+        // Anchor: the first regular tab that is not being moved (or the first regular tab)
+        const anchor = visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential') && !sortedSet.has(t))
+          || visibleTabs.find(t => !t.pinned && !t.hasAttribute('zen-essential'));
+        if (anchor && anchor !== sortedTabs[0]) gBrowser.moveTabsBefore(sortedTabs, anchor);
+        else if (anchor && sortedTabs.length > 1) gBrowser.moveTabsAfter(sortedTabs.slice(1), sortedTabs[0]);
       } else {
-        // Move to bottom - chain each tab after the previous, starting after the last visible tab
-        if (sortedTabs.length > 0) {
-          const lastVisible = getVisibleTabs();
-          const lastTab = lastVisible[lastVisible.length - 1];
-          if (lastTab && lastTab !== sortedTabs[0]) {
-            gBrowser.moveTabAfter(sortedTabs[0], lastTab);
-          }
-          for (let i = 1; i < sortedTabs.length; i++) {
-            gBrowser.moveTabAfter(sortedTabs[i], sortedTabs[i - 1]);
-          }
-        }
+        const lastTab = visibleTabs[visibleTabs.length - 1];
+        if (lastTab && lastTab !== sortedTabs[0]) gBrowser.moveTabsAfter(sortedTabs, lastTab);
+        else if (sortedTabs.length > 1) gBrowser.moveTabsAfter(sortedTabs.slice(1), sortedTabs[0]);
       }
       log(`Moved ${sortedTabs.length} tabs to ${position}`);
-    } catch (e) { log(`Move to ${position} failed: ${e}`); }
-    exitSearchMode();
+    } catch (e) { reportError(`Moving tabs to the ${position} failed`, e); }
   }
 
   function moveTabsToWorkspace(tabs, workspaceId) {
     try {
-      for (const t of tabs) {
-        if (t && !t.closing && t.parentNode) {
-          window.gZenWorkspaces.moveTabToWorkspace(t, workspaceId);
-        }
-      }
-      log(`Moved ${tabs.length} tabs to workspace ${workspaceId}`);
-    } catch (e) { log(`Move to workspace failed: ${e}`); }
+      const count = moveTabsToWorkspaceOrdered(tabs, workspaceId);
+      log(`Moved ${count} tabs to workspace ${workspaceId}`);
+    } catch (e) { reportError('Moving tabs to workspace failed', e); }
     exitSearchMode();
   }
 
@@ -7145,7 +7004,7 @@
     try {
       await gZenWorkspaces.createAndSaveWorkspace(name, undefined, false, 0);
     } catch (e) {
-      log(`Create workspace failed: ${e}`);
+      reportError('Creating workspace failed', e);
       exitSearchMode();
       return;
     }
@@ -7165,13 +7024,13 @@
         return;
 
       case 'move-to-workspace-picker': {
-        // Move the captured tab to the new workspace
+        // Move the captured tab to the new (already active) workspace and select it
         const tabToMove = data?.tabToMove;
-        if (tabToMove && !tabToMove.closing) {
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, newWsId);
-          setTimeout(() => { gBrowser.selectedTab = tabToMove; }, S['timing.workspaceSwitchDelay'] || 100);
-        }
         exitSearchMode();
+        if (tabToMove && !tabToMove.closing && tabToMove.isConnected) {
+          moveTabsToWorkspaceOrdered([tabToMove], newWsId);
+          await switchToTabAcrossWorkspaces(tabToMove);
+        }
         return;
       }
 
@@ -7186,7 +7045,7 @@
           try {
             gZenFolders.changeFolderToSpace(data.folder, newWsId);
             log(`Moved folder "${data.folderName}" to new workspace "${name}"`);
-          } catch(e) { log(`Move folder to workspace failed: ${e}`); }
+          } catch(e) { reportError('Moving folder to workspace failed', e); }
         }
         exitSearchMode();
         return;
@@ -7199,64 +7058,49 @@
   }
 
   function addTabsToFolder(tabs, folderResult) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+    exitSearchMode();
+    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    // Re-fetch folder by ID to avoid stale DOM references
+    const targetFolder = folderResult?.folder ? document.getElementById(folderResult.folder.id) : null;
+    if (validTabs.length === 0 || !targetFolder) { log('Add to folder: no tabs or folder not found'); return; }
 
     // Sort tabs by sidebar position to preserve relative order
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     try {
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = folderResult.folder ?
-        document.getElementById(folderResult.folder.id) : null;
-      if (!targetFolder) { log('Target folder not found'); exitSearchMode(); return; }
-
-      // Handle workspace and pin for each tab
+      // Tabs from other workspaces move over first (one ordered batch)
       const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
+      if (targetWorkspaceId && workspacesEnabled()) {
+        moveTabsToWorkspaceOrdered(sortedTabs.filter(t => (t.getAttribute('zen-workspace-id') || gZenWorkspaces.activeWorkspace) !== targetWorkspaceId), targetWorkspaceId);
+      }
+      // Zen folders hold pinned tabs
       for (const t of sortedTabs) {
-        if (targetWorkspaceId && window.gZenWorkspaces) {
-          const currentWsId = t.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-          if (currentWsId !== targetWorkspaceId) {
-            window.gZenWorkspaces.moveTabToWorkspace(t, targetWorkspaceId);
-          }
-        }
         if (!t.pinned) gBrowser.pinTab(t);
       }
       targetFolder.addTabs(sortedTabs);
-      log(`Added ${sortedTabs.length} tabs to folder: ${targetFolder.label}`);
-    } catch (e) { log(`Add to folder failed: ${e}`); }
-    exitSearchMode();
+      log(`Added ${sortedTabs.length} tabs to folder: ${folderName(targetFolder)}`);
+    } catch (e) { reportError('Adding tabs to folder failed', e); }
   }
 
-  function createFolderWithName(tabs, folderName) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    if (validTabs.length === 0) { exitSearchMode(); return; }
+  function createFolderWithName(tabs, name) {
+    exitSearchMode();
+    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected && !t.hasAttribute('zen-essential'));
+    if (validTabs.length === 0 || !window.gZenFolders) return;
 
     // Sort tabs by sidebar position to preserve relative order
     const sortedTabs = sortTabsBySidebarPosition(validTabs);
-
     try {
-      if (!window.gZenFolders) {
-        log('gZenFolders not available');
-        exitSearchMode();
-        return;
-      }
       // gZenFolders.createFolder handles pinning tabs internally
-      gZenFolders.createFolder(sortedTabs, {
-        label: folderName,
-        renameFolder: false,
-      });
-      log(`Created folder "${folderName}" with ${sortedTabs.length} tabs`);
-    } catch (e) { log(`Create folder with name failed: ${e}`); }
-    exitSearchMode();
+      gZenFolders.createFolder(sortedTabs, { label: name, renameFolder: false });
+      log(`Created folder "${name}" with ${sortedTabs.length} tabs`);
+    } catch (e) { reportError('Creating folder failed', e); }
   }
 
-  // Duplicate matched tabs
+  // Duplicate matched tabs (each copy goes right after its source, like Zen's own duplicate)
   function duplicateMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
-    for (const t of validTabs) gBrowser.duplicateTab(t);
-    log(`Duplicated ${validTabs.length} tabs`);
     exitSearchMode();
+    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    for (const t of validTabs) gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
+    log(`Duplicated ${validTabs.length} tabs`);
   }
 
   // Pin or unpin matched tabs (smart toggle: if any unpinned, pin all; else unpin all)
@@ -7285,7 +7129,7 @@
         window.gZenViewSplitter.splitTabs([gBrowser.selectedTab, tab]);
         log(`Split view with tab: ${tab.label}`);
       }
-    } catch (e) { log(`Split failed: ${e}`); }
+    } catch (e) { reportError('Split view failed', e); }
     exitSearchMode();
   }
 
@@ -7305,90 +7149,35 @@
           log('Not enough valid tabs for split view after filtering');
         }
       }
-    } catch (e) { log(`Browse split failed: ${e}`); }
+    } catch (e) { reportError('Split view failed', e); }
     exitSearchMode();
   }
 
-  function deleteFolder(folder) {
-    try {
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { log('Folder not found for deletion'); exitSearchMode(); return; }
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first
-      if (typeof targetFolder.delete === 'function') {
-        targetFolder.delete();
-      } else if (typeof gBrowser.removeTabGroup === 'function') {
-        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
-      }
-      log(`Deleted folder: ${name}`);
-    } catch (e) { log(`Delete folder failed: ${e}`); }
+  async function deleteWorkspace(workspaceId) {
     exitSearchMode();
-  }
-
-  function deleteWorkspace(workspaceId) {
+    if (!workspacesEnabled()) return;
+    const name = getWorkspaceName(workspaceId) || workspaceId;
     try {
-      if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); exitSearchMode(); return; }
-      // Use Zen's workspace removal API
-      if (typeof gZenWorkspaces.removeWorkspace === 'function') {
-        gZenWorkspaces.removeWorkspace(workspaceId);
-      } else if (typeof gZenWorkspaces.deleteWorkspace === 'function') {
-        gZenWorkspaces.deleteWorkspace(workspaceId);
-      } else {
-        log('No API available to delete workspace');
-        exitSearchMode();
-        return;
-      }
-      log(`Deleted workspace: ${workspaceId}`);
-    } catch (e) { log(`Delete workspace failed: ${e}`); }
-    exitSearchMode();
+      const confirmed = await removeWorkspaceWithTimeout(workspaceId);
+      if (!confirmed) log(`Delete workspace "${name}": Zen did not confirm within the timeout`);
+      else log(`Deleted workspace: ${name}`);
+    } catch (e) { reportError(`Deleting workspace "${name}" failed`, e); }
   }
 
   function addTabToFolder(folder) {
-    try {
-      const tabToMove = gBrowser.selectedTab;
-      if (!tabToMove) { exitSearchMode(); return; }
-      // Re-fetch folder by ID to avoid stale DOM references
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { log(`Folder not found: ${folder.id}`); exitSearchMode(); return; }
-
-      // Handle cross-workspace moves
-      const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
-      if (targetWorkspaceId && window.gZenWorkspaces) {
-        const currentWorkspaceId = tabToMove.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
-        if (currentWorkspaceId !== targetWorkspaceId) {
-          window.gZenWorkspaces.moveTabToWorkspace(tabToMove, targetWorkspaceId);
-        }
-      }
-
-      // Pin tab if not already pinned (Zen folders require pinned tabs)
-      if (!tabToMove.pinned) {
-        gBrowser.pinTab(tabToMove);
-      }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      targetFolder.addTabs([tabToMove]);
-      log(`Added tab to folder: ${name}`);
-    } catch(e) { log(`Add to folder failed: ${e}`); }
-    exitSearchMode();
+    addTabsToFolder([gBrowser.selectedTab], { folder });
   }
 
   function renameFolder(folderId, newName) {
-    try {
-      const targetFolder = document.getElementById(folderId);
-      if (!targetFolder) { log('Folder not found for rename'); exitSearchMode(); return; }
-      const oldName = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      // Use the folder's name setter which triggers ZenFolderRenamed event
-      if ('name' in targetFolder) {
-        targetFolder.name = newName;
-      } else if (targetFolder.labelElement) {
-        targetFolder.label = newName;
-      } else {
-        targetFolder.setAttribute('zen-folder-name', newName);
-      }
-      log(`Renamed folder: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename folder failed: ${e}`); }
     exitSearchMode();
+    const targetFolder = document.getElementById(folderId);
+    if (!targetFolder?.isZenFolder) { log('Folder not found for rename'); return; }
+    const oldName = folderName(targetFolder);
+    try {
+      // The name setter fires ZenFolderRenamed (Zen syncs/saves the label)
+      targetFolder.name = newName;
+      log(`Renamed folder: "${oldName}" → "${newName}"`);
+    } catch (e) { reportError('Renaming folder failed', e); }
   }
 
   function renameWorkspace(workspaceId, newName) {
@@ -7415,7 +7204,7 @@
         }
       }
       log(`Renamed workspace: "${oldName}" → "${newName}"`);
-    } catch (e) { log(`Rename workspace failed: ${e}`); }
+    } catch (e) { reportError('Renaming workspace failed', e); }
     exitSearchMode();
   }
 
@@ -9558,17 +9347,19 @@
 
     const title = document.createElement('div');
     title.className = 'zenleap-folder-delete-title';
-    title.textContent = `Delete "${folderName}" (${tabCount} tab${tabCount !== 1 ? 's' : ''})?`;
+    title.textContent = `Delete "${name}" (${tabCount} tab${tabCount !== 1 ? 's' : ''})?`;
     container.appendChild(title);
 
-    container.appendChild(createDeleteOption('1', 'Delete folder and all tabs', 'Removes the folder and closes all tabs inside it', () => deleteFolderAndContents(folderDeleteTarget)));
+    const deleteAll = createDeleteOption('1', `Delete folder and close ${tabCount} tab${tabCount !== 1 ? 's' : ''}`, 'Removes the folder and closes all tabs inside it', () => deleteFolderAndContents(folderDeleteTarget));
+    deleteAll.classList.add('destructive');
+    container.appendChild(deleteAll);
     container.appendChild(createDeleteOption('2', 'Delete folder only (keep tabs)', 'Removes the folder but keeps all tabs', () => deleteFolderKeepTabs(folderDeleteTarget)));
     container.appendChild(createDeleteOption('Esc', 'Cancel', '', () => closeFolderDeleteModal()));
 
     folderDeleteModal.appendChild(backdrop);
     folderDeleteModal.appendChild(container);
     folderDeleteModal.classList.add('active');
-    log(`Showing folder delete modal for "${folderName}"`);
+    log(`Showing folder delete modal for "${name}"`);
   }
 
   function createDeleteOption(shortcut, label, sublabel, action) {
@@ -9609,79 +9400,24 @@
     updateHighlight();
   }
 
+  // Browse-mode modal option 1
   function deleteFolderAndContents(folder) {
-    try {
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { closeFolderDeleteModal(); return; }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
-
-      // Store undo data BEFORE deleting
-      folderUndoStack.push({
-        type: 'folder-and-contents',
-        folderLabel: name,
-        folderId: folder.id,
-        tabCount: tabs.length,
-        timestamp: Date.now(),
-      });
-
-      // Use zen-folder's native delete() which cleans up zen-empty-tab placeholders first,
-      // matching the command bar's deleteFolder() behavior
-      if (typeof targetFolder.delete === 'function') {
-        targetFolder.delete();
-      } else if (typeof gBrowser.removeTabGroup === 'function') {
-        gBrowser.removeTabGroup(targetFolder, { isUserTriggered: true });
-      }
-
-      log(`Deleted folder and contents: ${name} (${tabs.length} tabs)`);
-    } catch (e) { log(`Delete folder+contents failed: ${e}`); }
-
     closeFolderDeleteModal();
-    adjustHighlightAfterDeletion();
+    deleteFolderWithTabs(folder)
+      .catch(e => reportError('Deleting folder and its tabs failed', e))
+      .finally(() => adjustHighlightAfterDeletion());
   }
 
+  // Browse-mode modal option 2
   function deleteFolderKeepTabs(folder) {
-    try {
-      const targetFolder = document.getElementById(folder.id);
-      if (!targetFolder) { closeFolderDeleteModal(); return; }
-
-      const name = targetFolder.label || targetFolder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-      const tabs = targetFolder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
-
-      // Store undo data: folder metadata + tab references for recreation
-      folderUndoStack.push({
-        type: 'folder-only',
-        folderLabel: name,
-        folderId: folder.id,
-        tabRefs: tabs.map(t => t),
-        timestamp: Date.now(),
-      });
-
-      // Unpack tabs from the folder (keeps tabs, removes folder structure)
-      if (typeof targetFolder.unpackTabs === 'function') {
-        targetFolder.unpackTabs();
-      } else {
-        // Fallback: manually ungroup each tab, then delete the empty folder
-        for (const tab of tabs) {
-          try { gBrowser.ungroupTab(tab); } catch (e) { /* tab may already be ungrouped */ }
-        }
-        // Now delete the empty folder shell
-        if (typeof gBrowser.removeTabGroup === 'function') {
-          gBrowser.removeTabGroup(targetFolder, { isUserTriggered: false });
-        } else if (typeof targetFolder.delete === 'function') {
-          targetFolder.delete();
-        }
-      }
-
-      log(`Deleted folder (kept tabs): ${name} (${tabs.length} tabs freed)`);
-    } catch (e) { log(`Delete folder (keep tabs) failed: ${e}`); }
-
     closeFolderDeleteModal();
-    adjustHighlightAfterDeletion();
+    dissolveFolder(folder)
+      .catch(e => reportError('Deleting folder failed', e))
+      .finally(() => adjustHighlightAfterDeletion());
   }
 
   function adjustHighlightAfterDeletion() {
+    if (!browseMode) return;
     _visibleItemsCache = null; // Invalidate after DOM mutation (folder/tab deletion)
     const newItems = getVisibleItems();
     if (newItems.length === 0) {
@@ -9695,47 +9431,62 @@
     updateLeapOverlayState();
   }
 
-  // Undo the last folder deletion. Returns true if handled, false to let browser handle.
+  // Rebuild a folder deleted together with its tabs from its snapshot: its tabs are
+  // reopened (lazily) and the Zen folder structure (subfolders, order, collapsed
+  // state) is recreated at its old position. Firefox's closed-group entry for it is
+  // dropped: restoring that would bring back a plain tab group, not a Zen folder.
+  async function restoreDeletedFolder(entry) {
+    if (!window.gZenFolders || !entry.tree) return;
+    if (entry.workspaceId && workspacesEnabled() && entry.workspaceId !== gZenWorkspaces.activeWorkspace &&
+        gZenWorkspaces.getWorkspaces().some(w => w.uuid === entry.workspaceId)) {
+      await gZenWorkspaces.changeWorkspaceWithID(entry.workspaceId);
+    }
+    try { SessionStore.forgetClosedTabGroup(window, entry.folderId); } catch (e) { /* no closed-group entry */ }
+
+    const anchor = (entry.anchor?.isConnected && !entry.anchor.closing) ? entry.anchor : null;
+    const insertAfter = anchor || (entry.parentFolder?.isConnected ? entry.parentFolder.groupStartElement : null);
+    const openedTabs = [];
+    const folder = await restoreFolderFromLayout(entry.tree, insertAfter, openedTabs, []);
+    if (folder) {
+      const current = openedTabs.find(o => o.tab && !o.tab.closing)?.tab;
+      if (current && !entry.tree.collapsed) gBrowser.selectedTab = current;
+      log(`Undo: restored folder "${entry.folderLabel}" with ${openedTabs.length} tabs`);
+    }
+  }
+
+  // Undo the last folder deletion. Returns true if handled, false to let the browser
+  // handle the shortcut (native "reopen closed tab").
   function undoLastFolderDelete() {
     if (folderUndoStack.length === 0) {
-      return false; // Nothing to undo, let browser's native Cmd+Shift+T handle it
+      return false; // Nothing to undo, let the browser's native shortcut handle it
     }
 
     const entry = folderUndoStack[folderUndoStack.length - 1];
 
-    // Only undo if recent (within 30 seconds)
-    if (Date.now() - entry.timestamp > 30000) {
+    // Only undo if recent
+    if (Date.now() - entry.timestamp > FOLDER_UNDO_WINDOW_MS) {
       folderUndoStack.length = 0;
       return false;
     }
+    folderUndoStack.pop();
 
     if (entry.type === 'folder-and-contents') {
-      // For folder+contents: native SessionStore handles this since we used isUserTriggered: true
-      // Pop the entry and let the browser's Cmd+Shift+T restore it
-      folderUndoStack.pop();
-      return false; // Do NOT prevent default — let browser handle
+      restoreDeletedFolder(entry).catch(e => reportError('Undo folder delete failed', e));
+      return true;
     }
 
     if (entry.type === 'folder-only') {
       // Recreate folder with the tabs that are still alive
-      folderUndoStack.pop();
-      const liveTabs = entry.tabRefs.filter(t => t && !t.closing && t.parentNode);
+      const liveTabs = entry.tabRefs.filter(t => t && !t.closing && t.isConnected);
       if (liveTabs.length === 0) {
         log('Undo: all tabs from deleted folder are gone');
         return true;
       }
+      if (!window.gZenFolders) return false;
       try {
-        if (window.gZenFolders) {
-          gZenFolders.createFolder(liveTabs, {
-            label: entry.folderLabel,
-            renameFolder: false,
-          });
-          log(`Undo: recreated folder "${entry.folderLabel}" with ${liveTabs.length} tabs`);
-        } else {
-          log('Undo: gZenFolders not available');
-          return false;
-        }
-      } catch (e) { log(`Undo folder recreation failed: ${e}`); }
+        gZenFolders.createFolder(liveTabs, { label: entry.folderLabel, renameFolder: false, collapsed: entry.collapsed });
+        log(`Undo: recreated folder "${entry.folderLabel}" with ${liveTabs.length} tabs`);
+      } catch (e) { reportError('Undo folder delete failed', e); }
       return true; // We handled it
     }
 
