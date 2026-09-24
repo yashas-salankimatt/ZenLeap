@@ -1843,13 +1843,46 @@
     jumpList.push(tab);
     jumpListIndex = jumpList.length - 1;
 
-    // Trim if too long
-    if (jumpList.length > S['display.maxJumpListSize']) {
-      jumpList.shift();
-      jumpListIndex--;
+    // Trim if too long (the limit may have been lowered in settings since the last jump)
+    const excess = jumpList.length - S['display.maxJumpListSize'];
+    if (excess > 0) {
+      jumpList.splice(0, excess);
+      jumpListIndex -= excess;
     }
 
     log(`Recorded jump, list size: ${jumpList.length}, index: ${jumpListIndex}`);
+  }
+
+  // Select a tab that may live in another workspace. With record=true the jump list
+  // gets exactly origin -> target. Recording is paused while Zen switches workspace,
+  // because Zen first selects the target workspace's last-selected tab, which must not
+  // become a jump entry. changeWorkspaceWithID() never rejects (Zen catches internally),
+  // so success is verified afterwards. Resolves to true if the tab ended up selected.
+  async function switchToTabAcrossWorkspaces(tab, { record = true } = {}) {
+    if (!tab || tab.closing || !tab.isConnected) return false;
+    const origin = gBrowser.selectedTab;
+    const wsId = tab.getAttribute('zen-workspace-id');
+    const needsSwitch = !!(wsId && window.gZenWorkspaces && !tab.hasAttribute('zen-essential') &&
+      wsId !== gZenWorkspaces.activeWorkspace);
+    if (tab === origin && !needsSwitch) return true;
+    if (record) recordJump(origin);
+    const wasRecording = recordingJumps;
+    recordingJumps = false;
+    try {
+      if (needsSwitch) {
+        await gZenWorkspaces.changeWorkspaceWithID(wsId);
+        if (gZenWorkspaces.activeWorkspace !== wsId) {
+          reportError('Switching workspace failed', new Error(`workspace ${wsId} did not become active`));
+          return false;
+        }
+        if (tab.closing || !tab.isConnected) return false;
+      }
+      gBrowser.selectedTab = tab;
+    } finally {
+      recordingJumps = wasRecording;
+    }
+    if (record) recordJump(tab);
+    return true;
   }
 
   // Jump backward in the jump list (like vim Ctrl+O)
@@ -1870,36 +1903,7 @@
     }
 
     if (jumpListIndex > 0) {
-      const prevIndex = jumpListIndex;
-      jumpListIndex--;
-      recordingJumps = false;  // Don't record this navigation
-      const backTab = jumpList[jumpListIndex];
-      const backWsId = backTab.getAttribute('zen-workspace-id');
-      if (backWsId && window.gZenWorkspaces && backWsId !== gZenWorkspaces.activeWorkspace && !backTab.hasAttribute('zen-essential')) {
-        _jumpSwitchInProgress = true;
-        gZenWorkspaces.changeWorkspaceWithID(backWsId).then(() => {
-          if (backTab.closing || !backTab.parentNode) {
-            jumpListIndex = prevIndex;
-            log('Target tab closed during workspace switch in jumpBack');
-            return;
-          }
-          gBrowser.selectedTab = backTab;
-          log(`Jumped back to index ${jumpListIndex}`);
-        }).catch((e) => {
-          jumpListIndex = prevIndex;
-          log(`Workspace switch failed during jumpBack: ${e}`);
-        }).finally(() => {
-          recordingJumps = true;
-          _jumpSwitchInProgress = false;
-        });
-      } else {
-        try {
-          gBrowser.selectedTab = backTab;
-        } finally {
-          recordingJumps = true;
-        }
-        log(`Jumped back to index ${jumpListIndex}`);
-      }
+      jumpToListIndex(jumpListIndex - 1, 'back');
       return true;
     }
 
@@ -1914,41 +1918,34 @@
     filterJumpList();
 
     if (jumpListIndex < jumpList.length - 1) {
-      const prevIndex = jumpListIndex;
-      jumpListIndex++;
-      recordingJumps = false;  // Don't record this navigation
-      const fwdTab = jumpList[jumpListIndex];
-      const fwdWsId = fwdTab.getAttribute('zen-workspace-id');
-      if (fwdWsId && window.gZenWorkspaces && fwdWsId !== gZenWorkspaces.activeWorkspace && !fwdTab.hasAttribute('zen-essential')) {
-        _jumpSwitchInProgress = true;
-        gZenWorkspaces.changeWorkspaceWithID(fwdWsId).then(() => {
-          if (fwdTab.closing || !fwdTab.parentNode) {
-            jumpListIndex = prevIndex;
-            log('Target tab closed during workspace switch in jumpForward');
-            return;
-          }
-          gBrowser.selectedTab = fwdTab;
-          log(`Jumped forward to index ${jumpListIndex}`);
-        }).catch((e) => {
-          jumpListIndex = prevIndex;
-          log(`Workspace switch failed during jumpForward: ${e}`);
-        }).finally(() => {
-          recordingJumps = true;
-          _jumpSwitchInProgress = false;
-        });
-      } else {
-        try {
-          gBrowser.selectedTab = fwdTab;
-        } finally {
-          recordingJumps = true;
-        }
-        log(`Jumped forward to index ${jumpListIndex}`);
-      }
+      jumpToListIndex(jumpListIndex + 1, 'forward');
       return true;
     }
 
     log('Already at end of jump list');
     return false;
+  }
+
+  // Move the jump-list cursor to newIndex and select that entry without recording it.
+  // Same-workspace targets are selected synchronously; the cursor is restored if the
+  // switch fails (closed tab, workspace switch did not happen).
+  function jumpToListIndex(newIndex, direction) {
+    const prevIndex = jumpListIndex;
+    jumpListIndex = newIndex;
+    _jumpSwitchInProgress = true;
+    switchToTabAcrossWorkspaces(jumpList[newIndex], { record: false }).then((ok) => {
+      if (ok) {
+        log(`Jumped ${direction} to index ${jumpListIndex}`);
+      } else {
+        jumpListIndex = prevIndex;
+        log(`Jump ${direction} failed (tab closed or workspace switch failed)`);
+      }
+    }).catch((e) => {
+      jumpListIndex = prevIndex;
+      reportError(`Jump ${direction} failed`, e);
+    }).finally(() => {
+      _jumpSwitchInProgress = false;
+    });
   }
 
   // ============================================
@@ -1999,27 +1996,53 @@
   }
 
   // ── Persistent essential tab marks ──
+  // Marks are per window; marks on essential tabs are also persisted (by URL) in a pref
+  // shared by all windows. Writes are key-level: a window only rewrites the characters
+  // it marks itself, and only deletes an entry while the pref still holds the URL that
+  // this window wrote/restored, so windows never clobber each other's marks.
+
+  const ESSENTIAL_MARKS_PREF = 'uc.zenleap.essentialMarks';
+  const _essentialMarksOwned = new Map(); // char -> URL this window last wrote to / restored from the pref
+
+  function readEssentialMarksPref() {
+    try {
+      if (Services.prefs.getPrefType(ESSENTIAL_MARKS_PREF) !== Services.prefs.PREF_STRING) return {};
+      const saved = JSON.parse(Services.prefs.getStringPref(ESSENTIAL_MARKS_PREF));
+      return (saved && typeof saved === 'object' && !Array.isArray(saved)) ? saved : {};
+    } catch (e) {
+      console.warn('[ZenLeap] Ignoring corrupt essential marks pref:', e);
+      return {};
+    }
+  }
 
   function saveEssentialMarks() {
     if (!S['display.persistEssentialMarks']) return;
-    const saved = {};
-    for (const [char, tab] of marks) {
-      if (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential')) {
-        const url = tab.linkedBrowser?.currentURI?.spec;
-        if (url && url !== 'about:blank') saved[char] = url;
+    if (isPrivateWindow()) return; // never persist URLs from private windows
+    const saved = readEssentialMarksPref();
+    let changed = false;
+    for (const char of new Set([...marks.keys(), ..._essentialMarksOwned.keys()])) {
+      const tab = marks.get(char);
+      const url = (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential'))
+        ? tab.linkedBrowser?.currentURI?.spec : null;
+      if (url && url !== 'about:blank') {
+        if (saved[char] !== url) { saved[char] = url; changed = true; }
+        _essentialMarksOwned.set(char, url);
+      } else if (_essentialMarksOwned.has(char)) {
+        // Only remove what this window put there; another window may have re-used the char since
+        if (saved[char] === _essentialMarksOwned.get(char)) { delete saved[char]; changed = true; }
+        _essentialMarksOwned.delete(char);
       }
     }
+    if (!changed) return;
     try {
-      Services.prefs.setStringPref('uc.zenleap.essentialMarks', JSON.stringify(saved));
-    } catch (e) { log(`Failed to save essential marks: ${e}`); }
+      Services.prefs.setStringPref(ESSENTIAL_MARKS_PREF, JSON.stringify(saved));
+    } catch (e) { reportError('Saving essential tab marks failed', e); }
   }
 
   function restoreEssentialMarks(retriesLeft = 5) {
     if (!S['display.persistEssentialMarks']) return;
     try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.essentialMarks') !== Services.prefs.PREF_STRING) return;
-      const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.essentialMarks'));
-      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
+      const saved = readEssentialMarksPref();
 
       // Build a URL → tab lookup for essential tabs only (consume matched tabs to handle duplicates)
       const essentialByUrl = new Map();
@@ -2040,6 +2063,7 @@
         const tabs = essentialByUrl.get(url);
         if (tabs && tabs.length > 0) {
           marks.set(char, tabs.shift()); // Consume the first matching tab
+          _essentialMarksOwned.set(char, url);
           restored++;
         } else {
           unmatched[char] = url;
@@ -2055,7 +2079,7 @@
         log(`${Object.keys(unmatched).length} essential mark(s) unmatched, retrying in 1s (${retriesLeft} left)`);
         setTimeout(() => restoreEssentialMarks(retriesLeft - 1), 1000);
       }
-    } catch (e) { log(`Failed to restore essential marks: ${e}`); }
+    } catch (e) { reportError('Restoring essential tab marks failed', e); }
   }
 
   // Go to a marked tab
@@ -2074,50 +2098,18 @@
       return false;
     }
 
-    // Switch workspace if needed (essential tabs are global, no switch needed)
-    const tabWsId = tab.getAttribute('zen-workspace-id');
-    if (tabWsId && window.gZenWorkspaces && tabWsId !== gZenWorkspaces.activeWorkspace && !tab.hasAttribute('zen-essential')) {
-      // Save jump list state so we can revert on failure
-      const savedJumpList = [...jumpList];
-      const savedJumpIndex = jumpListIndex;
-      recordJump(gBrowser.selectedTab);
-      gZenWorkspaces.changeWorkspaceWithID(tabWsId).then(() => {
-        if (tab.closing || !tab.parentNode) {
-          marks.delete(char);
-          saveEssentialMarks();
-          jumpList = savedJumpList;
-          jumpListIndex = savedJumpIndex;
-          log(`Mark '${char}' tab closed during workspace switch, removing mark`);
-          return;
-        }
-        gBrowser.selectedTab = tab;
-        recordJump(tab);
+    // Essential tabs are global, so no workspace switch is needed for them
+    switchToTabAcrossWorkspaces(tab).then((ok) => {
+      if (ok) {
         _pluginEventBus.emit('mark:jumped', { char, tab });
         log(`Jumped to mark '${char}'`);
-      }).catch((e) => {
-        // Revert the jump list since we never actually navigated
-        jumpList = savedJumpList;
-        jumpListIndex = savedJumpIndex;
-        log(`Workspace switch failed during goToMark: ${e}`);
-      });
-    } else {
-      recordJump(gBrowser.selectedTab);
-      gBrowser.selectedTab = tab;
-      recordJump(tab);
-      _pluginEventBus.emit('mark:jumped', { char, tab });
-      log(`Jumped to mark '${char}'`);
-    }
-    return true;
-  }
-
-  // Get mark character for a tab (if it has one)
-  function getMarkForTab(tab) {
-    for (const [char, markedTab] of marks) {
-      if (markedTab === tab) {
-        return char;
+      } else if (tab.closing || !tab.isConnected) {
+        marks.delete(char);
+        saveEssentialMarks();
+        log(`Mark '${char}' tab closed during workspace switch, removing mark`);
       }
-    }
-    return null;
+    }).catch(e => reportError('Jump to mark failed', e));
+    return true;
   }
 
   // Clean up marks for closed tabs
