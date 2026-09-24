@@ -2,17 +2,23 @@
 # ZenLeap Plugin Installer
 # Usage: ./install-plugin.sh <plugin-path> [OPTIONS]
 #
-# Installs a ZenLeap plugin from a local directory into the correct profile location.
+# Installs a ZenLeap plugin from a local directory into <profile>/chrome/zenleap-plugins/<id>/.
+# Run it from a ZenLeap checkout (it uses scripts/lib/zen-paths.sh).
 #
 # Arguments:
 #   <plugin-path>           Path to the plugin directory (relative or absolute).
 #                           Must contain manifest.json and plugin.js.
 #
 # Options:
-#   --profile <index>       Select profile by index (1-based); omit to install to ALL profiles
+#   --profile <sel>         Profile(s): a number from the list, a profile name, or "all".
+#                           Default: the profiles that have ZenLeap (else the default profile)
+#   --profile-dir <dir>     Use this profile directory directly
 #   --yes, -y               Auto-confirm all prompts (non-interactive mode)
 #   --list                  List installed plugins for each profile
 #   --uninstall <id>        Uninstall a plugin by its id
+#
+# Plugins run with full browser (chrome) privileges. New plugins stay disabled
+# until you enable them in ZenLeap's Plugin Manager.
 #
 # Examples:
 #   ./install-plugin.sh ./examples/plugins/tab-stats
@@ -31,6 +37,14 @@ CYAN=$'\033[0;36m'
 DIM=$'\033[2m'
 NC=$'\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$SCRIPT_DIR/scripts/lib/zen-paths.sh" ]; then
+    echo "Error: $SCRIPT_DIR/scripts/lib/zen-paths.sh not found; run this script from a ZenLeap checkout."
+    exit 1
+fi
+# shellcheck source=scripts/lib/zen-paths.sh
+. "$SCRIPT_DIR/scripts/lib/zen-paths.sh"
+
 # Pre-scan for non-interactive flags (needed before tty setup)
 _NON_INTERACTIVE=false
 for _arg in "$@"; do
@@ -47,33 +61,29 @@ if [ "$_NON_INTERACTIVE" = true ]; then
 elif [ -t 0 ]; then
     exec 3<&0
 else
-    if [ -e /dev/tty ]; then
-        exec 3</dev/tty
+    if [ -e /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then
+        :
     else
         echo "Error: No terminal available for interactive input"
-        echo "Try using --yes (-y) and --profile <index> for non-interactive mode"
+        echo "Try using --yes (-y) for non-interactive mode"
         exit 1
     fi
 fi
 
 # Flags
-PROFILE_INDEX=""
+PROFILE_SPEC=""
+PROFILE_DIR_ARG=""
 AUTO_YES=false
 LIST_MODE=false
 UNINSTALL_ID=""
 PLUGIN_PATH=""
 
-# Detect OS and set profile base
-detect_os() {
+# Find Zen profiles and decide which ones to use (sets ZP_SELECTED).
+# Usage: find_profiles <install|uninstall|list>
+find_profiles() {
+    local action="$1" i suggested=()
     case "$(uname -s)" in
-        Darwin)
-            OS="macos"
-            PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
-            ;;
-        Linux)
-            OS="linux"
-            PROFILE_BASE="$HOME/.zen"
-            ;;
+        Darwin|Linux) ;;
         MINGW*|MSYS*|CYGWIN*)
             echo -e "${RED}Windows is not currently supported.${NC}"
             exit 1
@@ -83,36 +93,82 @@ detect_os() {
             exit 1
             ;;
     esac
-}
 
-# Find Zen profiles (same logic as install.sh)
-find_profiles() {
-    if [ ! -d "$PROFILE_BASE" ]; then
-        echo -e "${RED}Error: Zen profile directory not found at $PROFILE_BASE${NC}"
+    if ! zp_discover native && ! zp_discover flatpak && [ -z "$PROFILE_DIR_ARG" ]; then
+        zp_discover native || true
+        echo -e "${RED}Error: $ZP_ERROR${NC}"
         echo "Please run Zen Browser at least once to create a profile"
         exit 1
     fi
 
-    PROFILES=()
-    while IFS= read -r -d '' dir; do
-        PROFILES+=("$dir")
-    done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -name "Profiles" ! -path "$PROFILE_BASE" -print0 2>/dev/null)
-
-    if [ ${#PROFILES[@]} -eq 0 ]; then
-        echo -e "${RED}Error: Could not find any Zen profiles${NC}"
-        exit 1
-    fi
-
-    SELECTED_PROFILES=()
-
-    if [ -n "$PROFILE_INDEX" ]; then
-        if ! [[ "$PROFILE_INDEX" =~ ^[0-9]+$ ]] || [ "$PROFILE_INDEX" -lt 1 ] || [ "$PROFILE_INDEX" -gt ${#PROFILES[@]} ]; then
-            echo -e "${RED}Error: Invalid profile index $PROFILE_INDEX (valid range: 1-${#PROFILES[@]})${NC}"
+    if [ -n "$PROFILE_DIR_ARG" ]; then
+        if ! zp_use_profile_dir "$PROFILE_DIR_ARG"; then
+            echo -e "${RED}Error: $ZP_ERROR${NC}"
             exit 1
         fi
-        SELECTED_PROFILES+=("${PROFILES[$((PROFILE_INDEX-1))]}")
+        return 0
+    fi
+    if [ -n "$PROFILE_SPEC" ]; then
+        if ! zp_select "$PROFILE_SPEC"; then
+            echo -e "${RED}Error: $ZP_ERROR${NC}"
+            exit 1
+        fi
+        return 0
+    fi
+    if [ "$action" = "list" ]; then
+        zp_select all
+        return 0
+    fi
+
+    for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+        if [ "$action" = "uninstall" ]; then
+            if [ -d "${ZP_PROFILE_DIRS[$i]}/chrome/zenleap-plugins/$UNINSTALL_ID" ]; then suggested+=("$i"); fi
+        elif [ -n "$(zp_zenleap_version "${ZP_PROFILE_DIRS[$i]}")" ]; then
+            suggested+=("$i")
+        fi
+    done
+    if [ "$action" = "install" ] && [ ${#suggested[@]} -eq 0 ] && [ "$ZP_DEFAULT" -ge 0 ]; then
+        suggested=("$ZP_DEFAULT")
+    fi
+
+    if [ ${#ZP_PROFILE_DIRS[@]} -eq 1 ]; then
+        if [ "$action" = "install" ] || [ ${#suggested[@]} -eq 1 ]; then ZP_SELECTED=(0); fi
+    elif [ "$AUTO_YES" = true ] || { [ "$action" = "uninstall" ] && [ ${#suggested[@]} -eq 0 ]; }; then
+        ZP_SELECTED=("${suggested[@]}")
     else
-        SELECTED_PROFILES=("${PROFILES[@]}")
+        echo "Zen profiles (in $ZP_ROOT):"
+        if ! zp_menu plugin_profile_status "${suggested[@]}"; then
+            echo "Aborted."
+            exit 0
+        fi
+        echo ""
+    fi
+}
+
+# Status note for the profile list
+plugin_profile_status() {
+    local dir="${ZP_PROFILE_DIRS[$1]}" v
+    v=$(zp_zenleap_version "$dir")
+    if [ -n "$v" ]; then
+        printf 'ZenLeap %s' "$v"
+    else
+        printf 'no ZenLeap'
+    fi
+    if [ -n "$PLUGIN_ID" ] && [ -d "$dir/chrome/zenleap-plugins/$PLUGIN_ID" ]; then
+        printf ', %s installed' "$PLUGIN_ID"
+    fi
+}
+
+# Read a string field from a JSON file (python3 or node; grep as last resort)
+json_field() {
+    local file="$1" field="$2" default="$3"
+    if command -v python3 &> /dev/null; then
+        python3 -c "import json,sys; m=json.load(open(sys.argv[1])); v=m.get(sys.argv[2], sys.argv[3]); print(v if isinstance(v, str) else sys.argv[3])" "$file" "$field" "$default" 2>/dev/null
+    elif command -v node &> /dev/null; then
+        node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const v=m[process.argv[2]];console.log(typeof v==='string'?v:process.argv[3])" "$file" "$field" "$default" 2>/dev/null
+    else
+        # Imprecise, but workable for simple manifests
+        grep -o "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" | head -n 1 | sed "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/"
     fi
 }
 
@@ -135,32 +191,17 @@ validate_plugin() {
         return 1
     fi
 
-    # Validate manifest has required fields
-    local id name
-    if command -v python3 &> /dev/null; then
-        id=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('id',''))" "$plugin_dir/manifest.json" 2>/dev/null)
-        name=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('name',''))" "$plugin_dir/manifest.json" 2>/dev/null)
-    elif command -v node &> /dev/null; then
-        id=$(node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(m.id||'')" "$plugin_dir/manifest.json" 2>/dev/null)
-        name=$(node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(m.name||'')" "$plugin_dir/manifest.json" 2>/dev/null)
-    else
-        echo -e "${YELLOW}⚠${NC} Cannot validate manifest (no python3 or node); assuming valid"
-        # Best-effort: just check that the file is valid JSON with grep
-        if ! grep -q '"id"' "$plugin_dir/manifest.json" 2>/dev/null; then
-            echo -e "${RED}Error: manifest.json appears to be missing 'id' field${NC}"
-            return 1
-        fi
-        if ! grep -q '"name"' "$plugin_dir/manifest.json" 2>/dev/null; then
-            echo -e "${RED}Error: manifest.json appears to be missing 'name' field${NC}"
-            return 1
-        fi
-        # Fallback: extract id from JSON with grep/sed (imprecise but workable)
-        id=$(grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' "$plugin_dir/manifest.json" | head -1 | sed 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-        name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$plugin_dir/manifest.json" | head -1 | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+    if ! command -v python3 &> /dev/null && ! command -v node &> /dev/null; then
+        echo -e "${YELLOW}⚠${NC} Cannot fully validate manifest.json (no python3 or node)"
     fi
 
+    # Validate manifest has required fields
+    local id name
+    id=$(json_field "$plugin_dir/manifest.json" id "")
+    name=$(json_field "$plugin_dir/manifest.json" name "")
+
     if [ -z "$id" ]; then
-        echo -e "${RED}Error: manifest.json is missing required 'id' field${NC}"
+        echo -e "${RED}Error: manifest.json is missing required 'id' field (or is not valid JSON)${NC}"
         return 1
     fi
 
@@ -180,15 +221,19 @@ validate_plugin() {
     return 0
 }
 
-# Install plugin to a single profile
+# Install plugin to profile index $1
 install_to_profile() {
-    local profile_dir="$1"
+    local profile_dir="${ZP_PROFILE_DIRS[$1]}"
     local source_dir="$2"
-    local pname
-    pname=$(basename "$profile_dir")
+    local pname="${ZP_PROFILE_NAMES[$1]}"
+    local response
 
     local plugins_dir="$profile_dir/chrome/zenleap-plugins"
     local dest_dir="$plugins_dir/$PLUGIN_ID"
+
+    if [ -z "$(zp_zenleap_version "$profile_dir")" ]; then
+        echo -e "  ${YELLOW}⚠${NC} ZenLeap is not installed in $pname; the plugin will load once it is"
+    fi
 
     # Check if already installed
     if [ -d "$dest_dir" ]; then
@@ -197,7 +242,7 @@ install_to_profile() {
         else
             echo -e "  ${YELLOW}⚠${NC} Plugin '$PLUGIN_ID' already exists in $pname"
             echo -n "  Overwrite? (y/n): "
-            read -r response <&3
+            read -r response <&3 || response="n"
             if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
                 echo -e "  ${DIM}Skipped${NC}"
                 return 0
@@ -210,17 +255,16 @@ install_to_profile() {
     mkdir -p "$plugins_dir"
 
     # Copy the plugin directory
-    cp -r "$source_dir" "$dest_dir"
+    cp -R "$source_dir" "$dest_dir"
 
     echo -e "  ${GREEN}✓${NC} Installed to $pname"
 }
 
-# Uninstall plugin from a single profile
+# Uninstall plugin from profile index $1
 uninstall_from_profile() {
-    local profile_dir="$1"
+    local profile_dir="${ZP_PROFILE_DIRS[$1]}"
     local plugin_id="$2"
-    local pname
-    pname=$(basename "$profile_dir")
+    local pname="${ZP_PROFILE_NAMES[$1]}"
 
     local dest_dir="$profile_dir/chrome/zenleap-plugins/$plugin_id"
 
@@ -233,41 +277,27 @@ uninstall_from_profile() {
     echo -e "  ${GREEN}✓${NC} Removed from $pname"
 }
 
-# List installed plugins for a profile
+# List installed plugins for profile index $1
 list_plugins_for_profile() {
-    local profile_dir="$1"
-    local pname
-    pname=$(basename "$profile_dir")
-
+    local profile_dir="${ZP_PROFILE_DIRS[$1]}"
     local plugins_dir="$profile_dir/chrome/zenleap-plugins"
 
-    echo -e "${BLUE}--- $pname ---${NC}"
+    echo -e "${BLUE}--- $(zp_describe "$1") ---${NC}"
 
     if [ ! -d "$plugins_dir" ]; then
         echo -e "  ${DIM}No plugins installed${NC}"
         return
     fi
 
-    local found=false
+    local found=false plugin_path manifest id name version
     for plugin_path in "$plugins_dir"/*/; do
         [ -d "$plugin_path" ] || continue
-        local manifest="$plugin_path/manifest.json"
+        manifest="$plugin_path/manifest.json"
         if [ -f "$manifest" ]; then
-            local id name version
-            if command -v python3 &> /dev/null; then
-                id=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('id','?'))" "$manifest" 2>/dev/null)
-                name=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('name','?'))" "$manifest" 2>/dev/null)
-                version=$(python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print(m.get('version','?'))" "$manifest" 2>/dev/null)
-            elif command -v node &> /dev/null; then
-                id=$(node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(m.id||'?')" "$manifest" 2>/dev/null)
-                name=$(node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(m.name||'?')" "$manifest" 2>/dev/null)
-                version=$(node -e "const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));console.log(m.version||'?')" "$manifest" 2>/dev/null)
-            else
-                id=$(basename "$plugin_path")
-                name="$id"
-                version="?"
-            fi
-            echo -e "  ${CYAN}$id${NC} — $name ${DIM}v$version${NC}"
+            id=$(json_field "$manifest" id "?")
+            name=$(json_field "$manifest" name "?")
+            version=$(json_field "$manifest" version "?")
+            echo -e "  ${CYAN}${id:-?}${NC} — ${name:-?} ${DIM}v${version:-?}${NC}"
             found=true
         fi
     done
@@ -283,11 +313,19 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --profile)
             shift
-            if [ -z "$1" ] || [[ "$1" == --* ]]; then
-                echo -e "${RED}Error: --profile requires an index argument${NC}"
+            if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --profile requires a profile number, name, or \"all\"${NC}"
                 exit 1
             fi
-            PROFILE_INDEX="$1"
+            PROFILE_SPEC="$1"
+            ;;
+        --profile-dir)
+            shift
+            if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --profile-dir requires a directory${NC}"
+                exit 1
+            fi
+            PROFILE_DIR_ARG="$1"
             ;;
         --yes|-y)
             AUTO_YES=true
@@ -297,7 +335,7 @@ while [ $# -gt 0 ]; do
             ;;
         --uninstall)
             shift
-            if [ -z "$1" ] || [[ "$1" == --* ]]; then
+            if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
                 echo -e "${RED}Error: --uninstall requires a plugin id${NC}"
                 exit 1
             fi
@@ -307,12 +345,16 @@ while [ $# -gt 0 ]; do
             echo "Usage: $0 <plugin-path> [OPTIONS]"
             echo ""
             echo "Installs a ZenLeap plugin from a local directory."
+            echo "Plugins run with full browser privileges: only install plugins you trust."
+            echo "New plugins stay disabled until you enable them in ZenLeap's Plugin Manager."
             echo ""
             echo "Arguments:"
             echo "  <plugin-path>           Path to plugin directory (must have manifest.json + plugin.js)"
             echo ""
             echo "Options:"
-            echo "  --profile <index>       Select profile by index (1-based); omit for ALL profiles"
+            echo "  --profile <sel>         Profile(s): number from the list, profile name, or \"all\""
+            echo "                          (default: profiles that have ZenLeap, else the default profile)"
+            echo "  --profile-dir <dir>     Use this profile directory directly"
             echo "  --yes, -y               Auto-confirm all prompts"
             echo "  --list                  List installed plugins"
             echo "  --uninstall <id>        Uninstall a plugin by its id"
@@ -342,17 +384,22 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+if [ -n "$PROFILE_SPEC" ] && [ -n "$PROFILE_DIR_ARG" ]; then
+    echo -e "${RED}Error: Use either --profile or --profile-dir, not both${NC}"
+    exit 1
+fi
+
 # ─── Main ───
 
-detect_os
-find_profiles
+PLUGIN_ID=""
 
 # List mode
 if [ "$LIST_MODE" = true ]; then
+    find_profiles list
     echo -e "${BLUE}Installed ZenLeap Plugins${NC}"
     echo ""
-    for profile in "${SELECTED_PROFILES[@]}"; do
-        list_plugins_for_profile "$profile"
+    for i in "${ZP_SELECTED[@]}"; do
+        list_plugins_for_profile "$i"
         echo ""
     done
     exit 0
@@ -364,9 +411,15 @@ if [ -n "$UNINSTALL_ID" ]; then
         echo -e "${RED}Error: Invalid plugin id '$UNINSTALL_ID' (only a-z, 0-9, hyphens, underscores allowed)${NC}"
         exit 1
     fi
+    PLUGIN_ID="$UNINSTALL_ID"
+    find_profiles uninstall
+    if [ ${#ZP_SELECTED[@]} -eq 0 ]; then
+        echo "Plugin '$UNINSTALL_ID' is not installed in any Zen profile."
+        exit 0
+    fi
     echo -e "${BLUE}Uninstalling plugin '${UNINSTALL_ID}'...${NC}"
-    for profile in "${SELECTED_PROFILES[@]}"; do
-        uninstall_from_profile "$profile" "$UNINSTALL_ID"
+    for i in "${ZP_SELECTED[@]}"; do
+        uninstall_from_profile "$i" "$UNINSTALL_ID"
     done
     echo ""
     echo -e "${GREEN}Done.${NC} Restart Zen Browser for changes to take effect."
@@ -395,20 +448,27 @@ if ! validate_plugin "$PLUGIN_PATH"; then
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Valid plugin: ${CYAN}$PLUGIN_NAME${NC} ${DIM}($PLUGIN_ID)${NC}"
+echo ""
+
+find_profiles install
+if [ ${#ZP_SELECTED[@]} -eq 0 ]; then
+    echo -e "${RED}Error: Could not tell which Zen profile to use; pass --profile <number|name|all>${NC}"
+    exit 1
+fi
 
 # Show what we're about to do
-echo ""
-if [ ${#SELECTED_PROFILES[@]} -eq 1 ]; then
-    echo -e "Installing to profile: ${CYAN}$(basename "${SELECTED_PROFILES[0]}")${NC}"
+if [ ${#ZP_SELECTED[@]} -eq 1 ]; then
+    echo -e "Installing to profile: ${CYAN}$(zp_describe "${ZP_SELECTED[0]}")${NC}"
 else
-    echo -e "Installing to ${#SELECTED_PROFILES[@]} profiles"
+    echo -e "Installing to ${#ZP_SELECTED[@]} profiles"
 fi
+echo -e "${YELLOW}⚠${NC} Plugins run with full browser privileges. Only install plugins you trust."
 echo ""
 
 # Confirm unless auto-yes
 if [ "$AUTO_YES" != true ]; then
     echo -n "Proceed? (y/n): "
-    read -r response <&3
+    read -r response <&3 || response="n"
     if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
         echo "Aborted."
         exit 0
@@ -417,9 +477,10 @@ if [ "$AUTO_YES" != true ]; then
 fi
 
 # Install to each profile
-for profile in "${SELECTED_PROFILES[@]}"; do
-    install_to_profile "$profile" "$PLUGIN_PATH"
+for i in "${ZP_SELECTED[@]}"; do
+    install_to_profile "$i" "$PLUGIN_PATH"
 done
 
 echo ""
-echo -e "${GREEN}Done.${NC} Restart Zen Browser for the plugin to load."
+echo -e "${GREEN}Done.${NC} Restart Zen Browser, then enable the plugin in ZenLeap's Plugin Manager"
+echo "(command palette: Ctrl+Shift+/ → \"Manage Plugins\"). New plugins start disabled."
