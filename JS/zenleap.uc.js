@@ -12020,6 +12020,10 @@
       .zenleap-settings-desc {
         font-size: 11px; color: var(--zl-text-muted); display: block; margin-top: 2px;
       }
+      .zenleap-settings-note {
+        font-size: 11px; color: var(--zl-warning); display: block; margin-top: 3px;
+      }
+      .zenleap-settings-note[data-kind="error"] { color: var(--zl-error); }
       .zenleap-settings-control { flex-shrink: 0; }
       .zenleap-key-recorder {
         background: var(--zl-accent-dim); border: 1px solid var(--zl-accent-border);
@@ -12877,7 +12881,150 @@
     row.appendChild(label);
     row.appendChild(control);
     row.appendChild(resetBtn);
+    if (schema.type === 'combo' || schema.type === 'key') showKeyConflictNote(row, id);
     return row;
+  }
+
+  // --- Key binding conflicts (LEAP-B-16 / LEAP-COMPAT-23) ---
+
+  // Single-key settings that are live in the same mode (duplicates there make
+  // one of them unreachable). Browse mode also honours the leap-mode keys below.
+  const KEY_GROUP_EXTRAS = {
+    'Browse Mode': ['keys.leap.browseDown', 'keys.leap.browseDownAlt', 'keys.leap.browseUp', 'keys.leap.browseUpAlt',
+                    'keys.leap.setMark', 'keys.leap.clearMarks', 'keys.leap.gotoMark', 'keys.leap.gotoMarkAlt'],
+  };
+
+  function sameSingleKey(idA, a, idB, b) {
+    if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+    const csA = !!SETTINGS_SCHEMA[idA]?.caseSensitive, csB = !!SETTINGS_SCHEMA[idB]?.caseSensitive;
+    if (csA && csB) return a === b;
+    if (csA || csB) return false; // e.g. G (case-sensitive) vs g: G is checked first by design
+    return a.toLowerCase() === b.toLowerCase();
+  }
+
+  function sameCombo(a, b) {
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    const keyEq = a.key === b.key || (a.code && a.code === b.code);
+    return keyEq && !!a.ctrl === !!b.ctrl && !!a.shift === !!b.shift && !!a.alt === !!b.alt && !!a.meta === !!b.meta;
+  }
+
+  const VK_KEY_NAMES = { VK_RETURN: 'enter', VK_ESCAPE: 'escape', VK_TAB: 'tab', VK_BACK: 'backspace', VK_DELETE: 'delete',
+                         VK_LEFT: 'arrowleft', VK_RIGHT: 'arrowright', VK_UP: 'arrowup', VK_DOWN: 'arrowdown', VK_HOME: 'home',
+                         VK_END: 'end', VK_SPACE: ' ' };
+
+  // Readable names for Zen shortcuts: Zen's localized names live in the
+  // preferences FTL (not loaded in browser windows); fall back to the id.
+  let _zenPrefsL10n = null;
+  function zenShortcutLabel(sc) {
+    const l10nId = sc.getL10NID?.();
+    if (!l10nId) return Promise.resolve(null);
+    try {
+      _zenPrefsL10n ??= new Localization(['browser/preferences/zen-preferences.ftl']);
+      return _zenPrefsL10n.formatValue(l10nId).catch(() => null);
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
+
+  function zenShortcutFallbackName(sc) {
+    const id = String(sc.getID?.() || sc.getAction?.() || 'shortcut');
+    return id.replace(/^(id:)?(key_|zen-)/, '').replace(/-shortcut$/, '')
+      .replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  }
+
+  // Enabled Zen/Firefox shortcuts (Zen's shortcut registry) that use `combo`.
+  function zenShortcutsUsing(combo) {
+    const list = window.gZenKeyboardShortcutsManager?._currentShortcutList;
+    if (!Array.isArray(list) || !combo?.key) return [];
+    const isMac = AppConstants.platform === 'macosx';
+    const want = String(combo.key).toLowerCase();
+    const out = [];
+    for (const sc of list) {
+      try {
+        if (sc.isDisabled?.()) continue;
+        let k = sc.getKeyNameOrCode?.();
+        if (!k) continue;
+        k = VK_KEY_NAMES[k] ?? (/^VK_/.test(k) ? k.slice(3) : k);
+        k = String(k).toLowerCase();
+        if (k === 'space') k = ' ';
+        if (k !== want) continue;
+        const m = sc.getModifiers();
+        const ctrl = isMac ? !!m.control : !!(m.control || m.accel);
+        const meta = isMac ? !!(m.meta || m.accel) : !!m.meta;
+        if (ctrl === !!combo.ctrl && meta === !!combo.meta && !!m.alt === !!combo.alt && !!m.shift === !!combo.shift) {
+          out.push(sc);
+        }
+      } catch (e) { /* malformed entry */ }
+    }
+    return out;
+  }
+
+  // Human-readable list of what else uses the binding of `settingId`.
+  // Zen shortcut names are localized asynchronously via `onLabels`.
+  function findKeyConflicts(settingId, value = S[settingId], onLabels = null) {
+    const schema = SETTINGS_SCHEMA[settingId];
+    if (!schema) return [];
+    const names = [];
+    if (schema.type === 'combo') {
+      for (const [id, other] of Object.entries(SETTINGS_SCHEMA)) {
+        if (id !== settingId && other.type === 'combo' && sameCombo(value, S[id])) names.push(`ZenLeap: ${other.label}`);
+      }
+      // Undo Folder Delete shadows Cmd+Shift+T on purpose and falls through to it
+      const zen = settingId === 'keys.global.undoFolderDelete' ? [] : zenShortcutsUsing(value);
+      const zenNames = zen.map(zenShortcutFallbackName);
+      names.push(...zenNames.map(n => `Zen: ${n}`));
+      if (zen.length && onLabels) {
+        Promise.all(zen.map(zenShortcutLabel)).then(labels => {
+          if (labels.every(l => !l)) return;
+          const resolved = labels.map((l, i) => `Zen: ${l || zenNames[i]}`);
+          onLabels([...names.filter(n => !n.startsWith('Zen: ')), ...resolved]);
+        });
+      }
+    } else if (schema.type === 'key') {
+      const peers = new Set(Object.keys(SETTINGS_SCHEMA).filter(id => SETTINGS_SCHEMA[id].group === schema.group));
+      for (const id of KEY_GROUP_EXTRAS[schema.group] || []) peers.add(id);
+      for (const [group, extras] of Object.entries(KEY_GROUP_EXTRAS)) {
+        if (extras.includes(settingId)) {
+          for (const id of Object.keys(SETTINGS_SCHEMA)) if (SETTINGS_SCHEMA[id].group === group) peers.add(id);
+        }
+      }
+      for (const id of peers) {
+        if (id !== settingId && SETTINGS_SCHEMA[id]?.type === 'key' && sameSingleKey(settingId, value, id, S[id])) {
+          names.push(`ZenLeap: ${SETTINGS_SCHEMA[id].label}`);
+        }
+      }
+    }
+    return names;
+  }
+
+  // Startup check: one console warning per global trigger that collides with
+  // an enabled Zen/Firefox shortcut (ZenLeap handles it first).
+  function warnShortcutConflicts() {
+    for (const id of GLOBAL_COMBO_IDS) {
+      if (id === 'keys.global.undoFolderDelete') continue;
+      const zen = zenShortcutsUsing(S[id]);
+      if (!zen.length) continue;
+      console.warn(`[ZenLeap] ${SETTINGS_SCHEMA[id].label} (${formatKeyDisplay(S[id], SETTINGS_SCHEMA[id])}) is also bound in Zen (${zen.map(sc => sc.getID?.() || zenShortcutFallbackName(sc)).join(', ')}). ZenLeap handles it first; rebind one of them in ZenLeap Settings or Zen's keyboard shortcuts.`);
+    }
+  }
+
+  // Show (or clear) a warning line under a settings row.
+  function setSettingsRowNote(row, text, kind = 'warning') {
+    if (!row) return;
+    let note = row.querySelector('.zenleap-settings-note');
+    if (!text) { note?.remove(); return; }
+    if (!note) {
+      note = document.createElement('span');
+      note.className = 'zenleap-settings-note';
+      row.querySelector('.zenleap-settings-label')?.appendChild(note);
+    }
+    note.dataset.kind = kind;
+    note.textContent = `⚠ ${text}`;
+  }
+
+  function showKeyConflictNote(row, settingId) {
+    const render = (names) => setSettingsRowNote(row, names.length ? `Also used by ${names.join(', ')}` : '');
+    render(findKeyConflicts(settingId, S[settingId], render));
   }
 
   // Key recording for rebinding
@@ -12885,8 +13032,9 @@
     stopKeyRecording();
     settingsRecordingId = settingId;
     const schema = SETTINGS_SCHEMA[settingId];
+    const row = buttonElement.closest('.zenleap-settings-row');
 
-    buttonElement.textContent = 'Press key\u2026';
+    buttonElement.textContent = 'Press key…';
     buttonElement.classList.add('recording');
 
     settingsRecordingHandler = (event) => {
@@ -12900,11 +13048,19 @@
         return;
       }
 
-      // Ignore bare modifier keys
-      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
+      // Ignore bare modifier keys and IME composition
+      if (NON_ACTION_KEYS.has(event.key) || event.isComposing) return;
 
+      let value;
       if (schema.type === 'combo') {
-        S[settingId] = {
+        // Global triggers run before any focus check: a plain key would fire
+        // while typing in every web page.
+        const isFKey = /^F\d{1,2}$/.test(event.key);
+        if (!event.ctrlKey && !event.altKey && !event.metaKey && !isFKey) {
+          setSettingsRowNote(row, 'Global shortcuts need Ctrl, Alt or Cmd (or an F-key). Press another combination or Esc.', 'error');
+          return;
+        }
+        value = {
           key: event.key,
           code: event.code,
           ctrl: event.ctrlKey,
@@ -12913,12 +13069,18 @@
           meta: event.metaKey,
         };
       } else {
-        S[settingId] = schema.caseSensitive ? event.key : event.key.toLowerCase();
+        if (event.ctrlKey || event.altKey || event.metaKey) {
+          setSettingsRowNote(row, 'Mode keys are single keys without Ctrl/Alt/Cmd. Press another key or Esc.', 'error');
+          return;
+        }
+        value = schema.caseSensitive ? event.key : event.key.toLowerCase();
       }
 
+      S[settingId] = value;
       saveSettings();
       stopKeyRecording();
       renderSettingsContent();
+      // renderSettingsContent shows conflicts for every key row, this one included
     };
 
     window.addEventListener('keydown', settingsRecordingHandler, true);
@@ -19801,12 +19963,20 @@
     try {
       const version = Services.appinfo.version;
       if (zenVersionAtLeast(version, MIN_ZEN_VERSION)) return;
-      // Warn once per session, not once per window.
-      let windows = 0;
-      for (const _w of Services.wm.getEnumerator('navigator:browser')) windows++;
-      if (windows > 1) return;
+      if (!isFirstBrowserWindow()) return;
       console.warn(`[ZenLeap] Zen ${version} is older than the minimum supported version ${MIN_ZEN_VERSION}. Some features may not work; please update Zen Browser.`);
     } catch (e) { /* appinfo unavailable */ }
+  }
+
+  // Session-wide warnings are logged from the first browser window only.
+  function isFirstBrowserWindow() {
+    try {
+      let windows = 0;
+      for (const _w of Services.wm.getEnumerator('navigator:browser')) windows++;
+      return windows <= 1;
+    } catch (e) {
+      return true;
+    }
   }
 
   // Attributes ZenLeap sets on tabs, folders, the URL bar and :root.
@@ -19938,6 +20108,9 @@
 
     // Restore essential tab marks (delayed to let essential tabs finish loading URLs)
     lifetimeTimeout(() => restoreEssentialMarks(), 2000);
+
+    // Zen loads its shortcut registry asynchronously; check for collisions later
+    if (isFirstBrowserWindow()) lifetimeTimeout(() => warnShortcutConflicts(), 5000);
 
     // Detect Sine install, then auto-check for updates (delayed to not block startup)
     detectSineInstall().then(() => {
