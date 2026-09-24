@@ -985,8 +985,6 @@
   function saveSettings() {
     const changed = [];
     for (const id of Object.keys(SETTINGS_SCHEMA)) {
-      // The theme picker's live preview mutates S['appearance.theme'] transiently; never persist it
-      if (id === 'appearance.theme' && _themePreviewOriginal !== null) continue;
       if (JSON.stringify(S[id]) !== _settingsSynced[id]) changed.push(id);
     }
     writeSettingsKeys(changed);
@@ -1001,17 +999,14 @@
       const json = JSON.stringify(value);
       if (json === _settingsSynced[id]) continue;
       _settingsSynced[id] = json;
-      if (id === 'appearance.theme' && _themePreviewOriginal !== null) {
-        _themePreviewOriginal = value; // keep previewing; Escape restores the new value
-        continue;
-      }
       S[id] = value;
       changed.push(id);
     }
     if (changed.length === 0) return;
     log(`Settings changed in another window: ${changed.join(', ')}`);
     try {
-      if (changed.some(id => id.startsWith('appearance.'))) applyTheme();
+      // (A theme being previewed stays on screen; leaving the picker applies the new one.)
+      if (changed.some(id => id.startsWith('appearance.')) && !_themePreviewing) applyTheme();
       if (changed.some(id => id.startsWith('display.') || id.startsWith('keys.'))) updateRelativeNumbers();
       if (changed.includes('display.browsePreview') && !S['display.browsePreview']) hidePreviewPanel(true);
       if (changed.includes('display.searchAllWorkspaces')) {
@@ -1728,8 +1723,9 @@
   let aboutUpdateState = null; // null | 'checking' | 'available' | 'uptodate' | 'error'
   let aboutRemoteVersion = null;
 
-  // Theme live-preview state (for Switch Theme command)
-  let _themePreviewOriginal = null; // theme ID to restore on Escape
+  // Switch Theme shows the highlighted theme without saving it (applyTheme(id));
+  // leaving the picker without picking one re-applies the saved theme.
+  let _themePreviewing = false;
 
   // Theme editor state
   let themeEditorActive = false;
@@ -5751,10 +5747,13 @@
     if (!commandSubFlow || commandSubFlow.type === 'tab-search') {
       commandMatchedTabs = [];
     }
+    // The restored query keeps the caret at its end, as when it was typed
+    searchCursorPos = commandQuery.length;
     if (searchInput) {
       searchInput.value = commandQuery;
       searchInput.placeholder = commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...';
       searchInput.readOnly = !!SUBFLOWS[commandSubFlow?.type]?.readOnly;
+      searchInput.setSelectionRange(commandQuery.length, commandQuery.length);
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5891,6 +5890,14 @@
     }
 
     return fuzzyFilterAndSort(results, query);
+  }
+
+  // Leaving the theme picker (Escape, back, closing the palette) while a theme is
+  // previewed: show the saved theme again (the one just picked, if any).
+  function endThemePreview() {
+    if (!_themePreviewing) return;
+    _themePreviewing = false;
+    applyTheme();
   }
 
   // Browser theme confirmation sub-flow
@@ -6526,20 +6533,11 @@
     // Themes
     'theme-picker': {
       placeholder: 'Select a theme...',
-      // Save current theme for live-preview restore on Escape
-      onEnter: () => { _themePreviewOriginal = S['appearance.theme'] || 'meridian'; },
-      onExit: () => {
-        if (!_themePreviewOriginal) return;
-        S['appearance.theme'] = _themePreviewOriginal;
-        _themePreviewOriginal = null;
-        saveSettings();
-        applyTheme();
-      },
+      onExit: () => endThemePreview(),
       results: q => getThemePickerResults(q),
       select: (r) => {
         if (!r.themeId) return;
-        // User confirmed — clear preview state so leaving the picker won't revert
-        _themePreviewOriginal = null;
+        _themePreviewing = false;
         S['appearance.theme'] = r.themeId;
         saveSettings();
         applyTheme();
@@ -14481,11 +14479,8 @@
     // Reset vim mode to insert for next time
     searchVimMode = 'insert';
 
-    // Restore theme if exiting while in theme live-preview
-    if (_themePreviewOriginal) {
-      applyTheme();
-      _themePreviewOriginal = null;
-    }
+    // Leaving while a theme is previewed: back to the saved theme
+    endThemePreview();
 
     // Reset command state
     commandMode = false;
@@ -14668,6 +14663,7 @@
       const results = commandMode ? commandResults : searchResults;
       const selectedResult = results[newIndex];
       if (selectedResult?.themeId && themes[selectedResult.themeId]) {
+        _themePreviewing = true;
         applyTheme(selectedResult.themeId);
       }
     }
