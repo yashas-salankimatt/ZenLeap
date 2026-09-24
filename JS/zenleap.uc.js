@@ -1631,7 +1631,9 @@
   let leapModeTimeout = null;
   let leapOverlay = null;
 
-  // Browse mode state
+  // Browse mode state. The highlight is an element (tab or folder); highlightedTabIndex
+  // is its position in getVisibleItems(), re-derived by syncHighlight() (see there).
+  let highlightedItem = null;
   let highlightedTabIndex = -1;
   let originalTabIndex = -1;
   let originalTab = null;      // direct reference to the tab that triggered browse mode
@@ -6625,7 +6627,7 @@
       const currentIdx = findCurrentItemIndex(visibleItems);
       originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
       originalTab = currentTab();
-      highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
+      setHighlight(firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex, visibleItems);
 
       // Pre-select the matched tabs
       selectedItems.clear();
@@ -9307,6 +9309,8 @@
 
   // Browse-mode modal option 1
   function deleteFolderAndContents(folder) {
+    _expectedGone.add(folder);
+    for (const t of folder?.tabs || []) _expectedGone.add(t);
     closeFolderDeleteModal();
     deleteFolderWithTabs(folder)
       .catch(e => reportError('Deleting folder and its tabs failed', e))
@@ -9315,6 +9319,7 @@
 
   // Browse-mode modal option 2
   function deleteFolderKeepTabs(folder) {
+    _expectedGone.add(folder);
     closeFolderDeleteModal();
     dissolveFolder(folder)
       .catch(e => reportError('Deleting folder failed', e))
@@ -9322,18 +9327,7 @@
   }
 
   function adjustHighlightAfterDeletion() {
-    if (!browseMode) return;
-    _visibleItemsCache = null; // Invalidate after DOM mutation (folder/tab deletion)
-    const newItems = getVisibleItems();
-    if (newItems.length === 0) {
-      exitLeapMode(false);
-      return;
-    }
-    if (highlightedTabIndex >= newItems.length) {
-      highlightedTabIndex = newItems.length - 1;
-    }
-    updateHighlight();
-    updateLeapOverlayState();
+    refreshBrowseAfterClose();
   }
 
   // Rebuild a folder deleted together with its tabs from its snapshot: its tabs are
@@ -14337,14 +14331,13 @@
   function enterBrowseCommandMode() {
     const items = getVisibleItems();
 
-    // Collect tabs: selected tabs (sorted by position), or just highlighted tab
-    // Use getVisibleItems() to resolve highlighted item (which may be a folder),
-    // since highlightedTabIndex indexes into the items list (tabs + folders)
+    // Collect tabs: selected tabs (sorted by position), or just the highlighted tab
     let collectedTabs;
     if (selectedItems.size > 0) {
       collectedTabs = sortTabsBySidebarPosition(liveTabs([...selectedItems].filter(t => !isFolder(t))));
-    } else if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-      const highlightedItem = items[highlightedTabIndex];
+    } else if (!highlightStillThere(items)) {
+      return;
+    } else if (highlightedItem) {
       // Only operate on tabs, not folders
       if (isFolder(highlightedItem)) {
         log('Cannot enter browse command mode on a folder');
@@ -16188,6 +16181,7 @@
     _relNumRafId = requestAnimationFrame(() => {
       _relNumRafId = 0;
       updateRelativeNumbers();
+      refreshBrowseHighlight();
     });
   }
 
@@ -16667,16 +16661,15 @@
       leapOverlay.classList.add('leap-direction-set');
       overlayModeLabel.textContent = 'BROWSE';
       const items = getVisibleItems();
-      const pos = `${highlightedTabIndex + 1}/${items.length}`;
+      const index = highlightedItem ? items.indexOf(highlightedItem) : -1;
+      const pos = `${index + 1}/${items.length}`;
       let statusParts = [pos];
 
       // Show folder info when highlighted
-      if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-        const highlightedItem = items[highlightedTabIndex];
-        if (isFolder(highlightedItem)) {
-          const tabCount = highlightedItem.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
-          statusParts.push(`folder (${tabCount})`);
-        }
+      const onFolder = index >= 0 && isFolder(highlightedItem);
+      if (onFolder) {
+        const tabCount = highlightedItem.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+        statusParts.push(`folder (${tabCount})`);
       }
 
       if (selectedItems.size > 0) statusParts.push(`${selectedItems.size} sel`);
@@ -16690,9 +16683,10 @@
       } else if (gotoMarkMode) {
         overlayModeLabel.textContent = 'GOTO';
         overlayHintLabel.textContent = 'press mark character to jump highlight  Esc=cancel';
+      } else if (_browseNotice) {
+        overlayHintLabel.textContent = _browseNotice.text;
       } else {
         // Show contextual hints based on highlighted item type
-        const onFolder = highlightedTabIndex >= 0 && highlightedTabIndex < items.length && isFolder(items[highlightedTabIndex]);
         if (onFolder && yankItems.length > 0) {
           overlayHintLabel.textContent = 'p=paste after  P=paste before  Enter=toggle fold  j/k=move  Esc=cancel';
         } else if (onFolder) {
@@ -16788,7 +16782,7 @@
     leapMode = true;
     browseMode = false;
     zMode = false;
-    highlightedTabIndex = -1;
+    setHighlight(-1, []);
     originalTabIndex = -1;
     browseDirection = null;
     sidebarWasExpanded = false;
@@ -16826,6 +16820,100 @@
     log('Entered leap mode');
   }
 
+  // --- Browse highlight: tracked by element ---
+  // Tabs opened, closed or moved above the highlight (an agent working in the same
+  // space, a page opening a tab, window sync) must never make Enter/x act on another
+  // tab than the one drawn as highlighted. So the highlight is an element:
+  // setHighlight() is the only way to move it, and syncHighlight() re-derives its
+  // index before every render and action. When the element is gone, the highlight
+  // moves to its nearest surviving neighbour and the action is not carried out.
+  let _highlightSnapshot = [];               // items as of the last sync, to find neighbours
+  let _expectedGone = new WeakSet();         // items the user closed/moved on purpose
+  let _browseWorkspaceSwitching = 0;         // h/l in progress: the old space's items leave on purpose
+  let _browseNotice = null;                  // { text, timer }: shown instead of the key hints
+
+  function setHighlight(index, items = getVisibleItems()) {
+    highlightedItem = index >= 0 && index < items.length ? items[index] : null;
+    highlightedTabIndex = highlightedItem ? index : -1;
+    _highlightSnapshot = items;
+  }
+
+  // Re-derive the highlight's index. Returns false when the highlighted element is no
+  // longer shown; the highlight then moves to the item after it (or before it, or the
+  // one `prefer` says), and a notice says so unless its removal was expected.
+  function syncHighlight(items = getVisibleItems(), { prefer = 'next' } = {}) {
+    if (!highlightedItem) {
+      if (highlightedTabIndex >= 0) setHighlight(Math.min(highlightedTabIndex, items.length - 1), items);
+      return true;
+    }
+    // A tab that is closing stays in the tab strip until its close animation ends
+    const idx = highlightedItem.closing ? -1 : items.indexOf(highlightedItem);
+    if (idx >= 0) {
+      highlightedTabIndex = idx;
+      _highlightSnapshot = items;
+      return true;
+    }
+    const gone = highlightedItem;
+    const old = _highlightSnapshot.includes(gone) ? _highlightSnapshot : items;
+    const oldIdx = old.indexOf(gone);
+    const shown = new Set(items.filter(item => !item.closing));
+    let next = null, prev = null;
+    if (oldIdx >= 0) {
+      for (let i = oldIdx + 1; i < old.length && !next; i++) if (shown.has(old[i])) next = old[i];
+      for (let i = oldIdx - 1; i >= 0 && !prev; i--) if (shown.has(old[i])) prev = old[i];
+    }
+    const target = (prefer === 'prev' ? (prev || next) : (next || prev)) ||
+      [...shown][Math.min(Math.max(highlightedTabIndex, 0), shown.size - 1)] || null;
+    setHighlight(target ? items.indexOf(target) : -1, items);
+    if (!_expectedGone.has(gone) && !_browseWorkspaceSwitching) {
+      const what = isFolder(gone) ? 'folder' : 'tab';
+      const where = target === prev ? 'the item above' : 'the next item';
+      flashBrowseNotice(`The highlighted ${what} was closed or moved — now on ${where}`);
+    }
+    return false;
+  }
+
+  // For key actions: true when the highlighted element is still there. Otherwise the
+  // highlight moved (see syncHighlight) and the key does nothing: the user sees what
+  // the next press will act on first.
+  function highlightStillThere(items = getVisibleItems()) {
+    if (syncHighlight(items)) return true;
+    updateHighlight();
+    updateLeapOverlayState();
+    return false;
+  }
+
+  // Tabs/folders were added, removed or moved (TabOpen/Close/Move, folder changes,
+  // workspace switch): keep drawing the highlight on the same element.
+  function refreshBrowseHighlight() {
+    if (!browseMode || !leapMode || !highlightedItem) return;
+    const items = getVisibleItems();
+    if (items.length === 0) return;
+    if (syncHighlight(items)) {
+      updateLeapOverlayState(); // position ("3/12") may have changed
+    } else {
+      updateHighlight();
+      updateLeapOverlayState();
+    }
+  }
+
+  function flashBrowseNotice(text) {
+    clearTimeout(_browseNotice?.timer);
+    _browseNotice = {
+      text,
+      timer: setTimeout(() => {
+        _browseNotice = null;
+        if (browseMode) updateLeapOverlayState();
+      }, 3000),
+    };
+    updateLeapOverlayState();
+  }
+
+  function clearBrowseNotice() {
+    clearTimeout(_browseNotice?.timer);
+    _browseNotice = null;
+  }
+
   // Enter browse mode
   function enterBrowseMode(direction) {
     const items = getVisibleItems();
@@ -16850,9 +16938,7 @@
       browseDirection = direction;
       originalTabIndex = direction === 'down' ? origin - 1 : origin;
       originalTab = current;
-      highlightedTabIndex = direction === 'down'
-        ? Math.min(origin, items.length - 1)
-        : Math.max(origin - 1, 0);
+      setHighlight(direction === 'down' ? Math.min(origin, items.length - 1) : Math.max(origin - 1, 0), items);
     } else {
       browseMode = true;
       browseDirection = direction;
@@ -16860,11 +16946,7 @@
       originalTab = current;
 
       // Move highlight one step in the initial direction
-      if (direction === 'down') {
-        highlightedTabIndex = Math.min(currentIndex + 1, items.length - 1);
-      } else {
-        highlightedTabIndex = Math.max(currentIndex - 1, 0);
-      }
+      setHighlight(direction === 'down' ? Math.min(currentIndex + 1, items.length - 1) : Math.max(currentIndex - 1, 0), items);
     }
 
     // Clear the timeout - browse mode has no timeout
@@ -16883,6 +16965,7 @@
 
   function updateHighlight({ syncSelection = true } = {}) {
     const items = getVisibleItems();
+    syncHighlight(items);
 
     if (syncSelection) {
       // Full sync: iterate all items to reconcile selection markers.
@@ -16907,8 +16990,7 @@
     }
 
     // Add highlight to the current browsed item
-    if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-      const highlightedItem = items[highlightedTabIndex];
+    if (highlightedItem) {
       highlightedItem.setAttribute('data-zenleap-highlight', 'true');
       _previousHighlightedItem = highlightedItem;
 
@@ -16924,12 +17006,8 @@
         // to reuse cached thumbnails when revisiting tabs, not recapture each time.
         hidePreviewPanel();
         previewDebounceTimer = setTimeout(() => {
-          const currentItems = getVisibleItems();
-          if (highlightedTabIndex >= 0 && highlightedTabIndex < currentItems.length) {
-            const currentItem = currentItems[highlightedTabIndex];
-            if (!isFolder(currentItem)) {
-              showPreviewForTab(currentItem);
-            }
+          if (browseMode && highlightedItem && !isFolder(highlightedItem) && getVisibleItems().includes(highlightedItem)) {
+            showPreviewForTab(highlightedItem);
           }
         }, S['timing.previewDelay']);
       } else if (isFolder(highlightedItem)) {
@@ -16967,28 +17045,29 @@
     }
   }
 
-  // Move highlight up or down
+  // Move highlight up or down. Returns false when the highlighted element was gone:
+  // the highlight then lands on its neighbour in that direction, which is where the
+  // user was heading anyway.
   function moveHighlight(direction) {
     const items = getVisibleItems();
-
-    if (direction === 'down') {
-      highlightedTabIndex = Math.min(highlightedTabIndex + 1, items.length - 1);
-    } else {
-      highlightedTabIndex = Math.max(highlightedTabIndex - 1, 0);
+    const stayed = syncHighlight(items, { prefer: direction === 'down' ? 'next' : 'prev' });
+    if (stayed) {
+      setHighlight(direction === 'down' ? Math.min(highlightedTabIndex + 1, items.length - 1) : Math.max(highlightedTabIndex - 1, 0), items);
     }
 
     // Fast path: only update old/new highlight items, skip full selection sync
     updateHighlight({ syncSelection: false });
     updateLeapOverlayState();
     log(`Moved highlight ${direction} to ${highlightedTabIndex}`);
+    return stayed;
   }
 
   // Shift+move: expand or contract selection based on direction
   function shiftMoveHighlight(direction) {
     const items = getVisibleItems();
-    const prevIndex = highlightedTabIndex;
-    moveHighlight(direction);
-    if (highlightedTabIndex !== prevIndex) {
+    const prevIndex = items.indexOf(highlightedItem);
+    if (!moveHighlight(direction)) return; // it had gone: don't select what the user didn't see
+    if (prevIndex >= 0 && highlightedTabIndex !== prevIndex) {
       const prevItem = items[prevIndex];
       const newItem = items[highlightedTabIndex];
       if (selectedItems.has(newItem)) {
@@ -17030,7 +17109,12 @@
       // settles once Zen finished the switch; re-highlight right away (a
       // delayed reset used to overwrite keys pressed in the meantime).
       const switchId = ++_browseWorkspaceSwitchId;
-      await window.gZenWorkspaces.changeWorkspaceWithID(newWorkspace.uuid);
+      _browseWorkspaceSwitching++;
+      try {
+        await window.gZenWorkspaces.changeWorkspaceWithID(newWorkspace.uuid);
+      } finally {
+        _browseWorkspaceSwitching--;
+      }
       if (switchId !== _browseWorkspaceSwitchId || !browseMode) return;
 
       // After workspace switch, highlight the active tab in the new workspace
@@ -17038,7 +17122,7 @@
       const newItems = getVisibleItems();
       const activeIdx = findCurrentItemIndex(newItems);
       // Fresh space (Zen's empty tab selected): start at the first tab
-      highlightedTabIndex = activeIdx >= 0 ? activeIdx : Math.min(virtualOriginIndex(newItems), newItems.length - 1);
+      setHighlight(activeIdx >= 0 ? activeIdx : Math.min(virtualOriginIndex(newItems), newItems.length - 1), newItems);
       if (newItems.length > 0) {
         updateHighlight();
         updateRelativeNumbers();
@@ -17054,6 +17138,7 @@
   // paste the current tab may have moved.
   function jumpAndOpenTab(distance) {
     const items = getVisibleItems();
+    syncHighlight(items);
     const currentIndex = findCurrentItemIndex(items);
 
     let direction;
@@ -17086,7 +17171,7 @@
       const target = items[targetIndex];
       if (isFolder(target)) {
         // If jumping lands on a folder, move highlight there and stay in browse mode
-        highlightedTabIndex = targetIndex;
+        setHighlight(targetIndex, items);
         updateHighlight();
         updateLeapOverlayState();
         log(`Jumped ${direction} ${distance}, highlighted folder "${target.label}"`);
@@ -17102,21 +17187,17 @@
   // Confirm selection - open the highlighted tab, or toggle folder collapse
   function confirmBrowseSelection() {
     const items = getVisibleItems();
+    if (!highlightStillThere(items)) return;
 
-    if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-      const item = items[highlightedTabIndex];
+    if (highlightedItem) {
+      const item = highlightedItem;
       if (isFolder(item)) {
         // Toggle folder collapse/expand and stay in browse mode
         item.collapsed = !item.collapsed;
         log(`Toggled folder "${item.label}" collapsed=${item.collapsed}`);
-        // After toggling, the visible items list changes. Re-index after DOM settles.
+        // The visible items change (the folder's tabs); redraw after the DOM settles.
         setTimeout(() => {
           _visibleItemsCache = null; // Invalidate after folder collapse/expand
-          const newItems = getVisibleItems();
-          const newIdx = newItems.indexOf(item);
-          if (newIdx >= 0) {
-            highlightedTabIndex = newIdx;
-          }
           updateHighlight();
           updateLeapOverlayState();
           updateRelativeNumbers();
@@ -17152,17 +17233,15 @@
     return Promise.resolve(true);
   }
 
-  // Re-sync browse mode after items were closed/removed.
-  function refreshBrowseAfterClose(preferLast = false) {
+  // Re-sync browse mode after the user closed or removed items: a closed highlighted
+  // item hands the highlight to the item after it (or before it, if it was the last).
+  function refreshBrowseAfterClose() {
     if (!browseMode) return;
     _visibleItemsCache = null;
     const newItems = getVisibleItems();
     if (newItems.length === 0) {
       exitLeapMode(false);
       return;
-    }
-    if (preferLast || highlightedTabIndex >= newItems.length) {
-      highlightedTabIndex = newItems.length - 1;
     }
     updateHighlight();
     updateLeapOverlayState();
@@ -17187,18 +17266,21 @@
       }
       log(`Closing ${tabsToClose.length} selected tabs`);
       selectedItems.clear();
+      for (const t of tabsToClose) _expectedGone.add(t);
+      syncHighlight(items);
       closeTabsLikeZen(tabsToClose, event).then(() => refreshBrowseAfterClose());
       refreshBrowseAfterClose();
       return;
     }
 
     // Single item close (no selection)
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) {
+    if (!highlightStillThere(items)) return;
+    if (!highlightedItem) {
       log('No valid item to close');
       return;
     }
 
-    const item = items[highlightedTabIndex];
+    const item = highlightedItem;
 
     // If it's a folder, show the deletion modal instead
     if (isFolder(item)) {
@@ -17206,10 +17288,10 @@
       return;
     }
 
-    const wasLast = highlightedTabIndex === items.length - 1;
     log(`Closing tab at index ${highlightedTabIndex}`);
-    closeTabsLikeZen([item], event).then(() => refreshBrowseAfterClose(wasLast));
-    refreshBrowseAfterClose(wasLast);
+    _expectedGone.add(item);
+    closeTabsLikeZen([item], event).then(() => refreshBrowseAfterClose());
+    refreshBrowseAfterClose();
   }
 
   // --- Confirm step: closing a selection that contains folders ---
@@ -17287,6 +17369,8 @@
     if (!pending) return;
     const { tabs, folders, event } = pending;
     selectedItems.clear();
+    for (const item of [...tabs, ...folders]) _expectedGone.add(item);
+    syncHighlight();
     // Same helpers as the folder-delete modal and palette: they record an undo
     // snapshot, so the undo shortcut rebuilds the real Zen folder (subfolders,
     // position, space) instead of reopening a plain tab group.
@@ -17305,9 +17389,9 @@
   // Toggle selection on the highlighted item (tab or folder)
   function toggleItemSelection() {
     const items = getVisibleItems();
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
+    if (!highlightStillThere(items) || !highlightedItem) return;
 
-    const item = items[highlightedTabIndex];
+    const item = highlightedItem;
     if (selectedItems.has(item)) {
       selectedItems.delete(item);
       log(`Deselected item at index ${highlightedTabIndex}`);
@@ -17324,10 +17408,8 @@
   function yankSelectedItems() {
     // If nothing explicitly selected, yank the highlighted item (tab or folder)
     if (selectedItems.size === 0) {
-      const items = getVisibleItems();
-      if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
-        selectedItems.add(items[highlightedTabIndex]);
-      }
+      if (!highlightStillThere()) return;
+      if (highlightedItem) selectedItems.add(highlightedItem);
     }
 
     if (selectedItems.size === 0) {
@@ -17371,10 +17453,9 @@
       return;
     }
 
-    const items = getVisibleItems();
-    if (highlightedTabIndex < 0 || highlightedTabIndex >= items.length) return;
+    if (!highlightStillThere() || !highlightedItem) return;
 
-    const anchorItem = items[highlightedTabIndex];
+    const anchorItem = highlightedItem;
 
     // Filter out closed/removed items
     yankItems = yankItems.filter(item => {
@@ -17545,7 +17626,7 @@
   // Save browse mode state for transition to command bar
   function saveBrowseState() {
     return {
-      highlightedTabIndex, originalTabIndex, originalTab,
+      highlightedItem, highlightedTabIndex, highlightSnapshot: _highlightSnapshot, originalTabIndex, originalTab,
       browseDirection, selectedItems: new Set(selectedItems),
       yankItems: [...yankItems], sidebarWasExpanded
     };
@@ -17555,7 +17636,9 @@
   function restoreBrowseState(state) {
     leapMode = true;
     browseMode = true;
+    highlightedItem = state.highlightedItem;
     highlightedTabIndex = state.highlightedTabIndex;
+    _highlightSnapshot = state.highlightSnapshot || [];
     originalTabIndex = state.originalTabIndex;
     originalTab = state.originalTab;
     browseDirection = state.browseDirection;
@@ -17612,7 +17695,9 @@
     gotoMarkMode = false;
     gNumberBuffer = '';
     clearTimeout(gNumberTimeout);
-    highlightedTabIndex = -1;
+    setHighlight(-1, []);
+    _expectedGone = new WeakSet();
+    clearBrowseNotice();
     originalTabIndex = -1;
     originalTab = null;
     browseDirection = null;
@@ -17670,7 +17755,7 @@
         originalTab = currentTab();
         clearTimeout(leapModeTimeout);
       }
-      highlightedTabIndex = targetIndex;
+      setHighlight(targetIndex, items);
       updateHighlight();
       updateLeapOverlayState();
       updateRelativeNumbers();
@@ -18462,7 +18547,7 @@
       // G = move highlight to last item
       if (keyMatches(event, 'keys.browse.lastTab')) {
         const items = getVisibleItems();
-        highlightedTabIndex = items.length - 1;
+        setHighlight(items.length - 1, items);
         updateHighlight();
         updateLeapOverlayState();
         log(`Browse: jumped to last item (index ${highlightedTabIndex})`);
@@ -18476,13 +18561,9 @@
           clearTimeout(browseGTimeout);
           browseGPending = false;
           browseGTimeout = null;
-          if (S['display.ggSkipPinned']) {
-            const items = getVisibleItems();
-            const firstUnpinned = firstUnpinnedIndex(items);
-            highlightedTabIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
-          } else {
-            highlightedTabIndex = 0;
-          }
+          const items = getVisibleItems();
+          const firstUnpinned = S['display.ggSkipPinned'] ? firstUnpinnedIndex(items) : -1;
+          setHighlight(firstUnpinned >= 0 ? firstUnpinned : 0, items);
           updateHighlight();
           updateLeapOverlayState();
           log(`Browse: jumped to first tab (index ${highlightedTabIndex})`);
@@ -18639,9 +18720,13 @@
       if (markChar) {
         // In browse mode, mark the highlighted tab; otherwise mark the current tab
         let targetTab = currentTab();
-        if (browseMode && highlightedTabIndex >= 0) {
-          const items = getVisibleItems();
-          const item = items[highlightedTabIndex];
+        if (browseMode && (highlightedItem || highlightedTabIndex >= 0)) {
+          if (!highlightStillThere()) {
+            markMode = false;
+            updateLeapOverlayState();
+            return;
+          }
+          const item = highlightedItem;
           if (!item || isFolder(item)) {
             // Can't mark a folder — exit mark sub-mode silently
             markMode = false;
@@ -18685,7 +18770,7 @@
             const items = getVisibleItems();
             const idx = items.indexOf(markedTab);
             if (idx >= 0) {
-              highlightedTabIndex = idx;
+              setHighlight(idx, items);
               gotoMarkMode = false;
               updateHighlight();
               updateLeapOverlayState();
@@ -18799,7 +18884,7 @@
       originalTabIndex = findCurrentItemIndex(wsItems);
       if (originalTabIndex === -1) originalTabIndex = 0;
       originalTab = currentTab();
-      highlightedTabIndex = 0;
+      setHighlight(0, wsItems);
       clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
