@@ -8938,6 +8938,27 @@
     return { SplitNode, LeafNode };
   }
 
+  // Install a new layout tree for the current split view and re-render it.
+  // A flat tree is also recorded as Zen's matching gridType (all columns =
+  // vsep, all rows = hsep), so Zen's own layout commands see the real state;
+  // nested custom trees keep the previous gridType (LEAP-B-31).
+  function commitSplitTree(viewData, tree) {
+    const splitter = window.gZenViewSplitter;
+    splitter.removeSplitters();
+    splitter._tabToSplitNode.clear();
+    viewData.layoutTree = tree;
+    const flat = tree?.children?.length && tree.children.every(c => !c.children || c.children.length === 0);
+    if (flat && tree.direction === 'row') viewData.gridType = 'vsep';
+    else if (flat && tree.direction === 'column') viewData.gridType = 'hsep';
+    splitter.applyGridLayout(tree);
+  }
+
+  // CSS inset for a region given in percent of the grid (2px gutter).
+  function gtileInset(rect) {
+    const gap = 2;
+    return `calc(${rect.top}% + ${gap}px) calc(${rect.right}% + ${gap}px) calc(${rect.bottom}% + ${gap}px) calc(${rect.left}% + ${gap}px)`;
+  }
+
   function createGtileOverlay() {
     if (gtileOverlay) return;
 
@@ -9089,6 +9110,7 @@
     gtileOverlay.classList.add('active', 'mode-move');
     gtileOverlay.classList.remove('mode-resize');
     updateGtileOverlay();
+    attachGtileDocListeners();
     armModeGuards('gtile', () => exitGtileMode(false), { inside: '#zenleap-gtile-panel' });
 
     log('Entered gTile mode (move)');
@@ -9097,6 +9119,10 @@
   function exitGtileMode(apply) {
     if (!gtileMode) return;
     disarmModeGuards('gtile');
+    _gtileDocAbort?.abort();
+    _gtileDocAbort = null;
+    _gtileMoveMouseDown = null;
+    _gtileResizeMouseStart = null;
 
     if (apply && gtileSubMode === 'resize') {
       applyGtileLayout();
@@ -9190,8 +9216,7 @@
       // Skip position update for region being mouse-dragged (it follows the mouse directly)
       const isDragging = gtileDrag && gtileDrag.isDragging && gtileDrag.idx === i;
       if (!isDragging) {
-        const gap = 2;
-        region.style.inset = `calc(${rect.top}% + ${gap}px) calc(${rect.right}% + ${gap}px) calc(${rect.bottom}% + ${gap}px) calc(${rect.left}% + ${gap}px)`;
+        region.style.inset = gtileInset(rect);
       }
       region.dataset.color = rect.color;
 
@@ -9284,7 +9309,7 @@
         if (gtileMouseHints) {
           hints.innerHTML = (gtileSelecting || gtileMouseSelecting)
             ? '<span><kbd>Drag</kbd> extend</span><span><kbd>Release</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
-            : '<span><kbd>Drag</kbd> select</span><span><kbd>Click</kbd> target</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
+            : '<span><kbd>Drag</kbd> resize</span><span><kbd>Click</kbd> other pane: target</span><span><kbd>Enter</kbd> apply</span><span><kbd>1-9</kbd> preset</span><span><kbd>Tab</kbd> move</span><span><kbd>Esc</kbd> close</span>';
         } else {
           hints.innerHTML = gtileSelecting
             ? '<span><kbd>hjkl</kbd> extend</span><span><kbd>Enter</kbd> apply</span><span><kbd>Esc</kbd> cancel</span>'
@@ -9314,30 +9339,7 @@
     if (key === 'tab') {
       if (gtileDrag) cancelGtileDrag();
       gtileMouseSelecting = false;
-      if (gtileSubMode === 'move') {
-        gtileSubMode = 'resize';
-        gtileOverlay.classList.remove('mode-move');
-        gtileOverlay.classList.add('mode-resize');
-        gtileHeld = false;
-        // Set focused tab to active region's tab for resize
-        const activeRect = gtileTabRects[gtileActiveRegionIdx];
-        if (activeRect) {
-          gtileFocusedTab = activeRect.tab;
-          // Position cell cursor at center of that region
-          const cx = (activeRect.left + (100 - activeRect.right)) / 2;
-          const cy = (activeRect.top + (100 - activeRect.bottom)) / 2;
-          gtileCursor.col = Math.max(0, Math.min(GTILE_COLS - 1, Math.round(cx / 100 * GTILE_COLS - 0.5)));
-          gtileCursor.row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.round(cy / 100 * GTILE_ROWS - 0.5)));
-        }
-        gtileSelecting = false;
-        gtileAnchor = null;
-      } else {
-        gtileSubMode = 'move';
-        gtileOverlay.classList.remove('mode-resize');
-        gtileOverlay.classList.add('mode-move');
-        gtileSelecting = false;
-        gtileAnchor = null;
-      }
+      setGtileSubMode(gtileSubMode === 'move' ? 'resize' : 'move');
       updateGtileOverlay();
       return true;
     }
@@ -9406,12 +9408,7 @@
 
     // Number presets → switch to resize mode
     if (key >= '1' && key <= '9') {
-      gtileSubMode = 'resize';
-      gtileOverlay.classList.remove('mode-move');
-      gtileOverlay.classList.add('mode-resize');
-      gtileHeld = false;
-      const activeRect = gtileTabRects[gtileActiveRegionIdx];
-      if (activeRect) gtileFocusedTab = activeRect.tab;
+      setGtileSubMode('resize');
       const preset = getGtilePreset(parseInt(key));
       if (preset) {
         gtileAnchor = { col: preset.col1, row: preset.row1 };
@@ -9639,15 +9636,42 @@
     if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
   }
 
+  // Mouse state shared by the grid listeners and the document-level ones.
+  let _gtileMoveMouseDown = null;   // { idx, startX, startY, offsetXPct, offsetYPct, regW, regH }
+  let _gtileResizeMouseStart = null; // { x, y, potentialTargetTab }
+  const GTILE_DRAG_THRESHOLD = 5;   // px — below this a press is a click, not a drag
+
+  function setGtileSubMode(mode) {
+    gtileSubMode = mode;
+    gtileOverlay.classList.toggle('mode-move', mode === 'move');
+    gtileOverlay.classList.toggle('mode-resize', mode === 'resize');
+    gtileSelecting = false;
+    gtileAnchor = null;
+    if (mode === 'resize') {
+      gtileHeld = false;
+      const activeRect = gtileTabRects[gtileActiveRegionIdx];
+      if (activeRect) {
+        gtileFocusedTab = activeRect.tab;
+        // Position cell cursor at center of that region
+        const cx = (activeRect.left + (100 - activeRect.right)) / 2;
+        const cy = (activeRect.top + (100 - activeRect.bottom)) / 2;
+        gtileCursor.col = Math.max(0, Math.min(GTILE_COLS - 1, Math.round(cx / 100 * GTILE_COLS - 0.5)));
+        gtileCursor.row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.round(cy / 100 * GTILE_ROWS - 0.5)));
+      }
+    }
+  }
+
+  // Grid cell under a mouse event, clamped to the grid.
+  function gtileCellAt(grid, e) {
+    const gridRect = grid.getBoundingClientRect();
+    return {
+      col: Math.max(0, Math.min(GTILE_COLS - 1, Math.floor((e.clientX - gridRect.left) / gridRect.width * GTILE_COLS))),
+      row: Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor((e.clientY - gridRect.top) / gridRect.height * GTILE_ROWS))),
+    };
+  }
+
+  // Listeners on the overlay's own elements (live as long as the overlay).
   function setupGtileMouseEvents(grid, cellLayer, modeSwitch) {
-    // Abort any previous document-level gTile listeners before adding new ones
-    if (_gtileDocAbort) _gtileDocAbort.abort();
-    _gtileDocAbort = new AbortController();
-    const _gtileSig = { signal: _gtileDocAbort.signal };
-    onTeardown(() => _gtileDocAbort?.abort());
-
-    const DRAG_THRESHOLD = 5;
-
     // --- Hint detection: mouse hints on grid hover, revert on leave ---
     grid.addEventListener('mousemove', () => {
       if (!gtileMode) return;
@@ -9673,35 +9697,12 @@
         e.stopPropagation();
         const newMode = btn.dataset.mode;
         if (newMode === gtileSubMode) return;
-        if (newMode === 'resize') {
-          gtileSubMode = 'resize';
-          gtileOverlay.classList.remove('mode-move');
-          gtileOverlay.classList.add('mode-resize');
-          gtileHeld = false;
-          const activeRect = gtileTabRects[gtileActiveRegionIdx];
-          if (activeRect) {
-            gtileFocusedTab = activeRect.tab;
-            const cx = (activeRect.left + (100 - activeRect.right)) / 2;
-            const cy = (activeRect.top + (100 - activeRect.bottom)) / 2;
-            gtileCursor.col = Math.max(0, Math.min(GTILE_COLS - 1, Math.round(cx / 100 * GTILE_COLS - 0.5)));
-            gtileCursor.row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.round(cy / 100 * GTILE_ROWS - 0.5)));
-          }
-          gtileSelecting = false;
-          gtileAnchor = null;
-        } else {
-          gtileSubMode = 'move';
-          gtileOverlay.classList.remove('mode-resize');
-          gtileOverlay.classList.add('mode-move');
-          gtileSelecting = false;
-          gtileAnchor = null;
-        }
+        setGtileSubMode(newMode);
         updateGtileOverlay();
       });
     });
 
     // --- Move mode: click to select, drag to grab & swap ---
-    let moveMouseDown = null; // { idx, startX, startY, offsetXPct, offsetYPct, regW, regH }
-
     grid.addEventListener('mousedown', (e) => {
       if (!gtileMode || gtileSubMode !== 'move' || e.button !== 0) return;
 
@@ -9720,7 +9721,7 @@
       const gridRect = grid.getBoundingClientRect();
       const regionRect = regionEl.getBoundingClientRect();
       const rect = gtileTabRects[idx];
-      moveMouseDown = {
+      _gtileMoveMouseDown = {
         idx,
         startX: e.clientX, startY: e.clientY,
         offsetXPct: (e.clientX - regionRect.left) / gridRect.width * 100,
@@ -9731,162 +9732,19 @@
       updateGtileOverlay();
     });
 
-    document.addEventListener('mousemove', (e) => {
-      if (!moveMouseDown || !gtileMode || gtileSubMode !== 'move') return;
-
-
-      const dx = e.clientX - moveMouseDown.startX;
-      const dy = e.clientY - moveMouseDown.startY;
-
-      if (!gtileDrag && Math.sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD) return;
-
-      // Enter drag mode
-      if (!gtileDrag) {
-        gtileDrag = {
-          idx: moveMouseDown.idx,
-          isDragging: true,
-          swapIdx: -1,
-          origRects: gtileTabRects.map(r => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })),
-          offsetXPct: moveMouseDown.offsetXPct,
-          offsetYPct: moveMouseDown.offsetYPct,
-          regW: moveMouseDown.regW,
-          regH: moveMouseDown.regH,
-        };
-
-        const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
-        if (regionEl) {
-          regionEl.classList.add('gtile-dragging');
-          // Disable position transitions on dragged element
-          regionEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.15s, border-color 0.15s';
-        }
-
-        // Show ghost at original position
-        const orig = gtileDrag.origRects[gtileDrag.idx];
-        const gap = 2;
-        if (gtileGhostEl) {
-          gtileGhostEl.style.display = 'block';
-          gtileGhostEl.style.inset = `calc(${orig.top}% + ${gap}px) calc(${orig.right}% + ${gap}px) calc(${orig.bottom}% + ${gap}px) calc(${orig.left}% + ${gap}px)`;
-        }
-        updateGtileOverlay();
-      }
-
-      // Position dragged region following mouse
-      const gridRect = grid.getBoundingClientRect();
-      const mxPct = (e.clientX - gridRect.left) / gridRect.width * 100;
-      const myPct = (e.clientY - gridRect.top) / gridRect.height * 100;
-      let newL = Math.max(0, Math.min(100 - gtileDrag.regW, mxPct - gtileDrag.offsetXPct));
-      let newT = Math.max(0, Math.min(100 - gtileDrag.regH, myPct - gtileDrag.offsetYPct));
-      const newR = 100 - newL - gtileDrag.regW;
-      const newB = 100 - newT - gtileDrag.regH;
-
-      const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
-      if (regionEl) {
-        const gap = 2;
-        regionEl.style.inset = `calc(${newT}% + ${gap}px) calc(${newR}% + ${gap}px) calc(${newB}% + ${gap}px) calc(${newL}% + ${gap}px)`;
-      }
-
-      // Hit test: which original region zone is mouse cursor over?
-      const cursorXPct = mxPct, cursorYPct = myPct;
-      let bestIdx = -1;
-      for (let i = 0; i < gtileTabRects.length; i++) {
-        if (i === gtileDrag.idx) continue;
-        const o = gtileDrag.origRects[i];
-        if (cursorXPct >= o.left && cursorXPct <= (100 - o.right) &&
-            cursorYPct >= o.top && cursorYPct <= (100 - o.bottom)) {
-          bestIdx = i;
-          break;
-        }
-      }
-
-      // Update swap partner if changed
-      if (bestIdx !== gtileDrag.swapIdx) {
-        // Revert previous partner
-        if (gtileDrag.swapIdx >= 0) {
-          const prevOrig = gtileDrag.origRects[gtileDrag.swapIdx];
-          const prevRect = gtileTabRects[gtileDrag.swapIdx];
-          prevRect.left = prevOrig.left; prevRect.top = prevOrig.top;
-          prevRect.right = prevOrig.right; prevRect.bottom = prevOrig.bottom;
-        }
-        // Set new partner
-        if (bestIdx >= 0) {
-          const dragOrig = gtileDrag.origRects[gtileDrag.idx];
-          const partnerRect = gtileTabRects[bestIdx];
-          partnerRect.left = dragOrig.left; partnerRect.top = dragOrig.top;
-          partnerRect.right = dragOrig.right; partnerRect.bottom = dragOrig.bottom;
-          // Ghost moves to partner's original position (landing zone)
-          const partnerOrig = gtileDrag.origRects[bestIdx];
-          const gap = 2;
-          if (gtileGhostEl) {
-            gtileGhostEl.style.inset = `calc(${partnerOrig.top}% + ${gap}px) calc(${partnerOrig.right}% + ${gap}px) calc(${partnerOrig.bottom}% + ${gap}px) calc(${partnerOrig.left}% + ${gap}px)`;
-          }
-        } else {
-          // No partner: ghost at drag origin
-          const orig = gtileDrag.origRects[gtileDrag.idx];
-          const gap = 2;
-          if (gtileGhostEl) {
-            gtileGhostEl.style.inset = `calc(${orig.top}% + ${gap}px) calc(${orig.right}% + ${gap}px) calc(${orig.bottom}% + ${gap}px) calc(${orig.left}% + ${gap}px)`;
-          }
-        }
-        gtileDrag.swapIdx = bestIdx;
-        updateGtileOverlay();
-      }
-    }, { passive: true, ..._gtileSig });
-
-    document.addEventListener('mouseup', (e) => {
-      if (!gtileMode || gtileSubMode !== 'move') { moveMouseDown = null; return; }
-      if (!moveMouseDown) return;
-
-      if (gtileDrag && gtileDrag.isDragging) {
-        const draggedEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
-        if (draggedEl) {
-          draggedEl.classList.remove('gtile-dragging');
-          draggedEl.style.transition = '';
-        }
-        if (gtileGhostEl) gtileGhostEl.style.display = 'none';
-
-        if (gtileDrag.swapIdx >= 0) {
-          // Confirm swap via the split tree
-          const aIdx = gtileDrag.idx;
-          const bIdx = gtileDrag.swapIdx;
-          // Restore original rects before performing real swap
-          for (let i = 0; i < gtileTabRects.length; i++) {
-            const orig = gtileDrag.origRects[i];
-            gtileTabRects[i].left = orig.left; gtileTabRects[i].top = orig.top;
-            gtileTabRects[i].right = orig.right; gtileTabRects[i].bottom = orig.bottom;
-          }
-          gtileDrag = null;
-          performGtileSwapByIndex(aIdx, bIdx);
-          flashGtileGrid('gtile-rotated'); // green-ish confirmation pulse
-        } else {
-          // No swap target: revert
-          const orig = gtileDrag.origRects[gtileDrag.idx];
-          gtileTabRects[gtileDrag.idx].left = orig.left;
-          gtileTabRects[gtileDrag.idx].top = orig.top;
-          gtileTabRects[gtileDrag.idx].right = orig.right;
-          gtileTabRects[gtileDrag.idx].bottom = orig.bottom;
-          gtileDrag = null;
-        }
-        updateGtileOverlay();
-      }
-
-      moveMouseDown = null;
-    }, _gtileSig);
-
     // --- Resize mode: hover tracking on cells ---
     cellLayer.addEventListener('mousemove', (e) => {
       if (!gtileMode || gtileSubMode !== 'resize') return;
-      const gridRect = grid.getBoundingClientRect();
-      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor((e.clientX - gridRect.left) / gridRect.width * GTILE_COLS)));
-      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor((e.clientY - gridRect.top) / gridRect.height * GTILE_ROWS)));
-      gtileCursor.col = col;
-      gtileCursor.row = row;
+      const cell = gtileCellAt(grid, e);
+      gtileCursor.col = cell.col;
+      gtileCursor.row = cell.row;
       updateGtileOverlay();
     });
 
-    // --- Resize mode: click+drag to select cells, or click non-target region to change target ---
-    // Disambiguate click vs drag: always start cell selection on mousedown,
-    // but on mouseup if the mouse didn't move, treat as a click to change target.
-    let resizeMouseStart = null; // { x, y, potentialTargetTab }
+    // --- Resize mode: press starts a cell selection at the pressed cell. On
+    // release, a drag applies the layout; a click (no movement) only sets the
+    // anchor (Enter applies) or, on another pane, makes it the resize target.
+    // A plain click used to apply a 1×1-cell layout (LEAP-B-12).
     cellLayer.addEventListener('mousedown', (e) => {
       if (!gtileMode || gtileSubMode !== 'resize' || e.button !== 0) return;
       e.preventDefault();
@@ -9897,8 +9755,7 @@
 
       // Check if click is over a non-target region (for potential target change on simple click)
       let potentialTargetTab = null;
-      for (let i = 0; i < gtileTabRects.length; i++) {
-        const rect = gtileTabRects[i];
+      for (const rect of gtileTabRects) {
         if (rect.tab === gtileFocusedTab) continue;
         if (clickXPct >= rect.left && clickXPct <= (100 - rect.right) &&
             clickYPct >= rect.top && clickYPct <= (100 - rect.bottom)) {
@@ -9907,57 +9764,170 @@
         }
       }
 
-      resizeMouseStart = { x: e.clientX, y: e.clientY, potentialTargetTab };
+      _gtileResizeMouseStart = { x: e.clientX, y: e.clientY, potentialTargetTab };
 
-      // Always start cell selection (drag will extend it, click will be caught on mouseup)
-      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor(clickXPct / 100 * GTILE_COLS)));
-      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor(clickYPct / 100 * GTILE_ROWS)));
-      gtileAnchor = { col, row };
-      gtileCursor.col = col;
-      gtileCursor.row = row;
+      const cell = gtileCellAt(grid, e);
+      gtileAnchor = { col: cell.col, row: cell.row };
+      gtileCursor.col = cell.col;
+      gtileCursor.row = cell.row;
       gtileSelecting = true;
       gtileMouseSelecting = true;
       updateGtileOverlay();
     });
+  }
 
-    // Drag extends selection (document-level for dragging outside cells)
+  // Document-level listeners (drags may leave the grid). Attached while gTile
+  // is open and removed again when it closes (LEAP-B-31).
+  function attachGtileDocListeners() {
+    _gtileDocAbort?.abort();
+    _gtileDocAbort = new AbortController();
+    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
+    if (!grid) return;
+    const passiveSig = { passive: true, signal: _gtileDocAbort.signal };
+    const sig = { signal: _gtileDocAbort.signal };
+
+    // Move mode: drag a region to swap it with the one under the pointer
+    document.addEventListener('mousemove', (e) => {
+      if (!_gtileMoveMouseDown || !gtileMode || gtileSubMode !== 'move') return;
+
+      const dx = e.clientX - _gtileMoveMouseDown.startX;
+      const dy = e.clientY - _gtileMoveMouseDown.startY;
+
+      if (!gtileDrag && Math.sqrt(dx * dx + dy * dy) < GTILE_DRAG_THRESHOLD) return;
+
+      // Enter drag mode
+      if (!gtileDrag) {
+        gtileDrag = {
+          idx: _gtileMoveMouseDown.idx,
+          isDragging: true,
+          swapIdx: -1,
+          origRects: gtileTabRects.map(r => ({ left: r.left, top: r.top, right: r.right, bottom: r.bottom })),
+          offsetXPct: _gtileMoveMouseDown.offsetXPct,
+          offsetYPct: _gtileMoveMouseDown.offsetYPct,
+          regW: _gtileMoveMouseDown.regW,
+          regH: _gtileMoveMouseDown.regH,
+        };
+
+        const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+        if (regionEl) {
+          regionEl.classList.add('gtile-dragging');
+          // Disable position transitions on dragged element
+          regionEl.style.transition = 'transform 0.12s ease-out, box-shadow 0.15s, border-color 0.15s';
+        }
+
+        // Show ghost at original position
+        if (gtileGhostEl) {
+          gtileGhostEl.style.display = 'block';
+          gtileGhostEl.style.inset = gtileInset(gtileDrag.origRects[gtileDrag.idx]);
+        }
+        updateGtileOverlay();
+      }
+
+      // Position dragged region following mouse
+      const gridRect = grid.getBoundingClientRect();
+      const mxPct = (e.clientX - gridRect.left) / gridRect.width * 100;
+      const myPct = (e.clientY - gridRect.top) / gridRect.height * 100;
+      const newL = Math.max(0, Math.min(100 - gtileDrag.regW, mxPct - gtileDrag.offsetXPct));
+      const newT = Math.max(0, Math.min(100 - gtileDrag.regH, myPct - gtileDrag.offsetYPct));
+
+      const regionEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+      if (regionEl) {
+        regionEl.style.inset = gtileInset({ left: newL, top: newT, right: 100 - newL - gtileDrag.regW, bottom: 100 - newT - gtileDrag.regH });
+      }
+
+      // Hit test: which original region zone is mouse cursor over?
+      let bestIdx = -1;
+      for (let i = 0; i < gtileTabRects.length; i++) {
+        if (i === gtileDrag.idx) continue;
+        const o = gtileDrag.origRects[i];
+        if (mxPct >= o.left && mxPct <= (100 - o.right) && myPct >= o.top && myPct <= (100 - o.bottom)) {
+          bestIdx = i;
+          break;
+        }
+      }
+
+      // Update swap partner if changed
+      if (bestIdx !== gtileDrag.swapIdx) {
+        // Revert previous partner
+        if (gtileDrag.swapIdx >= 0) {
+          Object.assign(gtileTabRects[gtileDrag.swapIdx], gtileDrag.origRects[gtileDrag.swapIdx]);
+        }
+        if (bestIdx >= 0) {
+          // Partner takes the dragged region's place; ghost marks the landing zone
+          Object.assign(gtileTabRects[bestIdx], gtileDrag.origRects[gtileDrag.idx]);
+          if (gtileGhostEl) gtileGhostEl.style.inset = gtileInset(gtileDrag.origRects[bestIdx]);
+        } else if (gtileGhostEl) {
+          // No partner: ghost at drag origin
+          gtileGhostEl.style.inset = gtileInset(gtileDrag.origRects[gtileDrag.idx]);
+        }
+        gtileDrag.swapIdx = bestIdx;
+        updateGtileOverlay();
+      }
+    }, passiveSig);
+
+    document.addEventListener('mouseup', () => {
+      if (!gtileMode || gtileSubMode !== 'move') { _gtileMoveMouseDown = null; return; }
+      if (!_gtileMoveMouseDown) return;
+
+      if (gtileDrag && gtileDrag.isDragging) {
+        const draggedEl = gtileRegionElements.get(gtileTabRects[gtileDrag.idx]?.tab);
+        if (draggedEl) {
+          draggedEl.classList.remove('gtile-dragging');
+          draggedEl.style.transition = '';
+        }
+        if (gtileGhostEl) gtileGhostEl.style.display = 'none';
+
+        const { idx: aIdx, swapIdx: bIdx, origRects } = gtileDrag;
+        // Restore original rects (the real swap re-maps them from the tree)
+        gtileTabRects.forEach((r, i) => Object.assign(r, origRects[i]));
+        gtileDrag = null;
+        if (bIdx >= 0) {
+          performGtileSwapByIndex(aIdx, bIdx);
+          flashGtileGrid('gtile-rotated'); // green-ish confirmation pulse
+        }
+        updateGtileOverlay();
+      }
+
+      _gtileMoveMouseDown = null;
+    }, sig);
+
+    // Resize mode: drag extends the selection (also outside the cells)
     document.addEventListener('mousemove', (e) => {
       if (!gtileMode || gtileSubMode !== 'resize' || !gtileMouseSelecting) return;
-      const gridRect = grid.getBoundingClientRect();
-      const col = Math.max(0, Math.min(GTILE_COLS - 1, Math.floor((e.clientX - gridRect.left) / gridRect.width * GTILE_COLS)));
-      const row = Math.max(0, Math.min(GTILE_ROWS - 1, Math.floor((e.clientY - gridRect.top) / gridRect.height * GTILE_ROWS)));
-      gtileCursor.col = col;
-      gtileCursor.row = row;
+      const cell = gtileCellAt(grid, e);
+      gtileCursor.col = cell.col;
+      gtileCursor.row = cell.row;
       updateGtileOverlay();
-    }, { passive: true, ..._gtileSig });
+    }, passiveSig);
 
-    // Release: disambiguate click (change target) vs drag (apply cell selection)
+    // Release: a drag applies the selection; a click keeps it as an anchor
+    // (Enter applies) or changes the resize target when it hit another pane.
     document.addEventListener('mouseup', (e) => {
       if (!gtileMode || gtileSubMode !== 'resize' || !gtileMouseSelecting) return;
       gtileMouseSelecting = false;
 
-      const CLICK_THRESHOLD = 5; // px — below this, treat as a click not a drag
-      const didDrag = resizeMouseStart &&
-        (Math.abs(e.clientX - resizeMouseStart.x) > CLICK_THRESHOLD ||
-         Math.abs(e.clientY - resizeMouseStart.y) > CLICK_THRESHOLD);
+      const start = _gtileResizeMouseStart;
+      _gtileResizeMouseStart = null;
+      const didDrag = start &&
+        (Math.abs(e.clientX - start.x) > GTILE_DRAG_THRESHOLD ||
+         Math.abs(e.clientY - start.y) > GTILE_DRAG_THRESHOLD);
 
-      if (!didDrag && resizeMouseStart?.potentialTargetTab) {
-        // Simple click on a non-target region — change resize target
-        gtileFocusedTab = resizeMouseStart.potentialTargetTab;
-        gtileSelecting = false;
-        gtileAnchor = null;
-        resizeMouseStart = null;
+      if (!didDrag) {
+        if (start?.potentialTargetTab) {
+          // Simple click on a non-target region — change resize target
+          gtileFocusedTab = start.potentialTargetTab;
+          gtileSelecting = false;
+          gtileAnchor = null;
+        }
         updateGtileOverlay();
         return;
       }
 
-      resizeMouseStart = null;
       // Drag completed — apply the layout (same as pressing Enter with a selection)
       if (gtileSelecting && gtileAnchor) {
         exitGtileMode(true);
       }
-    }, _gtileSig);
-
+    }, sig);
   }
 
   function flashGtileGrid(cls) {
@@ -9994,9 +9964,7 @@
       } else if (root.direction === 'column') {
         root.direction = 'row';
       }
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      splitter.applyGridLayout(root);
+      commitSplitTree(viewData, root);
       return true;
     }
 
@@ -10100,10 +10068,7 @@
       }
 
       // Apply
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      viewData.layoutTree = newRoot;
-      splitter.applyGridLayout(newRoot);
+      commitSplitTree(viewData, newRoot);
       return true;
     }
 
@@ -10133,10 +10098,7 @@
       // Currently all-columns → next is all-rows
       const newRoot = new classes4.SplitNode('column', 100);
       newRoot.children = allTabs4.map(t => new classes4.LeafNode(t, size4));
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      viewData.layoutTree = newRoot;
-      splitter.applyGridLayout(newRoot);
+      commitSplitTree(viewData, newRoot);
     } else if (isAllLeaves4 && root.direction === 'column') {
       // Currently all-rows → next is toggle directions (back to nested layout)
       // Rebuild as default 2x2 grid (row of two columns)
@@ -10151,18 +10113,12 @@
 
       const newRoot = new classes4.SplitNode('row', 100);
       newRoot.children = [leftNode, rightNode];
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      viewData.layoutTree = newRoot;
-      splitter.applyGridLayout(newRoot);
+      commitSplitTree(viewData, newRoot);
     } else {
       // Nested layout → next is all-columns
       const newRoot = new classes4.SplitNode('row', 100);
       newRoot.children = allTabs4.map(t => new classes4.LeafNode(t, size4));
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      viewData.layoutTree = newRoot;
-      splitter.applyGridLayout(newRoot);
+      commitSplitTree(viewData, newRoot);
     }
     return true;
   }
@@ -10315,28 +10271,21 @@
       }
     }
 
-    // Find valid rectangular partition of remaining space
-    const remainingRects = partitionRemainingSpace(occupied, otherTabs.length, GTILE_COLS, GTILE_ROWS);
-    if (!remainingRects) {
+    const classes = getNodeClasses();
+    if (!classes) {
+      reportError('gTile', 'could not get split node classes');
+      return;
+    }
+
+    // Best tiling of the remaining space, other tabs assigned by proximity
+    const assignedRects = chooseRemainingLayout(focusedRect, otherTabs, occupied, classes);
+    if (!assignedRects) {
       log('gTile: No valid layout found — selection leaves no valid partition for remaining tabs');
       flashGtileError();
       return;
     }
 
-    // Assign other tabs to remaining regions by proximity to their current positions
-    const assignedRects = assignTabsToRegions(otherTabs, remainingRects);
-
-    // Build the final set of rects
-    const allRects = [focusedRect, ...assignedRects];
-
-    // Build split tree from rectangles
-    const classes = getNodeClasses();
-    if (!classes) {
-      log('gTile: Could not get node classes');
-      return;
-    }
-
-    const tree = buildSplitTreeFromRects(allRects, GTILE_COLS, GTILE_ROWS, classes);
+    const tree = buildSplitTreeFromRects([focusedRect, ...assignedRects], GTILE_COLS, GTILE_ROWS, classes);
     if (!tree) {
       log('gTile: Failed to build split tree from rectangles');
       flashGtileError();
@@ -10345,13 +10294,10 @@
 
     // Apply the new layout
     try {
-      splitter.removeSplitters();
-      splitter._tabToSplitNode.clear();
-      viewData.layoutTree = tree;
-      splitter.applyGridLayout(tree);
+      commitSplitTree(viewData, tree);
       log('gTile: Layout applied successfully');
     } catch (e) {
-      log(`gTile: Error applying layout: ${e}`);
+      reportError('gTile: applying layout failed', e);
     }
   }
 
@@ -10363,98 +10309,85 @@
     }
   }
 
-  function partitionRemainingSpace(occupied, numRects, cols, rows) {
-    // Find first unoccupied cell (scan top-left to bottom-right)
-    let startR = -1, startC = -1;
-    for (let r = 0; r < rows && startR === -1; r++) {
-      for (let c = 0; c < cols && startR === -1; c++) {
-        if (!occupied[r][c]) { startR = r; startC = c; }
-      }
-    }
-
-    if (startR === -1) {
-      return numRects === 0 ? [] : null;
-    }
-    if (numRects === 0) return null;
-
-    // Try all possible rectangles starting from (startR, startC)
-    for (let endC = startC + 1; endC <= cols; endC++) {
-      // Check column validity at startR
-      if (occupied[startR][endC - 1]) break;
-
-      for (let endR = startR + 1; endR <= rows; endR++) {
-        // Check if entire row strip from startC..endC is unoccupied at row endR-1
-        let rowValid = true;
-        for (let c = startC; c < endC; c++) {
-          if (occupied[endR - 1][c]) { rowValid = false; break; }
-        }
-        if (!rowValid) break;
-
-        // Also verify full rectangle is unoccupied (handles irregular previous placements)
-        let rectValid = true;
-        for (let r = startR; r < endR && rectValid; r++) {
-          for (let c = startC; c < endC && rectValid; c++) {
-            if (occupied[r][c]) rectValid = false;
-          }
-        }
-        if (!rectValid) break;
-
-        // Try this rectangle
-        const newOccupied = occupied.map(row => [...row]);
-        for (let r = startR; r < endR; r++) {
-          for (let c = startC; c < endC; c++) {
-            newOccupied[r][c] = true;
-          }
-        }
-
-        const rest = partitionRemainingSpace(newOccupied, numRects - 1, cols, rows);
-        if (rest !== null) {
-          return [{ col1: startC, row1: startR, col2: endC, row2: endR }, ...rest];
+  // All ways to tile the unoccupied cells with exactly numRects rectangles.
+  // The grid is 6×4 and at most 3 other panes remain, so this stays small.
+  function enumeratePartitions(occupied, numRects, cols, rows, limit = 5000) {
+    const results = [];
+    const walk = (occ, left, acc) => {
+      if (results.length >= limit) return;
+      let startR = -1, startC = -1;
+      for (let r = 0; r < rows && startR === -1; r++) {
+        for (let c = 0; c < cols && startR === -1; c++) {
+          if (!occ[r][c]) { startR = r; startC = c; }
         }
       }
-    }
-
-    return null;
+      if (startR === -1) {
+        if (left === 0) results.push(acc);
+        return;
+      }
+      if (left === 0) return;
+      for (let endC = startC + 1; endC <= cols && !occ[startR][endC - 1]; endC++) {
+        for (let endR = startR + 1; endR <= rows; endR++) {
+          let free = true;
+          for (let c = startC; c < endC && free; c++) if (occ[endR - 1][c]) free = false;
+          if (!free) break;
+          const next = occ.map(row => [...row]);
+          for (let r = startR; r < endR; r++) for (let c = startC; c < endC; c++) next[r][c] = true;
+          walk(next, left - 1, [...acc, { col1: startC, row1: startR, col2: endC, row2: endR }]);
+        }
+      }
+    };
+    walk(occupied, numRects, []);
+    return results;
   }
 
-  function assignTabsToRegions(tabs, regions) {
-    // Greedy assignment: match each tab to the closest unassigned region
-    const splitter = window.gZenViewSplitter;
-    const assigned = [];
-    const usedRegions = new Set();
-
-    // Compute current center of each tab
-    const tabCenters = tabs.map(tab => {
-      const node = splitter.getSplitNodeFromTab(tab);
-      if (!node?.positionToRoot) return { x: 50, y: 50 };
-      const pos = node.positionToRoot;
-      return {
-        x: (pos.left + (100 - pos.right)) / 2,
-        y: (pos.top + (100 - pos.bottom)) / 2,
-      };
+  function permutations(items) {
+    if (items.length <= 1) return [items];
+    const out = [];
+    items.forEach((item, i) => {
+      for (const rest of permutations([...items.slice(0, i), ...items.slice(i + 1)])) out.push([item, ...rest]);
     });
+    return out;
+  }
 
-    // Compute center of each region (in percentage space)
-    const regionCenters = regions.map(r => ({
-      x: ((r.col1 + r.col2) / 2) / GTILE_COLS * 100,
-      y: ((r.row1 + r.row2) / 2) / GTILE_ROWS * 100,
-    }));
-
-    for (let t = 0; t < tabs.length; t++) {
-      let bestRegion = -1;
-      let bestDist = Infinity;
-      for (let ri = 0; ri < regions.length; ri++) {
-        if (usedRegions.has(ri)) continue;
-        const dx = tabCenters[t].x - regionCenters[ri].x;
-        const dy = tabCenters[t].y - regionCenters[ri].y;
-        const dist = dx * dx + dy * dy;
-        if (dist < bestDist) { bestDist = dist; bestRegion = ri; }
+  // Pick the best way to lay out the other panes around the focused one:
+  // balanced areas, no slivers, and panes staying close to where they were
+  // (the old depth-first search returned the first, often lopsided, tiling:
+  // LEAP-B-11). Returns [{tab, col1, row1, col2, row2}] or null.
+  function chooseRemainingLayout(focusedRect, otherTabs, occupied, classes) {
+    const splitter = window.gZenViewSplitter;
+    const centerOf = (tab) => {
+      const pos = splitter.getSplitNodeFromTab(tab)?.positionToRoot;
+      return pos ? { x: (pos.left + 100 - pos.right) / 2, y: (pos.top + 100 - pos.bottom) / 2 } : { x: 50, y: 50 };
+    };
+    const tabCenters = otherTabs.map(centerOf);
+    // Physical cell size: the grid is drawn 16:9, so a cell is (16/6):(9/4)
+    const cellW = 16 / GTILE_COLS, cellH = 9 / GTILE_ROWS;
+    let best = null;
+    for (const regions of enumeratePartitions(occupied, otherTabs.length, GTILE_COLS, GTILE_ROWS)) {
+      const areas = regions.map(r => (r.col2 - r.col1) * (r.row2 - r.row1));
+      const total = areas.reduce((a, b) => a + b, 0);
+      const imbalance = (Math.max(...areas) - Math.min(...areas)) / total;
+      const sliver = regions.reduce((sum, r) => {
+        const w = (r.col2 - r.col1) * cellW, h = (r.row2 - r.row1) * cellH;
+        return sum + Math.max(0, Math.max(w / h, h / w) - 2.5);
+      }, 0);
+      const centers = regions.map(r => ({
+        x: ((r.col1 + r.col2) / 2) / GTILE_COLS * 100,
+        y: ((r.row1 + r.row2) / 2) / GTILE_ROWS * 100,
+      }));
+      for (const order of permutations(regions.map((_, i) => i))) {
+        const moved = order.reduce((sum, ri, t) =>
+          sum + Math.hypot(tabCenters[t].x - centers[ri].x, tabCenters[t].y - centers[ri].y), 0) / (100 * otherTabs.length);
+        const score = imbalance * 3 + sliver + moved;
+        if (best && score >= best.score) continue;
+        const assigned = order.map((ri, t) => ({ tab: otherTabs[t], ...regions[ri] }));
+        // Only layouts expressible as nested row/column splits are usable
+        if (!buildSplitTreeFromRects([focusedRect, ...assigned], GTILE_COLS, GTILE_ROWS, classes)) continue;
+        best = { score, assigned };
       }
-      usedRegions.add(bestRegion);
-      assigned.push({ tab: tabs[t], ...regions[bestRegion] });
     }
-
-    return assigned;
+    return best ? best.assigned : null;
   }
 
   function buildSplitTreeFromRects(tabRects, cols, rows, classes) {
