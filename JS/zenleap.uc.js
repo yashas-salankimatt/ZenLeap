@@ -13312,7 +13312,23 @@
     log('Settings modal created');
   }
 
+  // Re-rendering replaces every control: keep keyboard focus on the same row's control
+  // (a change made with the keyboard would otherwise drop focus out of Settings).
   function renderSettingsContent() {
+    const focused = document.activeElement;
+    const row = focused?.closest?.('#zenleap-settings-body .zenleap-settings-row');
+    const rowId = row?.dataset.id;
+    const kind = !rowId ? null
+      : focused.matches('.zenleap-key-recorder') ? '.zenleap-key-recorder'
+      : focused.matches('.zenleap-settings-reset-btn') ? '.zenleap-settings-reset-btn'
+      : focused.localName;
+    renderSettingsBody();
+    if (rowId && kind) {
+      document.querySelector(`#zenleap-settings-body .zenleap-settings-row[data-id="${CSS.escape(rowId)}"] ${kind}`)?.focus();
+    }
+  }
+
+  function renderSettingsBody() {
     const body = document.getElementById('zenleap-settings-body');
     if (!body) return;
     const scrollTop = body.scrollTop;
@@ -18445,6 +18461,21 @@
 
     // Handle settings mode - Escape to close, Enter to update from About tab
     if (settingsMode) {
+      // Tab cycles through Settings' own controls instead of leaving for the toolbar
+      if (event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.metaKey && !settingsRecordingId) {
+        const container = document.getElementById('zenleap-settings-container');
+        const focusables = container ? [...container.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+          .filter(el => !el.disabled && el.getClientRects().length > 0) : [];
+        if (focusables.length) {
+          const i = focusables.indexOf(document.activeElement);
+          const wrap = event.shiftKey ? (i <= 0) : (i === -1 || i === focusables.length - 1);
+          if (wrap) {
+            consumeEvent(event);
+            focusables[event.shiftKey ? focusables.length - 1 : 0].focus();
+            return;
+          }
+        }
+      }
       // Escape that just closed a <select> dropdown was the dropdown's
       if (event.key === 'Escape' && !settingsRecordingId && !_selectPopupJustClosed) {
         consumeEvent(event);
