@@ -137,6 +137,7 @@ ZEN_WAS_RUNNING=false
 ZEN_NEEDS_RESTART=false
 INSTALLED=()
 SKIPPED_COUNT=0
+PENDING_MSGS=()
 QUIET=false
 
 # >>> zen-paths.sh (generated from scripts/lib/zen-paths.sh by scripts/sync-lib.sh; edit it there)
@@ -206,6 +207,7 @@ fd0925fdbae19e3c3503ec0e2624bfeadbf63b08d4cb1e7000e899b158c393c5  profile/chrome
 23453d331dfaf7b0b01fc7a8d220e21bdedd568b48c2d26cb05a256704850f74  profile/chrome/resources/userChrome.au.css
 "
 ZP_BOM=$'\xef\xbb\xbf'
+ZP_US=$'\037'   # field separator for zp_autoconfig_setting
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
 # values must be ignored, and Firefox does so).
@@ -940,21 +942,93 @@ zp_zen_version() {
     zp_ini_value "$1/application.ini" App Version
 }
 
-# What an installation directory's autoconfig does at startup:
-#   fxac          fx-autoconfig's config.js and a pref file that enables it
-#   fxac-noprefs  fx-autoconfig's config.js, but no general.config.filename pref
-#   sine          Sine's bootloader (runs only Sine mods)
-#   foreign       some other autoconfig file (or an old fx-autoconfig)
-#   missing       no config.js
+# Value of a string pref in a default-prefs file (the last line that sets it
+# wins; commented-out lines don't count). Fails if the file doesn't set it.
+# Usage: zp_pref_file_value <file> <pref-name>
+zp_pref_file_value() {
+    awk -v key="$2" '
+        BEGIN { sep = "^[ \t]*,[ \t]*[\"\047]" }
+        { line = $0; sub(/\r$/, "", line) }
+        line ~ /^[ \t]*\/\// { next }
+        {
+            i = index(line, "\"" key "\""); if (i == 0) i = index(line, "\047" key "\047"); if (i == 0) next
+            rest = substr(line, i + length(key) + 2)
+            if (match(rest, sep)) {
+                q = substr(rest, RLENGTH, 1); rest = substr(rest, RLENGTH + 1)
+                j = index(rest, q); if (j > 0) { val = substr(rest, 1, j - 1); found = 1 }
+            }
+        }
+        END { if (found) print val; else exit 1 }
+    ' "$1" 2>/dev/null
+}
+
+# The autoconfig file an installation directory runs (general.config.filename,
+# relative to it) and the pref file that sets it, as "<value><ZP_US><file>";
+# nothing when no file sets it. Zen reads <dir>/defaults/pref/*.js in reverse
+# alphabetical order, then <dir>/browser/defaults/preferences/*.js, and the
+# last value read wins (verified with Zen 1.22.3b; the same as the ZenRipple
+# installer).
+zp_autoconfig_setting() {
+    local layer f v out=""
+    for layer in "$1/defaults/pref" "$1/browser/defaults/preferences"; do
+        [ -d "$layer" ] || continue
+        while IFS= read -r f; do
+            if v=$(zp_pref_file_value "$f" general.config.filename); then out="$v$ZP_US$f"; fi
+        done < <(find "$layer" -maxdepth 1 \( -type f -o -type l \) -iname '*.js' 2>/dev/null | LC_ALL=C sort -r)
+    done
+    if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+    return 0
+}
+
+# What an installation directory's autoconfig does at startup (the file that
+# general.config.filename names; config.js when no pref names one):
+#   fxac          fx-autoconfig's config.js, and a pref that makes Zen run it
+#   fxac-noprefs  fx-autoconfig's config.js, but no pref makes Zen run it
+#   sine          Sine's bootloader, which runs only Sine mods (sine-noprefs:
+#                 its config.js without the pref)
+#   foreign       Zen runs some other autoconfig file (an enterprise
+#                 mozilla.cfg, an old fx-autoconfig, ...), or autoconfig is
+#                 switched off (an empty general.config.filename)
+#   missing       no config.js (and no pref naming another file)
+# Same classes as the ZenRipple installer.
 zp_program_status() {
-    if [ ! -f "$1/config.js" ]; then
-        echo missing
-    elif grep -q 'userchromejs/content/boot.sys.mjs' "$1/config.js" 2>/dev/null; then
-        if grep -qs 'general.config.filename' "$1"/defaults/pref/*.js; then echo fxac; else echo fxac-noprefs; fi
-    elif grep -q 'sine.sys.mjs' "$1/config.js" 2>/dev/null; then
-        echo sine
+    local setting file suffix=""
+    setting=$(zp_autoconfig_setting "$1")
+    if [ -z "$setting" ]; then
+        file=config.js
+        suffix=-noprefs
+    else
+        file=${setting%%"$ZP_US"*}
+    fi
+    case "$file" in
+        ""|*/*) echo foreign; return 0 ;;
+    esac
+    if [ ! -f "$1/$file" ]; then
+        if [ "$file" = config.js ]; then echo missing; else echo foreign; fi
+    elif grep -q 'userchromejs/content/boot.sys.mjs' "$1/$file" 2>/dev/null; then
+        echo "fxac$suffix"
+    elif grep -q 'sine.sys.mjs' "$1/$file" 2>/dev/null; then
+        echo "sine$suffix"
     else
         echo foreign
+    fi
+}
+
+# For messages: the autoconfig file an installation directory runs and where
+# that is set.
+zp_describe_autoconfig() {
+    local setting file src
+    setting=$(zp_autoconfig_setting "$1")
+    if [ -z "$setting" ]; then
+        printf '%s\n' "$1/config.js"
+        return 0
+    fi
+    file=${setting%%"$ZP_US"*}
+    src=${setting#*"$ZP_US"}
+    if [ -z "$file" ]; then
+        printf 'autoconfig switched off (general.config.filename is empty in %s)\n' "$src"
+    else
+        printf '%s (general.config.filename in %s)\n' "$1/$file" "$src"
     fi
 }
 
@@ -1657,14 +1731,15 @@ ensure_fxautoconfig_program() {
             set_gre_state "$dir" ok
             return 0
             ;;
-        sine)
+        sine|sine-noprefs)
             warn "$dir starts Sine's bootloader, which only runs Sine mods."
             set_gre_state "$dir" sine
             return 0
             ;;
         foreign)
-            warn "$dir/config.js is not fx-autoconfig's (another loader, or an old fx-autoconfig); leaving it alone."
-            echo "  ZenLeap in chrome/JS only loads if that file loads fx-autoconfig's boot.sys.mjs."
+            warn "Zen's autoconfig setup in $dir loads neither fx-autoconfig nor Sine; leaving it alone:"
+            echo "  $(zp_describe_autoconfig "$dir")"
+            echo "  ZenLeap in chrome/JS only loads once that loads fx-autoconfig's boot.sys.mjs."
             set_gre_state "$dir" foreign
             return 0
             ;;
@@ -1674,10 +1749,15 @@ ensure_fxautoconfig_program() {
     fxac_fetch || die "Could not get fx-autoconfig: $ZP_ERROR"
     if mkdir -p "$dir/defaults/pref" 2>/dev/null && \
        { [ "$status" != "missing" ] || zp_copy_file "$FXAC_SRC/program/config.js" "$dir/config.js"; } && \
-       zp_copy_file "$FXAC_SRC/program/defaults/pref/config-prefs.js" "$dir/defaults/pref/config-prefs.js" && \
-       [ "$(zp_program_status "$dir")" = "fxac" ]; then
-        ok "Installed fx-autoconfig's loader files into $dir"
-        set_gre_state "$dir" ok
+       zp_copy_file "$FXAC_SRC/program/defaults/pref/config-prefs.js" "$dir/defaults/pref/config-prefs.js"; then
+        if [ "$(zp_program_status "$dir")" = "fxac" ]; then
+            ok "Installed fx-autoconfig's loader files into $dir"
+            set_gre_state "$dir" ok
+        else
+            # Another pref file wins over config-prefs.js
+            warn "Copied fx-autoconfig's files into $dir, but Zen still runs: $(zp_describe_autoconfig "$dir")"
+            set_gre_state "$dir" foreign
+        fi
         return 0
     fi
 
@@ -1816,10 +1896,11 @@ skip_profile() {
 # Install ZenLeap into the current profile (profile index $1) as planned ($2,
 # see install_plan); $3 is its Zen installation directory.
 install_zenleap() {
-    local i="$1" plan="$2" gre="$3" status version sine_dir ans
+    local i="$1" plan="$2" gre="$3" status state version sine_dir ans name="${ZP_PROFILE_NAMES[$1]}"
     version=$(zp_file_version "$SOURCE_DIR/JS/zenleap.uc.js")
     sine_dir=$(zp_sine_zenleap_dir "$PROFILE_DIR" || true)
     status=$(program_status_of "$gre")
+    state=$(gre_state "$gre" || true)
 
     case "$plan" in
         sine-update|sine-ask|skip-sine)
@@ -1905,6 +1986,20 @@ install_zenleap() {
         ok "Created zenleap-themes.json template"
     fi
     INSTALLED+=("$i")
+
+    # Anything that keeps it from loading? (Missing program files are reported
+    # with their commands; see FXAC_PROGRAM_CMDS.)
+    case "$state" in
+        foreign) PENDING_MSGS+=("$name: Zen's autoconfig setup does not load fx-autoconfig: $(zp_describe_autoconfig "$gre"). ZenLeap loads once it loads fx-autoconfig's boot.sys.mjs.") ;;
+        sine) PENDING_MSGS+=("$name: Zen's config.js in $gre starts Sine's bootloader, which does not run scripts in chrome/JS.") ;;
+    esac
+    if [ ! -f "$CHROME_DIR/utils/boot.sys.mjs" ]; then
+        if [ -f "$CHROME_DIR/utils/boot.jsm" ]; then
+            PENDING_MSGS+=("$name: its fx-autoconfig loader (chrome/utils/boot.jsm) is too old for this Zen; run the installer without --yes to update it.")
+        else
+            PENDING_MSGS+=("$name: chrome/utils is not fx-autoconfig's loader.")
+        fi
+    fi
 }
 
 # Uninstall ZenLeap from the current profile
@@ -2150,16 +2245,23 @@ do_install() {
         warn "ZenLeap was not installed into any profile."
         exit 2
     fi
-    if [ "$FXAC_PROGRAM_PENDING" = true ]; then
+    if [ "$FXAC_PROGRAM_PENDING" = true ] || [ ${#PENDING_MSGS[@]} -gt 0 ]; then
         echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
         echo -e "${YELLOW}║              One more step needed                         ║${NC}"
         echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
         echo ""
-        echo "ZenLeap is installed in your profile, but it will not load until fx-autoconfig"
-        echo "is in the Zen installation. Run these commands, then (re)start Zen:"
-        echo ""
-        echo "$FXAC_PROGRAM_CMDS"
-        echo ""
+        if [ "$FXAC_PROGRAM_PENDING" = true ]; then
+            echo "ZenLeap is installed in your profile, but it will not load until fx-autoconfig"
+            echo "is in the Zen installation. Run these commands, then (re)start Zen:"
+            echo ""
+            echo "$FXAC_PROGRAM_CMDS"
+            echo ""
+        fi
+        if [ ${#PENDING_MSGS[@]} -gt 0 ]; then
+            echo "ZenLeap is installed, but it will not load yet:"
+            printf '  - %s\n' "${PENDING_MSGS[@]}"
+            echo ""
+        fi
         print_usage_hint
         return 0
     fi

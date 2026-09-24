@@ -264,7 +264,7 @@ printf "// some other autoconfig\nlockPref('a', 1);\n" > "$APP/config.js"
 cp "$APP/config.js" "$T/other-config"
 run install.sh install --yes --zen-path "$APP"
 check "other config.js: untouched" same "$T/other-config" "$APP/config.js"
-check "other config.js: warns" has "$OUT" "is not fx-autoconfig's"
+check "other config.js: warns" has "$OUT" "loads neither fx-autoconfig nor Sine"
 check "other config.js: profile part still installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 printf "Components.utils.import('chrome://userchromejs/content/boot.jsm');\n" > "$APP/config.js"
 cp "$APP/config.js" "$T/jsm-config"
@@ -619,6 +619,8 @@ check "... nothing in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 check "... chrome/utils untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 run install.sh install --yes --loader fx-autoconfig --zen-path "$APP"
 check "--loader fx-autoconfig + another loader: copied, exit 0" rc_is 0
+check "... says it will not load yet" has "$OUT" "chrome/utils is not fx-autoconfig's loader"
+check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 check "... chrome/utils still untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 
 # 32. --yes without --profile: update where ZenLeap is, else install into the default  [REV-LINST-08]
@@ -761,6 +763,15 @@ check "... explains" has "$OUT" "still need it: default-release"
 run install.sh uninstall --yes --remove-fxautoconfig --zen-path "$APP"
 check "--remove-fxautoconfig, the last user: config.js removed" missing "$APP/config.js"
 
+# 37. A config.js that cannot load ZenLeap: no "Installation Complete!"  [REV-LINST-16]
+new_home foreignsum
+mk_two_profiles "$H/.config/zen"
+printf '// old fx-autoconfig\nChromeUtils.import("chrome://userchromejs/content/boot.jsm");\n' > "$APP/config.js"
+run install.sh install --yes --zen-path "$APP"
+check "old/foreign config.js: installed, exit 0" rc_is 0
+check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
+check "... says what keeps it from loading" has "$OUT" "does not load fx-autoconfig"
+
 # 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
 #     (`sh` on macOS) works  [REV-LINST-17]
 new_home notbash
@@ -786,6 +797,50 @@ env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" TMPDIR="$T" FAKE_ROOT="$T" FAKE_F
 RC=$?
 check "bash --posix (macOS sh): exit 0" rc_is 0
 check "bash --posix (macOS sh): installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+
+# 40. The autoconfig file Zen really runs decides (the ZenRipple installer's
+#     rules): the alphabetically first pref file in defaults/pref wins,
+#     browser/defaults/preferences overrides it, commented-out lines don't count;
+#     an enterprise mozilla.cfg or an empty filename is left alone
+new_home autoconfig
+R="$H/.config/zen"
+mk_two_profiles "$R"
+mkdir -p "$APP/defaults/pref"
+printf 'pref("general.config.filename", "mozilla.cfg");\npref("general.config.obscure_value", 0);\n' > "$APP/defaults/pref/autoconfig.js"
+printf '// the organisation'"'"'s settings\nlockPref("browser.x", 1);\n' > "$APP/mozilla.cfg"
+run install.sh install --yes --zen-path "$APP"
+check "enterprise mozilla.cfg: no config.js added" missing "$APP/config.js"
+check "... no config-prefs.js added" missing "$APP/defaults/pref/config-prefs.js"
+check "... names the file Zen runs and where that is set" has "$OUT" "$APP/mozilla.cfg (general.config.filename in $APP/defaults/pref/autoconfig.js)"
+check "... ZenLeap copied, the summary says it won't load yet" has "$OUT" "does not load fx-autoconfig"
+check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
+rm -f "$APP/mozilla.cfg" "$APP/defaults/pref/autoconfig.js"
+printf "ChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs');\n" > "$APP/config.js"
+printf 'pref("general.config.filename", "config.js");\n' > "$APP/defaults/pref/config-prefs.js"
+mkdir -p "$APP/browser/defaults/preferences"
+printf 'pref("general.config.filename", "");\n' > "$APP/browser/defaults/preferences/zz-off.js"
+run install.sh install --yes --zen-path "$APP"
+check "browser/defaults/preferences switches autoconfig off: reported" has "$OUT" "autoconfig switched off (general.config.filename is empty in $APP/browser/defaults/preferences/zz-off.js)"
+check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
+rm -rf "$APP/browser"
+printf '// pref("general.config.filename", "other.cfg");\n' > "$APP/defaults/pref/a-first.js"
+run install.sh install --yes --zen-path "$APP"
+check "a commented-out pref line doesn't count" has "$OUT" "fx-autoconfig is set up"
+printf 'pref("general.config.filename", "other.cfg");\n' > "$APP/defaults/pref/a-first.js"
+: > "$APP/other.cfg"
+run install.sh install --yes --zen-path "$APP"
+check "the alphabetically first pref file wins" has "$OUT" "$APP/other.cfg (general.config.filename in $APP/defaults/pref/a-first.js)"
+mv "$APP/defaults/pref/a-first.js" "$APP/defaults/pref/z-last.js"
+run install.sh install --yes --zen-path "$APP"
+check "a later pref file loses" has "$OUT" "fx-autoconfig is set up"
+new_home sinenoprefs
+mk_two_profiles "$H/.config/zen"
+printf "ChromeUtils.importESModule('chrome://userscripts/content/sine.sys.mjs');\n" > "$APP/config.js"
+cp "$APP/config.js" "$T/sine-np"
+run install.sh install --yes --zen-path "$APP"
+check "Sine's config.js without its pref: untouched" same "$T/sine-np" "$APP/config.js"
+check "... no fx-autoconfig pref file added" missing "$APP/defaults/pref/config-prefs.js"
+check "... skipped, exit 2" rc_is 2
 
 # 41. A path with a backslash: files are hashed from stdin (GNU sha256sum
 #     escapes such names in its output)

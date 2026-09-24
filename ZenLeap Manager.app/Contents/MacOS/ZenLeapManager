@@ -76,6 +76,7 @@ fd0925fdbae19e3c3503ec0e2624bfeadbf63b08d4cb1e7000e899b158c393c5  profile/chrome
 23453d331dfaf7b0b01fc7a8d220e21bdedd568b48c2d26cb05a256704850f74  profile/chrome/resources/userChrome.au.css
 "
 ZP_BOM=$'\xef\xbb\xbf'
+ZP_US=$'\037'   # field separator for zp_autoconfig_setting
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
 # values must be ignored, and Firefox does so).
@@ -810,21 +811,93 @@ zp_zen_version() {
     zp_ini_value "$1/application.ini" App Version
 }
 
-# What an installation directory's autoconfig does at startup:
-#   fxac          fx-autoconfig's config.js and a pref file that enables it
-#   fxac-noprefs  fx-autoconfig's config.js, but no general.config.filename pref
-#   sine          Sine's bootloader (runs only Sine mods)
-#   foreign       some other autoconfig file (or an old fx-autoconfig)
-#   missing       no config.js
+# Value of a string pref in a default-prefs file (the last line that sets it
+# wins; commented-out lines don't count). Fails if the file doesn't set it.
+# Usage: zp_pref_file_value <file> <pref-name>
+zp_pref_file_value() {
+    awk -v key="$2" '
+        BEGIN { sep = "^[ \t]*,[ \t]*[\"\047]" }
+        { line = $0; sub(/\r$/, "", line) }
+        line ~ /^[ \t]*\/\// { next }
+        {
+            i = index(line, "\"" key "\""); if (i == 0) i = index(line, "\047" key "\047"); if (i == 0) next
+            rest = substr(line, i + length(key) + 2)
+            if (match(rest, sep)) {
+                q = substr(rest, RLENGTH, 1); rest = substr(rest, RLENGTH + 1)
+                j = index(rest, q); if (j > 0) { val = substr(rest, 1, j - 1); found = 1 }
+            }
+        }
+        END { if (found) print val; else exit 1 }
+    ' "$1" 2>/dev/null
+}
+
+# The autoconfig file an installation directory runs (general.config.filename,
+# relative to it) and the pref file that sets it, as "<value><ZP_US><file>";
+# nothing when no file sets it. Zen reads <dir>/defaults/pref/*.js in reverse
+# alphabetical order, then <dir>/browser/defaults/preferences/*.js, and the
+# last value read wins (verified with Zen 1.22.3b; the same as the ZenRipple
+# installer).
+zp_autoconfig_setting() {
+    local layer f v out=""
+    for layer in "$1/defaults/pref" "$1/browser/defaults/preferences"; do
+        [ -d "$layer" ] || continue
+        while IFS= read -r f; do
+            if v=$(zp_pref_file_value "$f" general.config.filename); then out="$v$ZP_US$f"; fi
+        done < <(find "$layer" -maxdepth 1 \( -type f -o -type l \) -iname '*.js' 2>/dev/null | LC_ALL=C sort -r)
+    done
+    if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+    return 0
+}
+
+# What an installation directory's autoconfig does at startup (the file that
+# general.config.filename names; config.js when no pref names one):
+#   fxac          fx-autoconfig's config.js, and a pref that makes Zen run it
+#   fxac-noprefs  fx-autoconfig's config.js, but no pref makes Zen run it
+#   sine          Sine's bootloader, which runs only Sine mods (sine-noprefs:
+#                 its config.js without the pref)
+#   foreign       Zen runs some other autoconfig file (an enterprise
+#                 mozilla.cfg, an old fx-autoconfig, ...), or autoconfig is
+#                 switched off (an empty general.config.filename)
+#   missing       no config.js (and no pref naming another file)
+# Same classes as the ZenRipple installer.
 zp_program_status() {
-    if [ ! -f "$1/config.js" ]; then
-        echo missing
-    elif grep -q 'userchromejs/content/boot.sys.mjs' "$1/config.js" 2>/dev/null; then
-        if grep -qs 'general.config.filename' "$1"/defaults/pref/*.js; then echo fxac; else echo fxac-noprefs; fi
-    elif grep -q 'sine.sys.mjs' "$1/config.js" 2>/dev/null; then
-        echo sine
+    local setting file suffix=""
+    setting=$(zp_autoconfig_setting "$1")
+    if [ -z "$setting" ]; then
+        file=config.js
+        suffix=-noprefs
+    else
+        file=${setting%%"$ZP_US"*}
+    fi
+    case "$file" in
+        ""|*/*) echo foreign; return 0 ;;
+    esac
+    if [ ! -f "$1/$file" ]; then
+        if [ "$file" = config.js ]; then echo missing; else echo foreign; fi
+    elif grep -q 'userchromejs/content/boot.sys.mjs' "$1/$file" 2>/dev/null; then
+        echo "fxac$suffix"
+    elif grep -q 'sine.sys.mjs' "$1/$file" 2>/dev/null; then
+        echo "sine$suffix"
     else
         echo foreign
+    fi
+}
+
+# For messages: the autoconfig file an installation directory runs and where
+# that is set.
+zp_describe_autoconfig() {
+    local setting file src
+    setting=$(zp_autoconfig_setting "$1")
+    if [ -z "$setting" ]; then
+        printf '%s\n' "$1/config.js"
+        return 0
+    fi
+    file=${setting%%"$ZP_US"*}
+    src=${setting#*"$ZP_US"}
+    if [ -z "$file" ]; then
+        printf 'autoconfig switched off (general.config.filename is empty in %s)\n' "$src"
+    else
+        printf '%s (general.config.filename in %s)\n' "$1/$file" "$src"
     fi
 }
 
@@ -1099,7 +1172,9 @@ install_fxautoconfig_program() {
     if mkdir -p "$ZEN_RESOURCES/defaults/pref" 2>/dev/null && \
        { [ "$status" != missing ] || zp_copy_file "$FXAC_SRC/program/config.js" "$ZEN_RESOURCES/config.js"; } && \
        zp_copy_file "$FXAC_SRC/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"; then
-        return 0
+        # (another pref file may still win over config-prefs.js)
+        if [ "$(zp_program_status "$ZEN_RESOURCES")" = fxac ]; then return 0; fi
+        return 1
     fi
     if [ "$status" = missing ]; then
         # shellcheck disable=SC2016  # $1..$3 are expanded by the admin shell
@@ -1375,7 +1450,7 @@ do_install() {
             exit 1 ;;
     esac
     if [ "$status" = foreign ]; then
-        show_error "$ZEN_APP already contains a config.js that is not fx-autoconfig's (another loader, or an old fx-autoconfig).${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
+        show_error "Zen's autoconfig setup in $ZEN_APP loads neither fx-autoconfig nor Sine:${NL}$(zp_describe_autoconfig "$ZEN_RESOURCES")${NL}${NL}ZenLeap Manager will not replace it (another loader, an old fx-autoconfig, or an organisation's setup). Install ZenLeap through that loader instead."
         exit 1
     fi
 

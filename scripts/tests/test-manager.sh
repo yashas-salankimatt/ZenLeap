@@ -276,7 +276,8 @@ check "Sine's config.js: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
 printf "// custom autoconfig\n" > "$RES/config.js"
 cp "$RES/config.js" "$T/foreign-config"
 manager Install DEFAULT
-check "other config.js: error shown" has "$LOG" "not fx-autoconfig's"
+check "other config.js: error shown" has "$LOG" "loads neither fx-autoconfig nor Sine"
+check "other config.js: names the file Zen runs" has "$LOG" "$RES/config.js"
 check "other config.js: untouched" same "$T/foreign-config" "$RES/config.js"
 
 # H. Release fails verification
