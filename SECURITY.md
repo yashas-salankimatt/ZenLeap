@@ -7,34 +7,53 @@
 | 3.x     | Yes       |
 | < 3.0   | No        |
 
+ZenLeap supports Zen Browser 1.21.7b and newer (tested on 1.22.3b).
+
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in ZenLeap, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities
-2. Email the maintainer or send a private message via GitHub
+2. Contact the maintainer privately by email, at the address the maintainer's commits in this repository are made with (see `git log main`)
 3. Include a description of the vulnerability and steps to reproduce it
 4. Allow reasonable time for a fix before public disclosure
 
 ## Security Model
 
-ZenLeap runs as a userscript in the browser chrome context (via fx-autoconfig or Sine). This means it has the same privileges as any browser UI code. The script:
+ZenLeap is a userscript for the browser's own interface (chrome), loaded by fx-autoconfig or Sine. It runs with the same full privileges as the browser UI: it can read and change every tab, the profile's files and the browser's preferences. Install it, and any plugin, only from sources you trust.
 
-- Executes only in the main browser window (`chrome://browser/content/browser.xhtml`)
-- Does not inject code into web content pages
-- Does not intercept or modify web traffic
-- Does not access or store passwords, cookies, or browsing history
-- Stores all settings locally in the browser's preference system (`about:config`)
+What the script does:
 
-## Third-Party Code
+- It runs only in browser windows (`chrome://browser/content/browser.xhtml`).
+- It does not inject scripts into web pages and does not intercept or modify web traffic. Browse-mode tab previews are screenshots the browser renders for the tab (`drawSnapshot`); they are kept in memory only.
+- It does not read passwords or cookies.
 
-ZenLeap has no third-party runtime dependencies. The plugin system loads user-installed plugins from the local filesystem only.
+Data it stores, all locally in your profile:
+
+- Settings, essential-tab marks and update-check state: preferences (`uc.zenleap.*` in `about:config`).
+- Custom themes: `chrome/zenleap-themes.json`.
+- Plugins and their data: `chrome/zenleap-plugins/`, `chrome/zenleap-plugin-data.json`.
+- Workspace sessions you save: `zenleap-sessions/`. These contain the titles and URLs of the saved tabs. Tabs from private windows are never saved.
+- Settings exports: only where you save them.
+
+## Plugins
+
+Plugins (`chrome/zenleap-plugins/<id>/plugin.js`) run with full browser privileges, the same as ZenLeap itself; ZenLeap does not sandbox what they can access. A newly found plugin stays disabled until you enable it in the Plugin Manager ("Manage Plugins" in the command palette), and a disabled plugin's code is not run. Plugins can make network requests of their own (for example the Readwise Reader example talks to Readwise). `install-plugin.sh` only copies a plugin folder; review a plugin before enabling it.
 
 ## Network Access
 
-ZenLeap makes network requests only for:
+ZenLeap itself only contacts GitHub, and sends no data:
 
-- **Update checking** — fetches `zenleap.uc.js` from the GitHub repository to compare version numbers
-- **Self-updating** — downloads new versions from the GitHub repository when the user initiates an update
+- **Update check**: `api.github.com/repos/yashas-salankimatt/ZenLeap/releases/latest` for the latest release tag (automatically, at most as often as set in Settings > Advanced > Updates, or on "Check for Updates").
+- **Changelog**: `CHANGELOG.md` from the repository, shown in the update dialog.
+- **Self-update** (fx-autoconfig installs, only when you confirm): `JS/zenleap.uc.js` and `CHECKSUMS.sha256` of that release tag from `raw.githubusercontent.com`. The file is installed only if its SHA-256 matches the release's `CHECKSUMS.sha256` and its version matches the tag; it is written atomically and the previous version is kept as a backup. Installs managed by Sine are updated by Sine instead.
 
-No data is sent to any server. See the [Privacy section](README.md#privacy) in the README for details.
+The installers (`install.sh`, `install.ps1`, ZenLeap Manager) download the same verified release files, and fx-autoconfig from a pinned commit whose files are checked against SHA-256 hashes in the installer. If a release fails the check they install nothing and say how to install from a clone of the repository instead (which uses the clone's own files). They never run `sudo` by themselves and never kill Zen (the macOS Manager can quit it normally if you ask it to), and they only change files in the profiles you select (plus fx-autoconfig's two files in Zen's installation directory, when they are missing). They never replace another loader's files (Sine's, or an organisation's autoconfig setup).
+
+**Limitation:** the checksum is published in the same GitHub repository as the code. It protects against corrupted, truncated or mismatched downloads, but not against a compromise of the repository or the maintainer's GitHub account. Signed releases are planned.
+
+## Third-Party Code
+
+ZenLeap has no third-party runtime dependencies. It relies on a script loader you install separately: [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) (set up by the installers) or [Sine](https://github.com/CosmoCreeper/Sine).
+
+See also the [Privacy section](README.md#privacy) of the README.

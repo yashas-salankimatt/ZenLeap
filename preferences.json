@@ -1,15 +1,7 @@
 [
   {
-    "property": "uc.zenleap.debug",
-    "label": "Enable debug logging in Browser Console",
-    "type": "checkbox",
-    "disabledOn": []
-  },
-  {
-    "property": "uc.zenleap.current_indicator",
-    "label": "Current tab indicator character",
-    "placeholder": "· (default)",
-    "type": "string",
+    "type": "separator",
+    "label": "ZenLeap is configured in its own Settings panel: press Ctrl+Space, then ?, and click the gear, or run *Open Settings* from the command palette (Ctrl+Shift+/).",
     "disabledOn": []
   }
 ]

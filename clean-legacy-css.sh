@@ -2,15 +2,26 @@
 # ZenLeap Legacy CSS Cleaner
 # Usage: ./clean-legacy-css.sh [OPTIONS]
 #
-# Removes old pre-marker ZenLeap CSS from userChrome.css that may conflict
-# with the runtime theme engine. Only removes content between the ZenLeap
-# marker comments; all other CSS (from other extensions, user customizations)
-# is preserved.
+# Removes the ZenLeap block that installers up to 3.4 appended to
+# userChrome.css (the pre-3.1 CSS in it conflicts with the runtime theme
+# engine). Only the content between the ZenLeap marker comments is removed;
+# all other CSS (from other mods, user customizations) is preserved, and the
+# previous file is saved as userChrome.css.zenleap-backup.
+# Run it from a ZenLeap checkout (it uses scripts/lib/zen-paths.sh).
 #
 # Options:
-#   --profile <index>   Select profile by index (1-based); omit for ALL profiles
-#   --yes, -y           Auto-confirm all prompts (non-interactive mode)
-#   --dry-run           Show what would be removed without modifying files
+#   --profile <sel>      Profile(s): a number from the list, a profile name, or "all";
+#                        repeatable. Default: every profile whose userChrome.css has a
+#                        ZenLeap block
+#   --profile-dir <dir>  Use this profile directory directly; repeatable
+#   --yes, -y            Auto-confirm all prompts (non-interactive mode)
+#   --dry-run            Show what would be removed without modifying files
+
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This script needs bash: bash clean-legacy-css.sh ..." >&2
+    exit 1
+fi
+set +o posix   # `sh` on macOS is bash in POSIX mode, which has no <(...)
 
 set -e
 
@@ -20,8 +31,17 @@ YELLOW=$'\033[1;33m'
 BLUE=$'\033[0;34m'
 NC=$'\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ ! -f "$SCRIPT_DIR/scripts/lib/zen-paths.sh" ]; then
+    echo "Error: $SCRIPT_DIR/scripts/lib/zen-paths.sh not found; run this script from a ZenLeap checkout."
+    exit 1
+fi
+# shellcheck source=scripts/lib/zen-paths.sh
+. "$SCRIPT_DIR/scripts/lib/zen-paths.sh"
+
 # Flags
-PROFILE_INDEX=""
+PROFILE_SPECS=()
+PROFILE_DIR_ARGS=()
 AUTO_YES=false
 DRY_RUN=false
 
@@ -29,81 +49,86 @@ DRY_RUN=false
 for _arg in "$@"; do
     case "$_arg" in
         --yes|-y) AUTO_YES=true ;;
-        --help|-h) AUTO_YES=true ;;
+        --help|-h|--dry-run) _NO_TTY=true ;;
     esac
 done
 
 # Open /dev/tty for interactive input
-if [ "$AUTO_YES" = true ]; then
+if [ "$AUTO_YES" = true ] || [ "${_NO_TTY:-}" = true ]; then
     exec 3</dev/null
 elif [ -t 0 ]; then
     exec 3<&0
 else
-    if [ -e /dev/tty ]; then
-        exec 3</dev/tty
+    if [ -e /dev/tty ] && { exec 3</dev/tty; } 2>/dev/null; then
+        :
     else
         echo "Error: No terminal available. Use --yes for non-interactive mode."
         exit 1
     fi
 fi
 
-# Detect OS and find profile base
-detect_os() {
+has_css_block() {
+    grep -qsF '/* === ZenLeap Styles === */' "${ZP_PROFILE_DIRS[$1]}/chrome/userChrome.css"
+}
+
+css_status() {
+    if has_css_block "$1"; then printf 'has a ZenLeap block'; fi
+}
+
+# Find Zen profiles and decide which ones to clean (sets ZP_SELECTED)
+find_profiles() {
+    local i d suggested=()
     case "$(uname -s)" in
-        Darwin)
-            OS="macos"
-            PROFILE_BASE="$HOME/Library/Application Support/zen/Profiles"
-            ;;
-        Linux)
-            OS="linux"
-            PROFILE_BASE="$HOME/.zen"
-            ;;
+        Darwin|Linux) ;;
         *)
             echo -e "${RED}Unsupported operating system${NC}"
             exit 1
             ;;
     esac
-}
 
-# Find Zen profiles (same logic as install.sh)
-find_profiles() {
-    if [ ! -d "$PROFILE_BASE" ]; then
-        echo -e "${RED}Error: Zen profile directory not found at $PROFILE_BASE${NC}"
+    # Native profiles first, else those of an installed Flatpak Zen (its data
+    # folder stays behind after `flatpak uninstall`)
+    if ! zp_discover native && ! { zp_flatpak_installed && zp_discover flatpak; } && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
+        zp_discover native || true
+        echo -e "${RED}Error: $ZP_ERROR${NC}"
         exit 1
     fi
 
-    PROFILES=()
-    while IFS= read -r -d '' dir; do
-        PROFILES+=("$dir")
-    done < <(find "$PROFILE_BASE" -maxdepth 1 -type d ! -name "Profiles" ! -path "$PROFILE_BASE" -print0 2>/dev/null)
-
-    if [ ${#PROFILES[@]} -eq 0 ]; then
-        echo -e "${RED}Error: No Zen profiles found${NC}"
-        exit 1
-    fi
-
-    SELECTED_PROFILES=()
-
-    if [ -n "$PROFILE_INDEX" ]; then
-        if ! [[ "$PROFILE_INDEX" =~ ^[0-9]+$ ]] || [ "$PROFILE_INDEX" -lt 1 ] || [ "$PROFILE_INDEX" -gt ${#PROFILES[@]} ]; then
-            echo -e "${RED}Error: Invalid profile index $PROFILE_INDEX (valid: 1-${#PROFILES[@]})${NC}"
+    if [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
+        for d in "${PROFILE_DIR_ARGS[@]}"; do
+            if ! zp_use_profile_dir "$d"; then
+                echo -e "${RED}Error: $ZP_ERROR${NC}"
+                exit 1
+            fi
+        done
+    elif [ ${#PROFILE_SPECS[@]} -gt 0 ]; then
+        if ! zp_select_specs "${PROFILE_SPECS[@]}"; then
+            echo -e "${RED}Error: $ZP_ERROR${NC}"
             exit 1
         fi
-        SELECTED_PROFILES+=("${PROFILES[$((PROFILE_INDEX-1))]}")
-        echo -e "${GREEN}+${NC} Selected profile: $(basename "${SELECTED_PROFILES[0]}")"
     else
-        SELECTED_PROFILES=("${PROFILES[@]}")
-        echo -e "${GREEN}+${NC} Found ${#SELECTED_PROFILES[@]} profile(s)"
+        for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+            if has_css_block "$i"; then suggested+=("$i"); fi
+        done
+        if [ ${#suggested[@]} -le 1 ] || [ "$AUTO_YES" = true ] || [ "$DRY_RUN" = true ]; then
+            ZP_SELECTED=("${suggested[@]}")
+        else
+            echo "Zen profiles (in $ZP_ROOT):"
+            if ! zp_menu css_status "${suggested[@]}"; then
+                echo "Cancelled."
+                exit 0
+            fi
+        fi
     fi
+    echo -e "${GREEN}+${NC} Checking ${#ZP_SELECTED[@]} of ${#ZP_PROFILE_DIRS[@]} profile(s)"
 }
 
 # Clean a single profile's userChrome.css
 clean_profile() {
-    local profile_dir="$1"
+    local profile_dir="${ZP_PROFILE_DIRS[$1]}"
     local chrome_dir="$profile_dir/chrome"
     local css_file="$chrome_dir/userChrome.css"
-    local pname
-    pname=$(basename "$profile_dir")
+    local pname="${ZP_PROFILE_NAMES[$1]}"
 
     if [ ! -f "$css_file" ]; then
         echo -e "  ${YELLOW}-${NC} $pname: no userChrome.css"
@@ -111,13 +136,14 @@ clean_profile() {
     fi
 
     # Check for ZenLeap marker block
-    if grep -q "ZenLeap Styles" "$css_file" 2>/dev/null; then
+    if has_css_block "$1"; then
         if [ "$DRY_RUN" = true ]; then
             echo -e "  ${BLUE}~${NC} $pname: would remove ZenLeap marker block"
             return
         fi
-        perl -i -p0e 's/\n*\/\* === ZenLeap Styles === \*\/.*?(\/\* === End ZenLeap Styles === \*\/|\z)//s' "$css_file"
-        echo -e "  ${GREEN}+${NC} $pname: removed ZenLeap marker block"
+        cp "$css_file" "$chrome_dir/userChrome.css.zenleap-backup"
+        zp_strip_css_block "$css_file" || true
+        echo -e "  ${GREEN}+${NC} $pname: removed ZenLeap marker block (backup: userChrome.css.zenleap-backup)"
     else
         echo -e "  ${YELLOW}-${NC} $pname: no ZenLeap marker block found"
     fi
@@ -143,7 +169,19 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --profile)
             shift
-            PROFILE_INDEX="$1"
+            if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --profile requires a profile number, name, or \"all\"${NC}"
+                exit 1
+            fi
+            PROFILE_SPECS+=("$1")
+            ;;
+        --profile-dir)
+            shift
+            if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
+                echo -e "${RED}Error: --profile-dir requires a directory${NC}"
+                exit 1
+            fi
+            PROFILE_DIR_ARGS+=("$1")
             ;;
         --yes|-y)
             AUTO_YES=true
@@ -158,9 +196,12 @@ while [ $# -gt 0 ]; do
             echo "All other CSS (from other extensions, user customizations) is preserved."
             echo ""
             echo "Options:"
-            echo "  --profile <index>   Select profile by index (1-based); omit for ALL"
-            echo "  --yes, -y           Auto-confirm"
-            echo "  --dry-run           Show what would change without modifying files"
+            echo "  --profile <sel>      Profile(s): number from the list, profile name, or \"all\";"
+            echo "                       repeatable (default: profiles whose userChrome.css has a"
+            echo "                       ZenLeap block)"
+            echo "  --profile-dir <dir>  Use this profile directory directly; repeatable"
+            echo "  --yes, -y            Auto-confirm"
+            echo "  --dry-run            Show what would change without modifying files"
             exit 0
             ;;
         *)
@@ -171,11 +212,21 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+if [ ${#PROFILE_SPECS[@]} -gt 0 ] && [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
+    echo -e "${RED}Error: Use either --profile or --profile-dir, not both${NC}"
+    exit 1
+fi
+
 echo -e "${BLUE}ZenLeap Legacy CSS Cleaner${NC}"
 echo ""
 
-detect_os
 find_profiles
+
+if [ ${#ZP_SELECTED[@]} -eq 0 ]; then
+    echo ""
+    echo -e "${GREEN}Nothing to clean:${NC} no userChrome.css contains a ZenLeap block."
+    exit 0
+fi
 
 if [ "$DRY_RUN" = true ]; then
     echo ""
@@ -187,7 +238,7 @@ if [ "$AUTO_YES" != true ] && [ "$DRY_RUN" != true ]; then
     echo "This will remove ZenLeap marker blocks from userChrome.css."
     echo "All other CSS will be preserved."
     echo -n "Continue? (y/n): "
-    read -r response <&3
+    read -r response <&3 || response="n"
     if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
         echo "Cancelled."
         exit 0
@@ -195,8 +246,8 @@ if [ "$AUTO_YES" != true ] && [ "$DRY_RUN" != true ]; then
 fi
 
 echo ""
-for profile in "${SELECTED_PROFILES[@]}"; do
-    clean_profile "$profile"
+for i in "${ZP_SELECTED[@]}"; do
+    clean_profile "$i"
 done
 
 echo ""
