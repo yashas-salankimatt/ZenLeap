@@ -15619,6 +15619,16 @@
   // collapsed pinned section hides its pinned tabs and folders except the
   // active ones (LEAP-B-09 / LEAP-COMPAT-09).
   function isItemShown(item) {
+    // A split view is drawn as one row: all its panes show when one does.
+    // (In a collapsed folder Zen keeps the selected split visible, but its
+    // tab getter reports the other pane hidden: REV-LCORE-07.)
+    if (!isFolder(item) && item.group?.hasAttribute?.('split-view-group')) {
+      return item.group.tabs.some(isShownByZen);
+    }
+    return isShownByZen(item);
+  }
+
+  function isShownByZen(item) {
     if (typeof item.visible === 'boolean') return item.visible;
     // Fallback for builds without the getters: walk the folder ancestry.
     if (!isFolder(item) && item.hasAttribute('folder-active')) return true;
