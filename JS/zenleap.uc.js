@@ -13245,7 +13245,11 @@
           setSettingsRowNote(row, 'Mode keys are single keys without Ctrl/Alt/Cmd. Press another key or Esc.', 'error');
           return;
         }
-        value = schema.caseSensitive ? event.key : event.key.toLowerCase();
+        // Store the key keyMatches() compares: on a Cyrillic/Greek layout the
+        // letter keys record as their Latin letters, so the binding works on
+        // every layout (the raw character matched nothing: REV-LCORE-01).
+        const key = navKey(event);
+        value = schema.caseSensitive ? key : key.toLowerCase();
       }
 
       S[settingId] = value;
@@ -17478,12 +17482,15 @@
   // Does `event` press the single-key setting `settingId`? Case-sensitive
   // settings (G, M, P, ?) must match exactly; the others ignore case, so
   // Shift+J still counts as j (it extends the selection in browse mode).
+  // The raw key counts too: bindings saved before the layout fallback existed
+  // hold the layout's own character (о for j on a Russian layout).
   function keyMatches(event, settingId) {
     const bound = S[settingId];
     if (typeof bound !== 'string' || bound === '') return false;
-    const k = navKey(event);
-    if (SETTINGS_SCHEMA[settingId]?.caseSensitive) return k === bound;
-    return k.toLowerCase() === bound.toLowerCase();
+    const k = navKey(event), raw = event.key;
+    if (SETTINGS_SCHEMA[settingId]?.caseSensitive) return k === bound || raw === bound;
+    const b = bound.toLowerCase();
+    return k.toLowerCase() === b || raw.toLowerCase() === b;
   }
 
   function keyMatchesAny(event, ...settingIds) {
