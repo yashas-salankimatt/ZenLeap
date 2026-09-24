@@ -5171,28 +5171,13 @@
       { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
         condition: () => !!window.gZenPinnedTabManager && currentTab().hasAttribute('zen-essential'),
         command: () => { gZenPinnedTabManager.removeEssentials(currentTab()); } },
+      // Zen's own tab context-menu commands, which Zen only adds in normal windows
       { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
-        command: () => {
-          const tab = currentTab();
-          exitSearchMode();
-          setTimeout(() => {
-            try {
-              TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-title').doCommand();
-            } catch(e) { reportError('Rename tab failed', e); }
-          }, 100);
-      }},
+        condition: () => !!document.getElementById('context_zen-edit-tab-title'),
+        command: () => runTabContextCommand('context_zen-edit-tab-title', { key: 'rename-tab', label: 'Rename Tab' }) },
       { key: 'edit-tab-icon', label: 'Edit Tab Icon', icon: '🎨', tags: ['tab', 'icon', 'emoji', 'edit', 'custom', 'zen'],
-        command: () => {
-          const tab = currentTab();
-          exitSearchMode();
-          setTimeout(() => {
-            try {
-              TabContextMenu.contextTab = tab;
-              document.getElementById('context_zen-edit-tab-icon').doCommand();
-            } catch(e) { reportError('Edit tab icon failed', e); }
-          }, 100);
-      }},
+        condition: () => !!document.getElementById('context_zen-edit-tab-icon'),
+        command: () => runTabContextCommand('context_zen-edit-tab-icon', { key: 'edit-tab-icon', label: 'Edit Tab Icon' }) },
       { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
         condition: () => !!window.gZenPinnedTabManager && currentTab().pinned,
         command: () => { gZenPinnedTabManager.resetPinnedTab(currentTab()); } },
@@ -5597,6 +5582,19 @@
     reportError(`Command "${cmd.label}" (${cmd.key}) failed`, error);
     showZenLeapToast(`${cmd.label} failed \u2014 see the Browser Console`);
     _pluginEventBus.emit('command:failed', { key: cmd.key, error: error?.message || String(error) });
+  }
+
+  // Run one of Zen's tab context-menu commands on the current tab once the palette has
+  // closed (Zen's inline editor and icon picker need the palette gone first).
+  function runTabContextCommand(menuItemId, cmd) {
+    const tab = currentTab();
+    exitSearchMode();
+    setTimeout(() => {
+      try {
+        TabContextMenu.contextTab = tab;
+        document.getElementById(menuItemId).doCommand();
+      } catch (e) { notifyCommandFailure(cmd, e); }
+    }, 100);
   }
 
   // Execute a command or enter its sub-flow
@@ -6126,7 +6124,10 @@
   function afterPalette(action, what) {
     exitSearchMode();
     setTimeout(() => {
-      try { action(); } catch (e) { reportError(`${what} failed`, e); }
+      try { action(); } catch (e) {
+        reportError(`${what} failed`, e);
+        showZenLeapToast(`${what} failed — see the Browser Console`);
+      }
     }, 100);
   }
 
@@ -6960,9 +6961,16 @@
     const name = getWorkspaceName(workspaceId) || workspaceId;
     try {
       const confirmed = await removeWorkspaceWithTimeout(workspaceId);
-      if (!confirmed) log(`Delete workspace "${name}": Zen did not confirm within the timeout`);
-      else log(`Deleted workspace: ${name}`);
-    } catch (e) { reportError(`Deleting workspace "${name}" failed`, e); }
+      if (confirmed || !gZenWorkspaces.getWorkspaces().some(w => w.uuid === workspaceId)) {
+        log(`Deleted workspace: ${name}`);
+      } else {
+        console.warn(`[ZenLeap] Deleting workspace "${name}": Zen did not remove it within 5 seconds`);
+        showZenLeapToast(`Workspace "${name}" was not deleted — see the Browser Console`);
+      }
+    } catch (e) {
+      reportError(`Deleting workspace "${name}" failed`, e);
+      showZenLeapToast(`Deleting workspace "${name}" failed — see the Browser Console`);
+    }
   }
 
   function addTabToFolder(folder) {
