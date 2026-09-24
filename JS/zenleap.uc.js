@@ -13982,7 +13982,7 @@
     const result = searchResults[index];
     if (result && result.tab) {
       // Record jump before navigating
-      recordJump(gBrowser.selectedTab);
+      recordJump(currentTab());
 
       // Switch workspace if the tab belongs to a different workspace (async)
       if (result.workspaceName && window.gZenWorkspaces) {
@@ -15441,6 +15441,30 @@
     return item && item.tagName && item.tagName.toLowerCase() === 'zen-folder';
   }
 
+  // Nearest enclosing Zen folder of a tab or folder, looking through split-view
+  // groups (a split inside a folder belongs to that folder). The space's
+  // collapsible pinned section is not a folder. null for loose items.
+  function parentFolderOf(el) {
+    let group = el?.group;
+    while (group && !isFolder(group)) group = group.group;
+    return group || null;
+  }
+
+  // Is a tab or folder actually shown in the sidebar? Zen's own `visible`
+  // getters encode the rules: collapsed (nested) folders hide their content
+  // except the active tabs, split-view groups inside folders included, and a
+  // collapsed pinned section hides its pinned tabs and folders except the
+  // active ones (LEAP-B-09 / LEAP-COMPAT-09).
+  function isItemShown(item) {
+    if (typeof item.visible === 'boolean') return item.visible;
+    // Fallback for builds without the getters: walk the folder ancestry.
+    if (!isFolder(item) && item.hasAttribute('folder-active')) return true;
+    for (let g = item.group; g; g = g.group) {
+      if (isFolder(g) && g.collapsed) return false;
+    }
+    return true;
+  }
+
   // Get visible tabs AND folders in DOM order (for browse mode navigation)
   // Uses a microtask-scoped cache so multiple calls within the same event handler
   // (e.g. moveHighlight -> updateHighlight -> updateLeapOverlayState) reuse one result
@@ -15450,35 +15474,14 @@
   function getVisibleItems() {
     if (_visibleItemsCache) return _visibleItemsCache;
 
-    const tabs = getVisibleTabs().filter(tab => {
-      // Exclude tabs inside collapsed folders — Zen hides the container,
-      // not individual tabs, so tab.hidden stays false.
-      // Exception: Zen keeps selected tabs visible in collapsed folders via
-      // the 'folder-active' attribute (negative-margin peek). Include these
-      // so numbering matches what the user actually sees.
-      if (tab.hasAttribute('folder-active')) return true;
-      // Walk up the folder hierarchy: if ANY ancestor folder is collapsed,
-      // the tab is hidden (handles nested subfolders).
-      let folder = tab.group;
-      while (folder && folder.isZenFolder) {
-        if (folder.collapsed) return false;
-        folder = folder.group;
-      }
-      return true;
-    });
+    const tabs = getVisibleTabs().filter(isItemShown);
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
     const folders = Array.from(
       gBrowser.tabContainer.querySelectorAll('zen-folder')
     ).filter(folder => {
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
       const folderWsId = folder.getAttribute('zen-workspace-id');
       if (activeWsId && folderWsId && folderWsId !== activeWsId) return false;
-      // Exclude subfolders whose parent folder is collapsed
-      let parent = folder.group;
-      while (parent && parent.isZenFolder) {
-        if (parent.collapsed) return false;
-        parent = parent.group;
-      }
-      return true;
+      return isItemShown(folder);
     });
     const combined = [...tabs, ...folders];
     combined.sort((a, b) => {
@@ -15568,26 +15571,53 @@
   // (including nested subfolders) by returning the folder's index instead.
   // Returns -1 only when the tab is truly absent from the list.
   function findCurrentItemIndex(items) {
-    const currentTab = gBrowser.selectedTab;
+    const current = currentTab();
     // First pass: direct match.  Prioritized so that a folder-active tab
     // (visible despite its parent folder being collapsed) is found before
     // the folder's contains() check would claim it.
     for (let i = 0; i < items.length; i++) {
-      if (items[i] === currentTab) return i;
+      if (items[i] === current) return i;
     }
     // Second pass: check collapsed folders for DOM containment
     // (handles tabs fully hidden inside collapsed folders/subfolders)
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      if (isFolder(item) && item.collapsed && item.contains(currentTab)) return i;
+      if (isFolder(item) && item.collapsed && item.contains(current)) return i;
     }
     return -1;
+  }
+
+  // Attribute writes that skip no-op changes: every write restyles the tab and
+  // queues mutation records for Zen's observers, so with hundreds of tabs only
+  // the badges whose value changed should be touched (LEAP-B-24).
+  function setAttrIfChanged(el, name, value) {
+    if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+  }
+
+  function removeAttrIfPresent(el, name) {
+    if (el.hasAttribute(name)) el.removeAttribute(name);
+  }
+
+  // Remove all badge state from a tab or folder.
+  function clearItemBadge(item) {
+    removeAttrIfPresent(item, 'data-zenleap-direction');
+    removeAttrIfPresent(item, 'data-zenleap-distance');
+    removeAttrIfPresent(item, 'data-zenleap-has-mark');
+    removeAttrIfPresent(item, 'data-zenleap-rel');
+    const inner = isFolder(item)
+      ? item.querySelector(':scope > .tab-group-label-container')
+      : item.querySelector(':scope > .tab-stack > .tab-content');
+    if (inner) {
+      removeAttrIfPresent(inner, 'data-zenleap-rel');
+      removeAttrIfPresent(inner, 'data-zenleap-mark');
+    }
   }
 
   // Update relative numbers on all tabs
   // Optimized: builds a reverse mark map (tab→char) once per call for O(1) lookup
   // instead of iterating the marks map per tab.
   function updateRelativeNumbers() {
+    if (_tornDown) return;
     // Use folder-aware list: collapsed folders count as one item,
     // their hidden child tabs are excluded, and folder elements are included.
     const items = getVisibleItems();
@@ -15595,48 +15625,24 @@
     // Clean stale badges from elements that left the visible items list
     // (e.g. tabs hidden by folder collapse, subfolders inside collapsed parents).
     // Without this, badges persist on hidden elements due to Zen's CSS animation
-    // approach (opacity/height transitions instead of display:none).
+    // approach (opacity/height transitions instead of display:none). The badge
+    // text lives on .tab-content / the folder label, the direction on the host.
     const itemsSet = new Set(items);
-    for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-rel]')) {
-      if (!itemsSet.has(el)) {
-        el.removeAttribute('data-zenleap-direction');
-        el.removeAttribute('data-zenleap-distance');
-        el.removeAttribute('data-zenleap-has-mark');
-        el.removeAttribute('data-zenleap-rel');
-        // Also clean label container attribute on folders
-        const lc = el.querySelector?.('.tab-group-label-container');
-        if (lc) lc.removeAttribute('data-zenleap-rel');
-      }
+    const stale = new Set();
+    for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-rel], [data-zenleap-direction]')) {
+      const host = el.closest('tab, zen-folder') || el;
+      if (!itemsSet.has(host)) stale.add(host);
     }
-    for (const tc of gBrowser.tabContainer.querySelectorAll('.tab-content[data-zenleap-rel]')) {
-      const tab = tc.closest('tab');
-      if (tab && !itemsSet.has(tab)) {
-        tc.removeAttribute('data-zenleap-rel');
-        tc.removeAttribute('data-zenleap-mark');
-      }
-    }
+    for (const host of stale) clearItemBadge(host);
 
     // Check relative numbers display mode: 'always', 'active' (leap/browse only), 'off'
     const relMode = S['display.showRelativeNumbers'];
     if (relMode === 'off' || (relMode === 'active' && !leapMode && !browseMode)) {
-      for (const item of items) {
-        item.removeAttribute('data-zenleap-direction');
-        item.removeAttribute('data-zenleap-distance');
-        item.removeAttribute('data-zenleap-has-mark');
-        item.removeAttribute('data-zenleap-rel');
-        if (isFolder(item)) {
-          const lc = item.querySelector('.tab-group-label-container');
-          if (lc) lc.removeAttribute('data-zenleap-rel');
-        } else {
-          const tc = item.querySelector('.tab-content');
-          if (tc) {
-            tc.removeAttribute('data-zenleap-rel');
-            tc.removeAttribute('data-zenleap-mark');
-          }
-        }
-      }
+      for (const item of items) clearItemBadge(item);
+      removeAttrIfPresent(document.documentElement, 'data-zenleap-badges');
       return;
     }
+    setAttrIfChanged(document.documentElement, 'data-zenleap-badges', 'true');
 
     let currentIndex = findCurrentItemIndex(items);
 
@@ -15663,28 +15669,27 @@
 
       const mark = tabToMark.get(item) || null;
 
-      item.setAttribute('data-zenleap-direction', direction);
-      item.setAttribute('data-zenleap-distance', relativeDistance);
+      setAttrIfChanged(item, 'data-zenleap-direction', direction);
 
       if (isFolder(item)) {
         // Folders: set on both the folder and its label container so the
         // ::after pseudo on .tab-group-label-container can read the attribute.
-        item.setAttribute('data-zenleap-rel', displayChar);
-        const labelContainer = item.querySelector('.tab-group-label-container');
-        if (labelContainer) labelContainer.setAttribute('data-zenleap-rel', displayChar);
+        setAttrIfChanged(item, 'data-zenleap-rel', displayChar);
+        const labelContainer = item.querySelector(':scope > .tab-group-label-container');
+        if (labelContainer) setAttrIfChanged(labelContainer, 'data-zenleap-rel', displayChar);
       } else {
-        const tabContent = item.querySelector('.tab-content');
+        const tabContent = item.querySelector(':scope > .tab-stack > .tab-content');
         if (tabContent) {
           if (mark) {
             // Show mark instead of relative number
-            tabContent.setAttribute('data-zenleap-rel', mark);
-            tabContent.setAttribute('data-zenleap-mark', mark);
-            item.setAttribute('data-zenleap-has-mark', 'true');
+            setAttrIfChanged(tabContent, 'data-zenleap-rel', mark);
+            setAttrIfChanged(tabContent, 'data-zenleap-mark', mark);
+            setAttrIfChanged(item, 'data-zenleap-has-mark', 'true');
           } else {
             // Show relative number
-            tabContent.setAttribute('data-zenleap-rel', displayChar);
-            tabContent.removeAttribute('data-zenleap-mark');
-            item.removeAttribute('data-zenleap-has-mark');
+            setAttrIfChanged(tabContent, 'data-zenleap-rel', displayChar);
+            removeAttrIfPresent(tabContent, 'data-zenleap-mark');
+            removeAttrIfPresent(item, 'data-zenleap-has-mark');
           }
         }
       }
@@ -16499,12 +16504,12 @@
   // Enter browse mode
   function enterBrowseMode(direction) {
     const items = getVisibleItems();
-    const currentTab = gBrowser.selectedTab;
+    const current = currentTab();
     const currentIndex = findCurrentItemIndex(items);
 
     // Evict the active tab's preview from cache — the user was just interacting
     // with it (scrolling, typing, etc.) so any cached snapshot is likely stale.
-    previewCache.delete(currentTab);
+    previewCache.delete(current);
 
     if (currentIndex === -1) {
       // Current tab not in visible items (e.g. new tab page, empty workspace tab).
@@ -16519,13 +16524,13 @@
       browseMode = true;
       browseDirection = direction;
       originalTabIndex = fallbackIndex;
-      originalTab = currentTab;
+      originalTab = current;
       highlightedTabIndex = fallbackIndex;
     } else {
       browseMode = true;
       browseDirection = direction;
       originalTabIndex = currentIndex;
-      originalTab = currentTab;
+      originalTab = current;
 
       // Move highlight one step in the initial direction
       if (direction === 'down') {
@@ -16555,6 +16560,10 @@
     if (syncSelection) {
       // Full sync: iterate all items to reconcile selection markers.
       // Needed when selection state changed (shift+move, toggle, clear, etc.)
+      // Items that left the list (other workspace, collapsed folder) lose theirs too.
+      for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-highlight]')) {
+        el.removeAttribute('data-zenleap-highlight');
+      }
       items.forEach(item => {
         item.removeAttribute('data-zenleap-highlight');
         if (selectedItems.has(item)) {
@@ -16669,6 +16678,7 @@
   }
 
   // Switch workspace in browse mode (h = prev, l = next)
+  let _browseWorkspaceSwitchId = 0;
   async function browseWorkspaceSwitch(direction) {
     try {
       if (!window.gZenWorkspaces) { log('Workspaces not available'); return; }
@@ -16689,23 +16699,25 @@
       const newWorkspace = workspaces[newIdx];
       log(`Browse: switching workspace ${direction} to "${newWorkspace.name || newWorkspace.uuid}"`);
 
-      // Switch workspace — this changes which tabs are visible
+      // Switch workspace — this changes which tabs are visible. The promise
+      // settles once Zen finished the switch; re-highlight right away (a
+      // delayed reset used to overwrite keys pressed in the meantime).
+      const switchId = ++_browseWorkspaceSwitchId;
       await window.gZenWorkspaces.changeWorkspaceWithID(newWorkspace.uuid);
+      if (switchId !== _browseWorkspaceSwitchId || !browseMode) return;
 
       // After workspace switch, highlight the active tab in the new workspace
-      setTimeout(() => {
-        _visibleItemsCache = null; // Ensure fresh data after workspace switch
-        const newItems = getVisibleItems();
-        const activeIdx = findCurrentItemIndex(newItems);
-        highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
-        if (newItems.length > 0) {
-          updateHighlight();
-          updateRelativeNumbers();
-          updateLeapOverlayState();
-        }
-        log(`Browse: workspace switched, ${newItems.length} items visible, highlight=${highlightedTabIndex}`);
-      }, S['timing.workspaceSwitchDelay']);
-    } catch (e) { log(`Workspace switch failed: ${e}`); }
+      _visibleItemsCache = null; // Ensure fresh data after workspace switch
+      const newItems = getVisibleItems();
+      const activeIdx = findCurrentItemIndex(newItems);
+      highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
+      if (newItems.length > 0) {
+        updateHighlight();
+        updateRelativeNumbers();
+        updateLeapOverlayState();
+      }
+      log(`Browse: workspace switched, ${newItems.length} items visible, highlight=${highlightedTabIndex}`);
+    } catch (e) { reportError('Workspace switch failed', e); }
   }
 
   // Jump directly to a tab N positions from original and open it
@@ -17286,7 +17298,8 @@
     // Use the direct tab reference to return to the original tab,
     // since tab indices may have shifted after yank/paste operations
     if (originalTab && !originalTab.closing && originalTab.parentNode) {
-      gBrowser.selectedTab = originalTab;
+      // (originalTab may be a Glance's parent: don't reselect it, that would close the Glance)
+      if (originalTab !== currentTab()) gBrowser.selectedTab = originalTab;
       log(`Cancelled, returned to original tab "${originalTab.label}"`);
     } else {
       // Fallback to index if the tab reference is gone
@@ -17383,7 +17396,7 @@
         browseDirection = 'down';
         originalTabIndex = findCurrentItemIndex(items);
         if (originalTabIndex === -1) originalTabIndex = 0;
-        originalTab = gBrowser.selectedTab;
+        originalTab = currentTab();
         clearTimeout(leapModeTimeout);
       }
       highlightedTabIndex = targetIndex;
@@ -17497,9 +17510,9 @@
 
   // Scroll current tab into view
   function scrollTabIntoView(position) {
-    const currentTab = gBrowser.selectedTab;
-    if (currentTab) {
-      scrollTabToView(currentTab, position);
+    const tab = currentTab();
+    if (tab) {
+      scrollTabToView(tab, position);
       log(`Scrolled ${position}`);
     }
   }
