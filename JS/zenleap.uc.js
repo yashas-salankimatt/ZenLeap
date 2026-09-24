@@ -7341,7 +7341,11 @@
       for (const item of items) {
         if (item.isZenFolder) {
           children.push(collectFolderTree(item, splitGroupMap, options));
-        } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab') && !(options.skipManaged && isExternallyManagedTab(item))) {
+        } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab')) {
+          if (options.skipManaged && isExternallyManagedTab(item)) {
+            if (options.skipped) options.skipped.count++;
+            continue;
+          }
           children.push(collectTabItem(item, splitGroupMap, options));
         }
       }
@@ -7356,10 +7360,14 @@
 
   // Session save. ZenRipple's agent tabs and pages are left out: they belong to agent
   // sessions (restored they would be ownerless copies) and ZenRipple recreates its pages.
-  function collectWorkspaceLayout(wsData, { includeEssentials = true } = {}) {
+  // `skipped.count` (optional) is increased for every tab left out.
+  function collectWorkspaceLayout(wsData, { includeEssentials = true, skipped = null } = {}) {
     const wsId = wsData?.uuid;
     const layout = [];
-    const addTab = (tab) => { if (!isExternallyManagedTab(tab)) layout.push(collectTabItem(tab, splitGroupMap)); };
+    const addTab = (tab) => {
+      if (isExternallyManagedTab(tab)) { if (skipped) skipped.count++; return; }
+      layout.push(collectTabItem(tab, splitGroupMap));
+    };
 
     // Build split group map: tab -> groupIndex
     const splitGroupMap = new Map();
@@ -7404,7 +7412,7 @@
           if (child.classList?.contains('space-fake-collapsible-start')) continue;
           if (child.id === 'tabbrowser-arrowscrollbox-periphery') continue;
           if (child.isZenFolder) {
-            layout.push(collectFolderTree(child, splitGroupMap, { skipManaged: true }));
+            layout.push(collectFolderTree(child, splitGroupMap, { skipManaged: true, skipped }));
           } else if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             if (child.hasAttribute('zen-essential')) continue; // already collected above
@@ -7535,7 +7543,7 @@
     return { workspaceCount: workspaces.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount };
   }
 
-  function collectSession(scope, comment, { autoBackup = false } = {}) {
+  function collectSession(scope, comment, { autoBackup = false, skipped = null } = {}) {
     const timestamp = Date.now();
     const id = `session-${timestamp}`;
     const workspacesData = [];
@@ -7544,7 +7552,7 @@
       const allWs = window.gZenWorkspaces.getWorkspaces();
       if (allWs && Array.isArray(allWs)) {
         // Essentials are global: record them once (with the first workspace), not per workspace
-        allWs.forEach((ws, i) => workspacesData.push(collectWorkspaceLayout(ws, { includeEssentials: i === 0 })));
+        allWs.forEach((ws, i) => workspacesData.push(collectWorkspaceLayout(ws, { includeEssentials: i === 0, skipped })));
       }
     } else {
       let currentWs = null;
@@ -7553,7 +7561,7 @@
         const allWs = gZenWorkspaces.getWorkspaces();
         currentWs = allWs?.find(w => w.uuid === activeId) || null;
       }
-      workspacesData.push(collectWorkspaceLayout(currentWs));
+      workspacesData.push(collectWorkspaceLayout(currentWs, { skipped }));
     }
 
     const session = {
@@ -7604,9 +7612,12 @@
       showZenLeapToast('Sessions are not saved from private windows');
       return;
     }
-    const sessionData = collectSession(scope, comment);
+    const skipped = { count: 0 };
+    const sessionData = collectSession(scope, comment, { skipped });
     saveSessionToFile(sessionData).then(() => {
-      showZenLeapToast(`Session saved (${sessionData.stats.totalTabCount} tab${sessionData.stats.totalTabCount !== 1 ? 's' : ''})`);
+      const n = sessionData.stats.totalTabCount;
+      const left = skipped.count ? ` \u2014 ${skipped.count} ZenRipple tab${skipped.count !== 1 ? 's' : ''} not saved` : '';
+      showZenLeapToast(`Session saved (${n} tab${n !== 1 ? 's' : ''})${left}`);
       log(`Session saved: ${sessionData.id} (${scope}, ${sessionData.stats.totalTabCount} tabs)`);
     }).catch(e => {
       reportError('Saving session failed', e);
