@@ -7448,9 +7448,13 @@
           if (!filePath.endsWith('.json')) continue;
           try {
             const data = await IOUtils.readJSON(filePath);
-            if (data && data.version && data.id) {
+            if (data && data.version && typeof data.id === 'string' && Array.isArray(data.workspaces)) {
               data._filePath = filePath;
+              // Older/hand-edited files may lack stats; derive them
+              if (!_isPlainObject(data.stats)) data.stats = computeSessionStats(data.workspaces);
               sessions.push(data);
+            } else {
+              log(`Skipping session file with unexpected format: ${filePath}`);
             }
           } catch (e) {
             log(`Skipping corrupt session file: ${filePath}: ${e}`);
@@ -7470,12 +7474,25 @@
   }
 
   async function saveSessionToFile(sessionData) {
+    if (isPrivateWindow()) throw new Error('Sessions cannot be saved from a private window');
     const dir = await getSessionsDir();
     const filePath = PathUtils.join(dir, `${sessionData.id}.json`);
-    await IOUtils.writeJSON(filePath, sessionData);
+    await IOUtils.writeJSON(filePath, sessionData, { tmpPath: `${filePath}.tmp` });
     sessionCache = null;
     sessionLoadPromise = null;
     log(`Session saved: ${filePath}`);
+  }
+
+  // Keep only the most recent automatic backups (made before "Replace" restores).
+  const MAX_AUTO_BACKUP_SESSIONS = 5;
+  async function pruneAutoBackupSessions() {
+    try {
+      const sessions = (await loadAllSessions()).filter(s => s.autoBackup);
+      for (const old of sessions.slice(MAX_AUTO_BACKUP_SESSIONS)) {
+        await IOUtils.remove(old._filePath, { ignoreAbsent: true });
+      }
+      if (sessions.length > MAX_AUTO_BACKUP_SESSIONS) { sessionCache = null; sessionLoadPromise = null; }
+    } catch (e) { log(`Pruning auto-backup sessions failed: ${e}`); }
   }
 
   async function deleteSessionFile(sessionId) {
@@ -7485,7 +7502,7 @@
       await IOUtils.remove(filePath);
       log(`Session deleted: ${sessionId}`);
     } catch (e) {
-      log(`Delete session file failed: ${e}`);
+      reportError('Deleting session file failed', e);
     }
     sessionCache = null;
     sessionLoadPromise = null;
@@ -7494,16 +7511,19 @@
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
 
   function collectTabItem(tab, splitGroupMap) {
-    return {
+    const item = {
       type: 'tab',
       url: tab.linkedBrowser?.currentURI?.spec || 'about:blank',
       title: tab.label || 'Untitled',
-      favicon: tab.getAttribute('image') || '',
       pinned: !!tab.pinned,
       essential: tab.hasAttribute('zen-essential'),
       customLabel: (typeof tab.zenStaticLabel === 'string' && tab.zenStaticLabel) ? tab.zenStaticLabel : null,
       splitGroupIndex: splitGroupMap?.get(tab) ?? null,
     };
+    // Custom (user-chosen) tab icon; only small local icons (Zen's picker uses chrome:/data: SVGs)
+    const icon = tab.zenStaticIcon;
+    if (typeof icon === 'string' && /^(chrome|data):/.test(icon) && icon.length < 65536) item.customIcon = icon;
+    return item;
   }
 
   function collectFolderTree(folder, splitGroupMap) {
@@ -7522,13 +7542,13 @@
     } catch (e) { log(`Error collecting folder tree: ${e}`); }
     return {
       type: 'folder',
-      name: folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder',
+      name: folderName(folder),
       collapsed: !!folder.collapsed,
       children,
     };
   }
 
-  function collectWorkspaceLayout(wsData) {
+  function collectWorkspaceLayout(wsData, { includeEssentials = true } = {}) {
     const wsId = wsData?.uuid;
     const layout = [];
 
@@ -7553,11 +7573,13 @@
 
     // Essential tabs are shared across workspaces (separate DOM section).
     // Collect them first so they appear at the top of the layout.
-    const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
-      t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
-    );
-    for (const tab of essentialTabs) {
-      layout.push(collectTabItem(tab, splitGroupMap));
+    if (includeEssentials) {
+      const essentialTabs = Array.from(gBrowser.tabs).filter(t =>
+        t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
+      );
+      for (const tab of essentialTabs) {
+        layout.push(collectTabItem(tab, splitGroupMap));
+      }
     }
 
     // Walk workspace-specific DOM containers for folders, pinned tabs, and normal tabs
@@ -7578,7 +7600,7 @@
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             if (child.hasAttribute('zen-essential')) continue; // already collected above
             layout.push(collectTabItem(child, splitGroupMap));
-          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+          } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
@@ -7597,7 +7619,7 @@
           if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             layout.push(collectTabItem(child, splitGroupMap));
-          } else if (gBrowser.isTabGroup?.(child) || child.localName === 'tab-group') {
+          } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
@@ -7662,9 +7684,10 @@
 
   // Get layout from workspace data (handles v1 and v2 session formats)
   function getWorkspaceLayout(ws) {
-    if (ws.layout) return ws.layout;
+    if (!_isPlainObject(ws)) return [];
+    if (Array.isArray(ws.layout)) return ws.layout;
     // Convert v1 format (flat tabs + folders arrays) to v2 layout tree
-    if (!ws.tabs) return [];
+    if (!Array.isArray(ws.tabs)) return [];
     const layout = [];
     const sorted = [...ws.tabs].sort((a, b) => (a.position || 0) - (b.position || 0));
     const folderTabs = new Map();
@@ -7675,25 +7698,35 @@
       }
     }
     for (const tab of sorted) {
-      if (tab.essential) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: true });
+      if (tab.essential) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: true, essential: true });
     }
     for (const [name, tabs] of folderTabs) {
       const meta = ws.folders?.find(f => f.name === name);
       layout.push({
         type: 'folder', name, collapsed: meta?.collapsed || false,
-        children: tabs.map(t => ({ type: 'tab', url: t.url, title: t.title, favicon: t.favicon || '', pinned: true, essential: false })),
+        children: tabs.map(t => ({ type: 'tab', url: t.url, title: t.title, pinned: true, essential: false })),
       });
     }
     for (const tab of sorted) {
-      if (tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: true, essential: false });
+      if (tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: true, essential: false });
     }
     for (const tab of sorted) {
-      if (!tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, favicon: tab.favicon || '', pinned: false, essential: false });
+      if (!tab.pinned && !tab.essential && !tab.folderName) layout.push({ type: 'tab', url: tab.url, title: tab.title, pinned: false, essential: false });
     }
     return layout;
   }
 
-  function collectSession(scope, comment) {
+  function computeSessionStats(workspaces) {
+    let totalTabCount = 0, totalFolderCount = 0, totalPinnedCount = 0, totalEssentialCount = 0;
+    for (const ws of workspaces) {
+      const st = countLayoutStats(getWorkspaceLayout(ws));
+      totalTabCount += st.tabs; totalFolderCount += st.folders;
+      totalPinnedCount += st.pinned; totalEssentialCount += st.essential;
+    }
+    return { workspaceCount: workspaces.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount };
+  }
+
+  function collectSession(scope, comment, { autoBackup = false } = {}) {
     const timestamp = Date.now();
     const id = `session-${timestamp}`;
     const workspacesData = [];
@@ -7701,9 +7734,8 @@
     if (scope === 'all' && window.gZenWorkspaces) {
       const allWs = window.gZenWorkspaces.getWorkspaces();
       if (allWs && Array.isArray(allWs)) {
-        for (const ws of allWs) {
-          workspacesData.push(collectWorkspaceLayout(ws));
-        }
+        // Essentials are global: record them once (with the first workspace), not per workspace
+        allWs.forEach((ws, i) => workspacesData.push(collectWorkspaceLayout(ws, { includeEssentials: i === 0 })));
       }
     } else {
       let currentWs = null;
@@ -7715,22 +7747,17 @@
       workspacesData.push(collectWorkspaceLayout(currentWs));
     }
 
-    let totalTabCount = 0, totalFolderCount = 0, totalPinnedCount = 0, totalEssentialCount = 0;
-    for (const ws of workspacesData) {
-      const s = countLayoutStats(ws.layout);
-      totalTabCount += s.tabs; totalFolderCount += s.folders;
-      totalPinnedCount += s.pinned; totalEssentialCount += s.essential;
-    }
-
-    return {
+    const session = {
       version: 2,
       id,
       savedAt: new Date(timestamp).toISOString(),
       comment: comment || '',
       scope,
       workspaces: workspacesData,
-      stats: { workspaceCount: workspacesData.length, totalTabCount, totalFolderCount, totalPinnedCount, totalEssentialCount },
+      stats: computeSessionStats(workspacesData),
     };
+    if (autoBackup) session.autoBackup = true;
+    return session;
   }
 
   // --- Save Flow ---
@@ -7763,12 +7790,18 @@
 
   function handleSaveSession(comment) {
     const scope = commandSubFlow?.data?.scope || 'current';
-    const sessionData = collectSession(scope, comment);
     exitSearchMode();
+    if (isPrivateWindow()) {
+      showZenLeapToast('Sessions are not saved from private windows');
+      return;
+    }
+    const sessionData = collectSession(scope, comment);
     saveSessionToFile(sessionData).then(() => {
+      showZenLeapToast(`Session saved (${sessionData.stats.totalTabCount} tab${sessionData.stats.totalTabCount !== 1 ? 's' : ''})`);
       log(`Session saved: ${sessionData.id} (${scope}, ${sessionData.stats.totalTabCount} tabs)`);
     }).catch(e => {
-      log(`Save session failed: ${e}`);
+      reportError('Saving session failed', e);
+      showZenLeapToast('Saving the session failed \u2014 see the Browser Console');
     });
   }
 
@@ -7799,7 +7832,7 @@
       const tabCount = s.stats?.totalTabCount || 0;
       const folderCount = s.stats?.totalFolderCount || 0;
       const sublabel = `${scopeBadge}${formatSessionDate(s.savedAt)} · ${tabCount} tab${tabCount !== 1 ? 's' : ''}${folderCount > 0 ? ` · ${folderCount} folder${folderCount !== 1 ? 's' : ''}` : ''}`;
-      const icon = s.workspaces?.[0]?.icon || '🗂';
+      const icon = safeIconText(s.workspaces?.[0]?.icon, '🗂');
       return {
         key: `${keyPrefix}:${s.id}`,
         label,
@@ -7824,19 +7857,59 @@
 
   function getRestoreSessionModeResults(query) {
     const session = commandSubFlow?.data?.session;
-    const isMultiWs = session && session.workspaces.length > 1;
+    const workspaces = Array.isArray(session?.workspaces) ? session.workspaces : [];
+    if (workspaces.length === 0) {
+      return [{ key: 'restore-mode:invalid', label: 'This session has no workspaces to restore', icon: '\u26A0', tags: [] }];
+    }
+    const isMultiWs = workspaces.length > 1;
     const results = [
       { key: 'restore-mode:new', label: `Create New Workspace${isMultiWs ? 's' : ''}`, icon: '➕', sublabel: 'Opens saved tabs in new workspace(s)', tags: ['new', 'create'] },
     ];
-    // Only offer replace for single-workspace sessions
-    if (!isMultiWs) {
-      results.push({ key: 'restore-mode:replace', label: 'Replace Current Workspace', icon: '🔄', sublabel: 'Replaces tabs in current workspace', tags: ['replace', 'current'] });
+    // Only offer replace for single-workspace sessions (and never in private windows,
+    // where the automatic backup cannot be saved)
+    if (!isMultiWs && !isPrivateWindow()) {
+      results.push({ key: 'restore-mode:replace', label: 'Replace Current Workspace...', icon: '🔄', sublabel: 'Closes the current workspace\u2019s tabs first (a backup session is saved)', tags: ['replace', 'current'], subFlow: 'restore-replace-confirm' });
     }
     return fuzzyFilterAndSort(results, query);
   }
 
+  // What "Replace Current Workspace" would close: folders and non-essential tabs of the active workspace.
+  function getActiveWorkspaceContents() {
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+    const folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
+      const fWsId = f.getAttribute('zen-workspace-id');
+      return !activeWsId || !fWsId || fWsId === activeWsId;
+    });
+    const tabs = getVisibleTabs().filter(t =>
+      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
+      (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
+    );
+    return { folders, tabs };
+  }
+
+  function getRestoreReplaceConfirmResults() {
+    const session = commandSubFlow?.data?.session;
+    const { folders, tabs } = getActiveWorkspaceContents();
+    const wsName = getWorkspaceName(window.gZenWorkspaces?.activeWorkspace) || 'current workspace';
+    const restoreCount = countLayoutStats(getWorkspaceLayout(session?.workspaces?.[0])).tabs;
+    const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
+    return [
+      { key: 'restore-replace:cancel', label: 'Cancel', icon: '↩', sublabel: 'Keep the current workspace as it is', tags: [] },
+      {
+        key: 'restore-replace:confirm',
+        label: `Replace "${wsName}": close ${plural(tabs.length, 'tab')}${folders.length ? ` and ${plural(folders.length, 'folder')}` : ''}`,
+        icon: '🔄',
+        sublabel: `Then restores ${plural(restoreCount, 'tab')}. The current tabs are saved as a backup session first.`,
+        tags: [],
+      },
+    ];
+  }
+
   async function handleRestoreSession(sessionData, mode) {
-    if (!sessionData || !sessionData.workspaces) { log('Invalid session data'); return; }
+    if (!sessionData || !Array.isArray(sessionData.workspaces) || sessionData.workspaces.length === 0) {
+      showZenLeapToast('This session has nothing to restore');
+      return;
+    }
     exitSearchMode();
 
     try {
@@ -7845,11 +7918,33 @@
           await restoreWorkspaceAsNew(wsData);
         }
       } else if (mode === 'replace') {
-        await restoreWorkspaceReplace(sessionData.workspaces[0]);
+        const wsData = sessionData.workspaces[0];
+        if (getWorkspaceLayout(wsData).length === 0) {
+          showZenLeapToast('Nothing to restore: the saved workspace is empty. The current workspace was not changed.');
+          return;
+        }
+        if (isPrivateWindow()) {
+          showZenLeapToast('Replacing a workspace is not available in private windows');
+          return;
+        }
+        // Save what is about to be closed; never replace without a backup
+        const label = sessionData.comment || getWorkspaceName(window.gZenWorkspaces?.activeWorkspace) || sessionData.id;
+        const backup = collectSession('current', `Auto-backup before restoring "${label}"`, { autoBackup: true });
+        try {
+          await saveSessionToFile(backup);
+        } catch (e) {
+          reportError('Could not save a backup session; replace was cancelled', e);
+          showZenLeapToast('Replace cancelled: the backup session could not be saved');
+          return;
+        }
+        pruneAutoBackupSessions();
+        await restoreWorkspaceReplace(wsData);
+        showZenLeapToast('Workspace replaced \u2014 the previous tabs were saved as a backup session');
       }
       log(`Session restored: ${sessionData.id} (${mode})`);
     } catch (e) {
-      log(`Restore session failed: ${e}`);
+      reportError('Restoring session failed', e);
+      showZenLeapToast('Restoring the session failed \u2014 see the Browser Console');
     }
   }
 
@@ -7880,13 +7975,13 @@
 
     try {
       await gZenWorkspaces.createAndSaveWorkspace(
-        wsData.name || 'Restored',
-        wsData.icon || undefined,
+        (typeof wsData.name === 'string' && wsData.name.trim()) ? wsData.name.trim().slice(0, 100) : 'Restored',
+        sanitizeSessionIcon(wsData.icon),
         false, // dontChange = false, so it switches to the new workspace
         0      // containerTabId
       );
     } catch (e) {
-      log(`Create workspace failed: ${e}`);
+      reportError('Creating a workspace for the restored session failed', e);
       return;
     }
 
@@ -7896,46 +7991,38 @@
   }
 
   async function restoreWorkspaceReplace(wsData) {
-    const principal = Services.scriptSecurityManager.getSystemPrincipal();
+    const { folders: existingFolders, tabs: existingTabs } = getActiveWorkspaceContents();
 
-    const existingFolders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
-      const fWsId = f.getAttribute('zen-workspace-id');
-      const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-      return !activeWsId || !fWsId || fWsId === activeWsId;
+    const placeholder = gBrowser.addTab('about:blank', {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipRoute: true,
     });
-    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
-    const existingTabs = getVisibleTabs().filter(t =>
-      !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
-      (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
-    );
-
-    const placeholder = gBrowser.addTab('about:blank', { triggeringPrincipal: principal });
     // Wait for placeholder tab to be in the DOM before selecting it
     await waitFor(() => placeholder.parentNode && !placeholder.closing);
     gBrowser.selectedTab = placeholder;
 
-    for (const folder of existingFolders) {
-      try {
-        if (typeof folder.delete === 'function') folder.delete();
-        else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
-      } catch (e) { log(`Remove folder during replace failed: ${e}`); }
-    }
+    // delete() closes the folder's tabs as one restorable group
+    await Promise.all(existingFolders.map(folder =>
+      Promise.resolve().then(() => folder.delete()).catch(e => reportError(`Removing folder "${folderName(folder)}" during replace failed`, e))
+    ));
     // Wait for folders to be removed from the DOM
     await waitFor(() => existingFolders.every(f => !f.parentNode));
 
     const tabsToRemove = existingTabs.filter(t => t !== placeholder && !t.closing && t.parentNode);
-    if (tabsToRemove.length > 0) {
-      try { gBrowser.removeTabs(tabsToRemove, { closeWindowWithLastTab: false }); }
-      catch (e) { for (const t of tabsToRemove) { try { gBrowser.removeTab(t); } catch (e2) {} } }
-    }
+    if (tabsToRemove.length > 0) gBrowser.removeTabs(tabsToRemove);
     // Wait for old tabs to start closing / leave the DOM
     await waitFor(() => tabsToRemove.every(t => t.closing || !t.parentNode));
 
     await restoreLayout(wsData);
 
-    try {
-      if (!placeholder.closing && placeholder.parentNode) gBrowser.removeTab(placeholder);
-    } catch (e) {}
+    if (!placeholder.closing && placeholder.parentNode) gBrowser.removeTab(placeholder);
+  }
+
+  // Space icons read from a session file: emoji text or Zen's own chrome:// SVG icons only
+  function sanitizeSessionIcon(icon) {
+    if (typeof icon !== 'string' || !icon || icon.length > 200 || /[<>&"'`]/.test(icon)) return undefined;
+    if (isImageIcon(icon)) return /^chrome:\/\//.test(icon) ? icon : undefined;
+    return icon.includes(':') ? undefined : icon;
   }
 
   // --- Restore: tree-based layout restoration ---
@@ -7944,19 +8031,18 @@
     const layout = getWorkspaceLayout(wsData);
     if (!layout || layout.length === 0) return;
 
-    const principal = Services.scriptSecurityManager.getSystemPrincipal();
     const openedTabs = []; // [{ item, tab }]
     const normalTabRefs = []; // unpinned tabs for explicit reordering
 
     for (const item of layout) {
-      if (item.type === 'tab') {
-        restoreTabItem(item, openedTabs, normalTabRefs, principal);
-      } else if (item.type === 'folder' && window.gZenFolders) {
-        await restoreFolderFromLayout(item, null, openedTabs, normalTabRefs, principal);
-      } else if (item.type === 'folder') {
+      if (item?.type === 'tab') {
+        restoreTabItem(item, openedTabs, normalTabRefs);
+      } else if (item?.type === 'folder' && window.gZenFolders) {
+        await restoreFolderFromLayout(item, null, openedTabs, normalTabRefs);
+      } else if (item?.type === 'folder') {
         // No folder support: open folder tabs as flat
         for (const child of flattenLayoutTabs(item)) {
-          restoreTabItem(child, openedTabs, normalTabRefs, principal);
+          restoreTabItem(child, openedTabs, normalTabRefs);
         }
       }
     }
@@ -7969,12 +8055,8 @@
       await waitFor(() => normalTabRefs.every(t => t && t.parentNode && !t.closing));
       const normalContainer = gZenWorkspaces?.activeWorkspaceStrip;
       if (normalContainer) {
-        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
         for (const tab of normalTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) {
-            if (periphery) normalContainer.insertBefore(tab, periphery);
-            else normalContainer.appendChild(tab);
-          }
+          if (tab && tab.parentNode && !tab.closing) moveTabToSectionEnd(normalContainer, tab);
         }
       }
     }
@@ -7994,7 +8076,7 @@
         if (groupTabs.length >= 2) {
           try {
             gZenViewSplitter.splitTabs(groupTabs, groupInfo.gridType);
-          } catch (e) { log(`Failed to restore split group ${i}: ${e}`); }
+          } catch (e) { reportError(`Restoring split view group ${i} failed`, e); }
         }
       }
     }
@@ -8010,13 +8092,41 @@
   }
 
   function applyCustomLabel(tab, item) {
-    if (item.customLabel) {
+    if (typeof item.customLabel === 'string' && item.customLabel) {
       tab.zenStaticLabel = item.customLabel;
       try { gBrowser._setTabLabel(tab, item.customLabel); } catch (e) {}
     }
   }
 
-  function restoreTabItem(item, openedTabs, normalTabRefs, principal) {
+  function applyCustomIcon(tab, item) {
+    if (typeof item.customIcon === 'string' && /^(chrome|data):/.test(item.customIcon)) {
+      tab.zenStaticIcon = item.customIcon;
+      try { gBrowser.setIcon(tab, item.customIcon); } catch (e) {}
+    }
+  }
+
+  // Open one saved tab: lazily (it loads when first selected, like Firefox's own session
+  // restore), in place (skipRoute: Space Routing must not move restored tabs to other
+  // spaces), never running javascript: URLs read from a file.
+  function addRestoredTab(item) {
+    let url = typeof item.url === 'string' && item.url ? item.url : 'about:blank';
+    if (/^\s*javascript:/i.test(url)) url = 'about:blank';
+    const tab = gBrowser.addTab(url, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipAnimation: true,
+      skipRoute: true,
+      createLazyBrowser: true,
+      lazyTabTitle: typeof item.title === 'string' ? item.title : url,
+    });
+    // Zen assigns a tab's workspace when its browser is inserted, which lazy tabs only
+    // get on first selection; without this they would lose their workspace on restart.
+    if (workspacesEnabled()) tab.setAttribute('zen-workspace-id', gZenWorkspaces.activeWorkspace);
+    applyCustomLabel(tab, item);
+    applyCustomIcon(tab, item);
+    return tab;
+  }
+
+  function restoreTabItem(item, openedTabs, normalTabRefs) {
     if (item.essential) {
       const existing = Array.from(gBrowser.tabs).find(t =>
         t.hasAttribute('zen-essential') && t.linkedBrowser?.currentURI?.spec === item.url
@@ -8025,37 +8135,50 @@
         openedTabs.push({ item, tab: existing });
         return;
       }
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
-      tab.setAttribute('zen-essential', 'true');
-      gBrowser.pinTab(tab);
-      applyCustomLabel(tab, item);
+      const tab = addRestoredTab(item);
+      // Zen's API enforces the essentials limit / container rules and notifies window sync
+      let added = false;
+      try {
+        if (window.gZenPinnedTabManager?.canEssentialBeAdded(tab)) added = gZenPinnedTabManager.addToEssentials(tab) !== false;
+      } catch (e) { reportError('Restoring an essential tab failed', e); }
+      if (!added) {
+        gBrowser.pinTab(tab);
+        log(`Could not add "${item.title}" to essentials (limit reached?); restored as a pinned tab`);
+      }
       openedTabs.push({ item, tab });
     } else if (item.pinned) {
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
+      const tab = addRestoredTab(item);
       gBrowser.pinTab(tab);
-      applyCustomLabel(tab, item);
       openedTabs.push({ item, tab });
     } else {
-      const tab = gBrowser.addTab(item.url, { triggeringPrincipal: principal, skipAnimation: true });
-      applyCustomLabel(tab, item);
+      const tab = addRestoredTab(item);
       openedTabs.push({ item, tab });
       normalTabRefs.push(tab);
     }
   }
 
-  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs, principal) {
+  // Append a tab at the end of a workspace's normal section through Tabbrowser, so its
+  // tab caches, TabMove (SessionStore, window sync) and Zen's invariants stay consistent.
+  function moveTabToSectionEnd(container, tab) {
+    const periphery = container.querySelector('#tabbrowser-arrowscrollbox-periphery');
+    gBrowser.zenHandleTabMove(tab, () => {
+      if (periphery) container.insertBefore(tab, periphery);
+      else container.appendChild(tab);
+    });
+  }
+
+  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs) {
     // Phase 1: create direct tab children, defer subfolders
     const directTabRefs = [];
     const childItems = []; // { type: 'tab'|'folder', ref?, data? }
 
-    for (const child of folderItem.children) {
-      if (child.type === 'tab') {
-        const tab = gBrowser.addTab(child.url, { triggeringPrincipal: principal, skipAnimation: true });
-        applyCustomLabel(tab, child);
+    for (const child of (Array.isArray(folderItem.children) ? folderItem.children : [])) {
+      if (child?.type === 'tab') {
+        const tab = addRestoredTab(child);
         directTabRefs.push(tab);
         openedTabs.push({ item: child, tab });
         childItems.push({ type: 'tab', ref: tab });
-      } else if (child.type === 'folder') {
+      } else if (child?.type === 'folder') {
         childItems.push({ type: 'folder', data: child, ref: null });
       }
     }
@@ -8065,7 +8188,7 @@
 
     // Phase 2: create folder with its direct tabs
     const folderOpts = {
-      label: folderItem.name,
+      label: (typeof folderItem.name === 'string' && folderItem.name) ? folderItem.name.slice(0, 100) : 'Restored Folder',
       renameFolder: false,
       collapsed: false, // expand first, collapse after children are placed
     };
@@ -8077,7 +8200,7 @@
     try {
       folder = gZenFolders.createFolder(directTabRefs, folderOpts);
     } catch (e) {
-      log(`Create folder "${folderItem.name}" failed: ${e}`);
+      reportError(`Restoring folder "${folderOpts.label}" failed`, e);
       return null;
     }
 
@@ -8094,7 +8217,7 @@
       } else if (childItem.type === 'folder') {
         const subInsertAfter = lastElement || folder.groupStartElement;
         const subFolder = await restoreFolderFromLayout(
-          childItem.data, subInsertAfter, openedTabs, normalTabRefs, principal
+          childItem.data, subInsertAfter, openedTabs, normalTabRefs
         );
         if (subFolder) lastElement = subFolder;
       }
@@ -8190,12 +8313,8 @@
         }
 
         // Reorder by moving each expected tab to correct position
-        const periphery = normalContainer.querySelector('#tabbrowser-arrowscrollbox-periphery');
         for (const tab of expectedTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) {
-            if (periphery) normalContainer.insertBefore(tab, periphery);
-            else normalContainer.appendChild(tab);
-          }
+          if (tab && tab.parentNode && !tab.closing) moveTabToSectionEnd(normalContainer, tab);
         }
       }
 
@@ -8224,22 +8343,24 @@
 
     // Header with session info
     const dateStr = formatSessionDate(session.savedAt);
+    const workspaces = Array.isArray(session.workspaces) ? session.workspaces : [];
+    const stats = _isPlainObject(session.stats) ? session.stats : computeSessionStats(workspaces);
     results.push({
       key: 'detail:info',
       label: `${session.comment || 'No comment'} — saved ${dateStr}`,
       icon: '💾',
-      sublabel: `${session.stats.totalTabCount} tabs · ${session.stats.workspaceCount} workspace${session.stats.workspaceCount !== 1 ? 's' : ''}`,
+      sublabel: `${stats.totalTabCount} tabs · ${stats.workspaceCount} workspace${stats.workspaceCount !== 1 ? 's' : ''}`,
       tags: [],
     });
 
-    for (const ws of session.workspaces) {
-      if (session.workspaces.length > 1) {
+    workspaces.forEach((ws, wsIdx) => {
+      if (workspaces.length > 1) {
         const wsLayout = getWorkspaceLayout(ws);
         const wsTabCount = wsLayout ? countLayoutStats(wsLayout).tabs : 0;
         results.push({
-          key: `detail:ws-${ws.name}`,
-          label: `${ws.icon || '🗂'} ${ws.name}`,
-          icon: '',
+          key: `detail:ws-${wsIdx}`,
+          label: String(ws?.name || 'Unnamed'),
+          icon: safeIconText(ws?.icon, '🗂'),
           sublabel: `${wsTabCount} tabs`,
           tags: [],
           isHeader: true,
@@ -8251,9 +8372,9 @@
       if (layout && layout.length > 0) {
         buildDetailItemsFromLayout(layout, results, 0);
       } else {
-        results.push({ key: 'detail:empty', label: 'No tabs', icon: '', tags: [] });
+        results.push({ key: `detail:empty-${wsIdx}`, label: 'No tabs', icon: '', tags: [] });
       }
-    }
+    });
 
     // Footer hint
     results.push({
