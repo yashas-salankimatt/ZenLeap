@@ -1167,8 +1167,10 @@
     }
   }
 
+  // Hidden settings are internal state (update checks, one-time hints), not preferences
   function resetAllSettings() {
     for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      if (schema.hidden) continue;
       S[id] = cloneSettingValue(schema.default);
     }
     saveSettings();
@@ -12698,9 +12700,27 @@
     const resetAllBtn = document.createElement('button');
     resetAllBtn.className = 'zenleap-settings-reset-all';
     resetAllBtn.textContent = 'Reset All to Defaults';
+    // Undoes every customization (key bindings included): a second click confirms
+    let confirmTimer = null;
     resetAllBtn.addEventListener('click', () => {
+      if (!resetAllBtn.dataset.confirming) {
+        resetAllBtn.dataset.confirming = 'true';
+        resetAllBtn.textContent = 'Click again to reset every setting';
+        resetAllBtn.classList.add('confirming');
+        confirmTimer = setTimeout(() => {
+          delete resetAllBtn.dataset.confirming;
+          resetAllBtn.textContent = 'Reset All to Defaults';
+          resetAllBtn.classList.remove('confirming');
+        }, 4000);
+        return;
+      }
+      clearTimeout(confirmTimer);
+      delete resetAllBtn.dataset.confirming;
+      resetAllBtn.textContent = 'Reset All to Defaults';
+      resetAllBtn.classList.remove('confirming');
       resetAllSettings();
       renderSettingsContent();
+      showSettingsToast('success', 'All settings reset to defaults');
     });
 
     footer.appendChild(footerActions);
@@ -12870,6 +12890,7 @@
         background: color-mix(in srgb, var(--zl-error) 15%, transparent); border-color: color-mix(in srgb, var(--zl-error) 35%, transparent);
       }
       .zenleap-settings-reset-all:active { transform: scale(0.97); }
+      .zenleap-settings-reset-all.confirming { background: color-mix(in srgb, var(--zl-error) 22%, transparent); border-color: var(--zl-error); font-weight: 600; }
       .zenleap-color-picker {
         width: 32px; height: 32px; border: none; border-radius: var(--zl-r-sm);
         cursor: pointer; padding: 0; background: none; -moz-appearance: none; appearance: none;
