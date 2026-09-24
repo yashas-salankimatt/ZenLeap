@@ -9548,32 +9548,7 @@
   function performGtileSwap(direction) {
     const neighborIdx = findGtileNeighbor(direction);
     if (neighborIdx < 0) return;
-
-    const splitter = window.gZenViewSplitter;
-    if (!splitter) return;
-
-    const activeRect = gtileTabRects[gtileActiveRegionIdx];
-    const neighborRect = gtileTabRects[neighborIdx];
-
-    const node1 = splitter.getSplitNodeFromTab(activeRect.tab);
-    const node2 = splitter.getSplitNodeFromTab(neighborRect.tab);
-    if (!node1 || !node2) return;
-
-    // Swap nodes in the split tree
-    splitter.swapNodes(node1, node2);
-
-    // Re-apply layout to update browser positions
-    const viewData = splitter._data[splitter.currentView];
-    splitter.applyGridLayout(viewData.layoutTree);
-
-    // Re-map regions from updated layout
-    const activeTab = activeRect.tab;
-    mapCurrentLayoutToGrid(viewData);
-
-    // Follow the active tab
-    gtileActiveRegionIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
-    if (gtileActiveRegionIdx < 0) gtileActiveRegionIdx = 0;
-
+    performGtileSwapByIndex(gtileActiveRegionIdx, neighborIdx);
     updateGtileOverlay();
   }
 
@@ -9619,8 +9594,8 @@
     updateGtileOverlay();
   }
 
+  // Swap two panes in the split tree; the active region follows the first.
   function performGtileSwapByIndex(aIdx, bIdx) {
-    // Actually swap the tabs in the split tree (same logic as performGtileSwap)
     const splitter = window.gZenViewSplitter;
     if (!splitter) return;
     const aRect = gtileTabRects[aIdx];
@@ -9931,13 +9906,44 @@
     }, sig);
   }
 
+  // Short feedback animation on the grid: gtile-rotated, gtile-reset, gtile-error.
   function flashGtileGrid(cls) {
     const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
     if (!grid) return;
     grid.classList.remove(cls);
-    void grid.offsetHeight;
+    void grid.offsetHeight; // restart the animation
     grid.classList.add(cls);
     setTimeout(() => grid.classList.remove(cls), 400);
+  }
+
+  // After the layout changed (rotate/reset): re-read the regions and keep the
+  // active pane (move mode) or resize target (resize mode).
+  function refreshGtileAfterLayoutChange() {
+    const splitter = window.gZenViewSplitter;
+    const activeTab = gtileSubMode === 'move' ? gtileTabRects[gtileActiveRegionIdx]?.tab : gtileFocusedTab;
+    mapCurrentLayoutToGrid(splitter._data[splitter.currentView]);
+    if (gtileSubMode === 'resize') {
+      // Cell coordinates are meaningless after a layout change
+      gtileSelecting = false;
+      gtileAnchor = null;
+      gtileCursor = { col: 0, row: 0 };
+    }
+    if (activeTab) {
+      const newIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
+      gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
+    }
+    updateGtileOverlay();
+  }
+
+  // Tabs of a split tree's leaves in visual order (left-to-right / top-to-bottom).
+  function splitLeafTabs(node, out = []) {
+    if (!node) return out;
+    if (!node.children || node.children.length === 0) {
+      if (node.tab) out.push(node.tab);
+    } else {
+      node.children.forEach(child => splitLeafTabs(child, out));
+    }
+    return out;
   }
 
   // --- Split Layout Rotation ---
@@ -9981,16 +9987,7 @@
       if (!classes) return false;
 
       // Collect all 3 tabs in current visual order (left-to-right / top-to-bottom)
-      let allTabs = [];
-      function collectTabs(node) {
-        if (!node) return;
-        if (!node.children || node.children.length === 0) {
-          if (node.tab) allTabs.push(node.tab);
-        } else {
-          node.children.forEach(collectTabs);
-        }
-      }
-      collectTabs(root);
+      const allTabs = splitLeafTabs(root);
       if (allTabs.length !== 3) return false;
 
       // Detect current position and identify single/pair tabs
@@ -10078,16 +10075,7 @@
     const classes4 = getNodeClasses();
     if (!classes4) return false;
 
-    let allTabs4 = [];
-    function collectTabs4(node) {
-      if (!node) return;
-      if (!node.children || node.children.length === 0) {
-        if (node.tab) allTabs4.push(node.tab);
-      } else {
-        node.children.forEach(collectTabs4);
-      }
-    }
-    collectTabs4(root);
+    const allTabs4 = splitLeafTabs(root);
     if (allTabs4.length < 2) return false;
 
     const isAllLeaves4 = root.children?.length === allTabs4.length &&
@@ -10124,46 +10112,10 @@
     return true;
   }
 
-  function flashGtileRotate() {
-    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
-    if (grid) {
-      grid.classList.remove('gtile-rotated');
-      // Force reflow to restart animation
-      void grid.offsetWidth;
-      grid.classList.add('gtile-rotated');
-      setTimeout(() => grid.classList.remove('gtile-rotated'), 400);
-    }
-  }
-
   function handleGtileRotate() {
     if (rotateSplitLayout()) {
-      // Re-map regions from updated layout
-      const splitter = window.gZenViewSplitter;
-      const viewData = splitter._data[splitter.currentView];
-      mapCurrentLayoutToGrid(viewData);
-
-      // Maintain active region / focused tab across rotation
-      if (gtileSubMode === 'move') {
-        const activeTab = gtileTabRects[gtileActiveRegionIdx]?.tab;
-        if (activeTab) {
-          const newIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
-          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
-        }
-      } else if (gtileSubMode === 'resize') {
-        // Reset selection state — cell coordinates are meaningless after layout change
-        gtileSelecting = false;
-        gtileAnchor = null;
-        gtileCursor = { col: 0, row: 0 };
-
-        // Re-find focused tab in new region order
-        if (gtileFocusedTab) {
-          const newIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
-          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
-        }
-      }
-
-      updateGtileOverlay();
-      flashGtileRotate();
+      refreshGtileAfterLayoutChange();
+      flashGtileGrid('gtile-rotated');
     }
   }
 
@@ -10189,40 +10141,10 @@
     return true;
   }
 
-  function flashGtileReset() {
-    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
-    if (grid) {
-      grid.classList.remove('gtile-reset');
-      void grid.offsetWidth;
-      grid.classList.add('gtile-reset');
-      setTimeout(() => grid.classList.remove('gtile-reset'), 400);
-    }
-  }
-
   function handleGtileReset() {
     if (resetLayoutSizes()) {
-      const splitter = window.gZenViewSplitter;
-      const viewData = splitter._data[splitter.currentView];
-      mapCurrentLayoutToGrid(viewData);
-
-      if (gtileSubMode === 'move') {
-        const activeTab = gtileTabRects[gtileActiveRegionIdx]?.tab;
-        if (activeTab) {
-          const newIdx = gtileTabRects.findIndex(r => r.tab === activeTab);
-          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
-        }
-      } else if (gtileSubMode === 'resize') {
-        gtileSelecting = false;
-        gtileAnchor = null;
-        gtileCursor = { col: 0, row: 0 };
-        if (gtileFocusedTab) {
-          const newIdx = gtileTabRects.findIndex(r => r.tab === gtileFocusedTab);
-          gtileActiveRegionIdx = newIdx >= 0 ? newIdx : 0;
-        }
-      }
-
-      updateGtileOverlay();
-      flashGtileReset();
+      refreshGtileAfterLayoutChange();
+      flashGtileGrid('gtile-reset');
     }
   }
 
@@ -10282,14 +10204,14 @@
     const assignedRects = chooseRemainingLayout(focusedRect, otherTabs, occupied, classes);
     if (!assignedRects) {
       log('gTile: No valid layout found — selection leaves no valid partition for remaining tabs');
-      flashGtileError();
+      flashGtileGrid('gtile-error');
       return;
     }
 
     const tree = buildSplitTreeFromRects([focusedRect, ...assignedRects], GTILE_COLS, GTILE_ROWS, classes);
     if (!tree) {
       log('gTile: Failed to build split tree from rectangles');
-      flashGtileError();
+      flashGtileGrid('gtile-error');
       return;
     }
 
@@ -10299,14 +10221,6 @@
       log('gTile: Layout applied successfully');
     } catch (e) {
       reportError('gTile: applying layout failed', e);
-    }
-  }
-
-  function flashGtileError() {
-    const grid = gtileOverlay?.querySelector('#zenleap-gtile-grid');
-    if (grid) {
-      grid.classList.add('gtile-error');
-      setTimeout(() => grid.classList.remove('gtile-error'), 400);
     }
   }
 
