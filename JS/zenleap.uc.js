@@ -10881,6 +10881,158 @@
   // HELP MODAL
   // ============================================
 
+  // Help content is generated from the current keybindings each time it opens,
+  // so rebinding a key updates the help (it used to be hard-coded: LEAP-B-18).
+  function helpSections() {
+    const k = (id) => formatKeyDisplay(S[id], SETTINGS_SCHEMA[id]);
+    const combo = (id) => k(id).split(' + ');
+    const or = (...ids) => ids.flatMap((id, i) => (i ? ['~/', k(id)] : [k(id)]));
+    const themeCount = Object.keys(BUILTIN_THEMES).length;
+    return [
+      { title: '\u{1F680} Leap Mode', trigger: [...combo('keys.global.leapMode'), '~to activate'], items: [
+        [or('keys.leap.browseDown', 'keys.leap.browseUp'), 'Enter browse mode (down/up)'],
+        [or('keys.leap.browseDownAlt', 'keys.leap.browseUpAlt'), 'Enter browse mode (arrows)'],
+        [or('keys.leap.prevWorkspace', 'keys.leap.nextWorkspace'), 'Browse + switch workspace'],
+        [[k('keys.leap.gMode')], 'G-mode (absolute positioning)'],
+        [[k('keys.leap.zMode')], 'Z-mode (scroll commands)'],
+        [['0'], 'Jump to first unpinned tab'],
+        [['$'], 'Jump to last tab'],
+        [[k('keys.leap.lastTab')], 'Jump to last item'],
+        [[k('keys.leap.setMark')], 'Set mark on current tab'],
+        [[k('keys.leap.clearMarks')], 'Clear all marks'],
+        [or('keys.leap.gotoMark', 'keys.leap.gotoMarkAlt'), 'Jump to mark'],
+        [or('keys.leap.jumpBack', 'keys.leap.jumpForward'), 'Jump back / forward in history'],
+        [[k('keys.leap.help')], 'Show this help'],
+        [['Esc'], 'Exit leap mode (clicking elsewhere exits too)'],
+      ] },
+      { title: '\u{1F4C2} Browse Mode', trigger: ['~After', k('keys.leap.browseDown'), '~or', k('keys.leap.browseUp'), '~in leap mode'], items: [
+        [or('keys.browse.down', 'keys.browse.up'), 'Move highlight down/up'],
+        [['Shift', `~+${k('keys.browse.down')}/${k('keys.browse.up')}`], 'Move + extend selection'],
+        [[k('keys.browse.select')], 'Toggle selection'],
+        [[k('keys.browse.yank')], 'Yank highlighted or selected items'],
+        [or('keys.browse.pasteAfter', 'keys.browse.pasteBefore'), 'Paste after / before'],
+        [or('keys.browse.prevWorkspace', 'keys.browse.nextWorkspace'), 'Switch workspace'],
+        [[`${k('keys.browse.gMode')}${k('keys.browse.gMode')}`, '~/', k('keys.browse.lastTab')], 'Jump to first / last item'],
+        [[k('keys.browse.confirm')], 'Open tab / toggle folder'],
+        [[k('keys.browse.close')], 'Close tab(s); on a folder: delete dialog'],
+        [combo('keys.global.commandPalette'), 'Command palette for the selection'],
+        [['1-9'], 'Open the tab N items from where browsing started'],
+        [['Esc'], 'Clear selection, then return to original tab'],
+      ] },
+      { title: '\u{1F4CD} G-Mode', trigger: ['~After', k('keys.leap.gMode'), '~in leap mode'], items: [
+        [[k('keys.gMode.first')], 'Go to first tab (gg)'],
+        [[k('keys.gMode.last')], 'Go to last tab'],
+        [['1-9', '~+', 'Enter'], 'Go to tab #N'],
+      ] },
+      { title: '\u{1F4DC} Z-Mode', trigger: ['~After', k('keys.leap.zMode'), '~in leap mode'], items: [
+        [[k('keys.zMode.center')], 'Center current tab'],
+        [[k('keys.zMode.top')], 'Scroll to top'],
+        [[k('keys.zMode.bottom')], 'Scroll to bottom'],
+      ] },
+      { title: '\u{1F516} Marks', items: [
+        [[k('keys.leap.setMark'), '~+', 'a-z 0-9'], 'Set mark (repeat to toggle off)'],
+        [[k('keys.leap.clearMarks')], 'Clear all marks'],
+        [[k('keys.leap.gotoMark'), '~+', 'char'], 'Jump to marked tab'],
+        [[...combo('keys.global.quickMark'), '~+', 'char'], 'Quick jump (no leap mode)'],
+      ] },
+      { title: '\u{1F50D} Tab Search', trigger: [...combo('keys.global.search'), '~to open'], items: [
+        [['↑', '~/', '↓', '~or', 'Ctrl', '~+j/k'], 'Navigate results'],
+        [['Enter'], 'Open selected tab'],
+        [['Tab'], 'Toggle this workspace / all'],
+        [['Ctrl', '~+', 'x'], 'Close selected tab'],
+        [[k('keys.search.commandPrefix')], 'Switch to command mode'],
+        [['Esc'], S['display.vimModeInBars'] ? 'Normal mode (j/k, 1-9, x, vim motions); Esc again closes' : 'Close search'],
+      ] },
+      { title: '⚙ Command Palette', trigger: [...combo('keys.global.commandPalette'), '~or type', k('keys.search.commandPrefix'), '~in search'], items: [
+        [['↑', '~/', '↓', '~or', 'j', '~/', 'k'], 'Navigate commands'],
+        [['Enter'], 'Run command / choose'],
+        [['1-9'], 'Quick jump + run (normal mode)'],
+        [['Esc'], 'Back / close'],
+      ] },
+      { title: '\u{1F4BE} Workspace Sessions', trigger: ['~Via the command palette'], items: [
+        [['~save session'], 'Save current workspace tabs + folders'],
+        [['~restore session'], 'Restore a saved session'],
+        [['~list sessions'], 'Browse and manage saved sessions'],
+      ] },
+      { title: '\u{1F9ED} Quick Navigation', trigger: ['~Works without leap mode'], items: [
+        [combo('keys.global.splitFocusDown'), 'Next tab (or split pane below)'],
+        [combo('keys.global.splitFocusUp'), 'Previous tab (or split pane above)'],
+        [combo('keys.global.splitFocusLeft'), 'Previous workspace (or pane left)'],
+        [combo('keys.global.splitFocusRight'), 'Next workspace (or pane right)'],
+        [combo('keys.global.splitResize'), 'gTile split layout overlay'],
+        [combo('keys.global.undoFolderDelete'), 'Undo the last folder deletion'],
+      ] },
+      ...(isUrlbarVimEnabled() ? [{ title: '⌨ URL Bar Vim', trigger: ['Ctrl', '~+', 'L', '~starts in INSERT'], items: [
+        [['Esc'], 'NORMAL mode (after typing; otherwise closes as usual)'],
+        [['j', '~/', 'k', '~/', 'g', '~/', 'G'], 'Select suggestion'],
+        [['h l w b e 0 $'], 'Move cursor'],
+        [['x s S D C p u'], 'Edit / paste / undo'],
+        [['i a I A'], 'Back to INSERT'],
+        [['Enter'], 'Open the URL or suggestion'],
+      ] }] : []),
+      { title: '\u{1F3A8} Themes', trigger: ['~Settings › Appearance or the command palette'], items: [
+        [[`~${k('keys.search.commandPrefix')} switch theme`], 'Pick a theme (live preview)'],
+        [[`~${k('keys.search.commandPrefix')} reload themes`], 'Reload themes from zenleap-themes.json'],
+        [[`~${k('keys.search.commandPrefix')} open themes file`], 'Edit zenleap-themes.json'],
+      ], note: `${themeCount} built-in themes. Create your own in Settings › Appearance › Custom Themes.` },
+    ];
+  }
+
+  function renderHelpContent() {
+    const content = helpModal?.querySelector('.zenleap-help-content');
+    if (!content) return;
+    const tokens = (list) => {
+      const frag = document.createDocumentFragment();
+      for (const t of list) {
+        if (typeof t === 'string' && t.startsWith('~')) {
+          frag.appendChild(document.createTextNode(` ${t.slice(1)} `));
+        } else {
+          const kbd = document.createElement('kbd');
+          kbd.textContent = t;
+          frag.appendChild(kbd);
+        }
+      }
+      return frag;
+    };
+    content.replaceChildren();
+    for (const section of helpSections()) {
+      const el = document.createElement('div');
+      el.className = 'zenleap-help-section';
+      const h2 = document.createElement('h2');
+      h2.textContent = section.title;
+      el.appendChild(h2);
+      if (section.trigger) {
+        const p = document.createElement('p');
+        p.className = 'zenleap-help-trigger';
+        p.appendChild(tokens(section.trigger));
+        el.appendChild(p);
+      }
+      const grid = document.createElement('div');
+      grid.className = 'zenleap-help-grid';
+      for (const [keys, text] of section.items) {
+        const item = document.createElement('div');
+        item.className = 'zenleap-help-item';
+        const keysEl = document.createElement('span');
+        keysEl.className = 'zenleap-help-keys';
+        keysEl.appendChild(tokens(keys));
+        const desc = document.createElement('span');
+        desc.className = 'zenleap-help-desc';
+        desc.textContent = text;
+        item.appendChild(keysEl);
+        item.appendChild(desc);
+        grid.appendChild(item);
+      }
+      el.appendChild(grid);
+      if (section.note) {
+        const note = document.createElement('p');
+        note.className = 'zenleap-help-note';
+        note.textContent = section.note;
+        el.appendChild(note);
+      }
+      content.appendChild(el);
+    }
+  }
+
   function createHelpModal() {
     if (helpModal) return;
 
@@ -10903,146 +11055,7 @@
         </div>
       </div>
 
-      <div class="zenleap-help-content">
-        <div class="zenleap-help-section">
-          <h2>&#128640; Leap Mode</h2>
-          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>Space</kbd> to activate</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Enter browse mode (down/up)</span></div>
-            <div class="zenleap-help-item"><kbd>&#8593;</kbd> / <kbd>&#8595;</kbd><span>Enter browse mode (arrows)</span></div>
-            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd><span>Browse + switch workspace</span></div>
-            <div class="zenleap-help-item"><kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Browse + switch workspace (arrows)</span></div>
-            <div class="zenleap-help-item"><kbd>g</kbd><span>G-mode (absolute positioning)</span></div>
-            <div class="zenleap-help-item"><kbd>z</kbd><span>Z-mode (scroll commands)</span></div>
-            <div class="zenleap-help-item"><kbd>0</kbd><span>Jump to first unpinned tab</span></div>
-            <div class="zenleap-help-item"><kbd>$</kbd><span>Jump to last tab</span></div>
-            <div class="zenleap-help-item"><kbd>m</kbd><span>Set mark on current tab</span></div>
-            <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
-            <div class="zenleap-help-item"><kbd>'</kbd><span>Jump to mark</span></div>
-            <div class="zenleap-help-item"><kbd>o</kbd> / <kbd>i</kbd><span>Jump back / forward in history</span></div>
-            <div class="zenleap-help-item"><kbd>?</kbd><span>Show this help</span></div>
-            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Exit leap mode</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128194; Browse Mode</h2>
-          <p class="zenleap-help-trigger">After pressing <kbd>j</kbd> or <kbd>k</kbd> in leap mode</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd> / <kbd>k</kbd><span>Move highlight down/up</span></div>
-            <div class="zenleap-help-item"><kbd>Shift</kbd>+<kbd>J</kbd>/<kbd>K</kbd><span>Navigate + extend selection</span></div>
-            <div class="zenleap-help-item"><kbd>Space</kbd><span>Toggle selection on tab</span></div>
-            <div class="zenleap-help-item"><kbd>y</kbd> / <kbd>Y</kbd><span>Yank highlighted or selected tabs</span></div>
-            <div class="zenleap-help-item"><kbd>p</kbd> / <kbd>P</kbd><span>Paste after / before</span></div>
-            <div class="zenleap-help-item"><kbd>h</kbd> / <kbd>l</kbd> / <kbd>&#8592;</kbd> / <kbd>&#8594;</kbd><span>Switch workspace</span></div>
-            <div class="zenleap-help-item"><kbd>gg</kbd> / <kbd>G</kbd><span>Jump to first / last tab</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open tab / toggle folder</span></div>
-            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected/highlighted tab(s)</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd><span>Command bar with selection</span></div>
-            <div class="zenleap-help-item"><kbd>1-9</kbd> <kbd>a-z</kbd><span>Jump N tabs from origin</span></div>
-            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Cancel, return to original</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128205; G-Mode</h2>
-          <p class="zenleap-help-trigger">After pressing <kbd>g</kbd> in leap mode</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>g</kbd><span>Go to first tab (gg)</span></div>
-            <div class="zenleap-help-item"><kbd>G</kbd><span>Go to last tab</span></div>
-            <div class="zenleap-help-item"><kbd>1-9</kbd> + <kbd>Enter</kbd><span>Go to tab #N</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128220; Z-Mode</h2>
-          <p class="zenleap-help-trigger">After pressing <kbd>z</kbd> in leap mode</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>z</kbd><span>Center current tab (zz)</span></div>
-            <div class="zenleap-help-item"><kbd>t</kbd><span>Scroll to top (zt)</span></div>
-            <div class="zenleap-help-item"><kbd>b</kbd><span>Scroll to bottom (zb)</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128278; Marks</h2>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>m</kbd> + <kbd>a-z</kbd><span>Set mark (repeat to toggle off)</span></div>
-            <div class="zenleap-help-item"><kbd>M</kbd><span>Clear all marks</span></div>
-            <div class="zenleap-help-item"><kbd>'</kbd> + <kbd>a-z</kbd><span>Jump to marked tab</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>'</kbd>+<kbd>char</kbd><span>Quick jump (no leap mode)</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128269; Tab Search</h2>
-          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd> + <kbd>/</kbd> to open</p>
-
-          <h3>Insert Mode</h3>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>&#8593;</kbd>/<kbd>&#8595;</kbd> or <kbd>Ctrl</kbd>+<kbd>j/k</kbd><span>Navigate results</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Open selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>Ctrl</kbd>+<kbd>x</kbd><span>Close selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>></kbd><span>Enter command mode</span></div>
-            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Switch to normal mode</span></div>
-          </div>
-
-          <h3>Normal Mode</h3>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd>/<kbd>k</kbd><span>Navigate results</span></div>
-            <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump to result</span></div>
-            <div class="zenleap-help-item"><kbd>x</kbd><span>Close selected tab</span></div>
-            <div class="zenleap-help-item"><kbd>h/l/w/b/e/0/$</kbd><span>Vim cursor movement</span></div>
-            <div class="zenleap-help-item"><kbd>i/a/I/A</kbd><span>Enter insert mode</span></div>
-            <div class="zenleap-help-item"><kbd>s/S/D/C</kbd><span>Substitute/delete/change</span></div>
-            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Close search</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#9881; Command Palette</h2>
-          <p class="zenleap-help-trigger"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd> or type <kbd>></kbd> in search</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>&#8593;</kbd>/<kbd>&#8595;</kbd><span>Navigate commands</span></div>
-            <div class="zenleap-help-item"><kbd>Enter</kbd><span>Execute command</span></div>
-            <div class="zenleap-help-item"><kbd>1-9</kbd><span>Quick jump + execute</span></div>
-            <div class="zenleap-help-item"><kbd>Esc</kbd><span>Back / close</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#128190; Workspace Sessions</h2>
-          <p class="zenleap-help-trigger">Via command palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>/</kbd>)</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>> save session</kbd><span>Save current workspace tabs + folders</span></div>
-            <div class="zenleap-help-item"><kbd>> restore session</kbd><span>Restore a saved session</span></div>
-            <div class="zenleap-help-item"><kbd>> list sessions</kbd><span>Browse and manage saved sessions</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#9881; Quick Navigation</h2>
-          <p class="zenleap-help-trigger">Works globally without entering leap mode</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>j</kbd><span>Next tab (or split pane below)</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>k</kbd><span>Previous tab (or split pane above)</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>h</kbd><span>Previous workspace (or pane left)</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>l</kbd><span>Next workspace (or pane right)</span></div>
-            <div class="zenleap-help-item"><kbd>Alt</kbd>+<kbd>Space</kbd><span>gTile resize overlay</span></div>
-          </div>
-        </div>
-
-        <div class="zenleap-help-section">
-          <h2>&#127912; Themes</h2>
-          <p class="zenleap-help-trigger">Settings &gt; Appearance or command palette</p>
-          <div class="zenleap-help-grid">
-            <div class="zenleap-help-item"><kbd>&gt; settings</kbd><span>Appearance tab: theme selector + editor</span></div>
-            <div class="zenleap-help-item"><kbd>&gt; reload-themes</kbd><span>Reload themes from JSON file</span></div>
-            <div class="zenleap-help-item"><kbd>&gt; open-themes-file</kbd><span>Open zenleap-themes.json in editor</span></div>
-          </div>
-          <p style="margin: 8px 0 0; font-size: 11px; color: var(--zl-text-muted);">7 built-in themes. Create custom themes in Settings &gt; Appearance &gt; Custom Themes.</p>
-        </div>
-      </div>
+      <div class="zenleap-help-content"></div>
 
       <div class="zenleap-help-footer">
         <span><kbd>j</kbd>/<kbd>k</kbd> scroll &#183; <kbd>g</kbd>/<kbd>G</kbd> top/bottom &#183; <kbd>Esc</kbd> close</span>
@@ -11117,13 +11130,20 @@
       }
       .zenleap-help-grid { display: flex; flex-direction: column; gap: 8px; }
       .zenleap-help-item { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+      .zenleap-help-keys { flex-shrink: 0; color: var(--zl-text-muted); font-size: 11px; }
+      .zenleap-help-note { margin: 8px 0 0; font-size: 11px; color: var(--zl-text-muted); }
+      .zenleap-help-trigger kbd {
+        background: var(--zl-accent-dim); color: var(--zl-accent); padding: 2px 6px;
+        border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 11px;
+        border: 1px solid var(--zl-accent-border);
+      }
       .zenleap-help-item kbd {
         background: var(--zl-accent-dim); color: var(--zl-accent); padding: 3px 8px;
         border-radius: var(--zl-r-sm); font-family: var(--zl-font-mono); font-size: 11px; font-weight: 600;
         border: 1px solid var(--zl-accent-border); min-width: 20px; text-align: center;
         box-shadow: var(--zl-shadow-kbd);
       }
-      .zenleap-help-item span { color: var(--zl-text-secondary); flex: 1; }
+      .zenleap-help-item .zenleap-help-desc { color: var(--zl-text-secondary); flex: 1; }
       .zenleap-help-footer {
         padding: 16px 32px; border-top: 1px solid var(--zl-border-subtle);
         text-align: center; font-size: 12px; color: var(--zl-text-muted);
@@ -11167,6 +11187,7 @@
     if (reorgMode) exitReorgMode(false);
 
     createHelpModal();
+    renderHelpContent();
 
     helpMode = true;
     _overlayFocus = captureFocusTarget();
