@@ -4088,12 +4088,18 @@
     const activation = entry._activation = {};
     entry.enabled = true;
     entry.error = null;
+    entry._initFailed = false;
     try {
       if (!entry.loaded) await loadPluginScript(entry, activation);
       if (entry._activation !== activation || !entry.enabled || _pluginRegistry.get(manifest.id) !== entry) return; // disabled/removed while loading
       if (!entry.loaded) return;
       if (typeof entry.exports.init === 'function') {
-        entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
+        try {
+          entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
+        } catch (e) {
+          entry._initFailed = true; // no destroy() for an init() that threw (REV-LCMDS-11)
+          throw e;
+        }
       }
       log(`Plugin "${manifest.name}" initialized`);
     } catch (e) {
@@ -4105,14 +4111,17 @@
     if (_pluginManagerMode) renderPluginManagerContent();
   }
 
-  // Run the plugin's destroy hook (exactly one) and release its sandbox.
+  // Run the plugin's destroy hook (exactly one; none if init() threw) and
+  // release its sandbox.
   function deactivatePlugin(entry) {
     const { manifest, instance, exports } = entry;
     entry._activation = null;
     try {
-      if (instance && instance !== exports && typeof instance.destroy === 'function') instance.destroy();
+      if (entry._initFailed) { /* init() threw: nothing to tear down; the sandbox nuke cuts it off */ }
+      else if (instance && instance !== exports && typeof instance.destroy === 'function') instance.destroy();
       else if (typeof exports?.destroy === 'function') exports.destroy(createScopedPluginAPI(manifest.id));
     } catch (e) { console.error(`[ZenLeap] Plugin "${manifest.name}" destroy failed:`, e); }
+    entry._initFailed = false;
     _pluginEventBus.removeAllForPlugin(manifest.id);
     entry.instance = null;
     entry._dynamicCommands = [];
