@@ -114,6 +114,7 @@ WORK_DIR=""
 SOURCE_DIR=""
 FXAC_SRC=""
 FXAC_VERSION=""
+FXAC_VERIFIED=false
 FXAC_FAILED=false
 FXAC_PROGRAM_PENDING=false
 FXAC_PROGRAM_CMDS=""
@@ -830,13 +831,46 @@ zp_fxac_verify() {
     done <<EOF
 $ZP_FXAC_SHA256
 EOF
-    for file in "$dir"/profile/chrome/utils/*; do
+    # Every entry (hidden ones too) must be listed, by its exact name
+    while IFS= read -r file; do
         extra="profile/chrome/utils/${file##*/}"
-        if ! printf '%s\n' "$ZP_FXAC_SHA256" | grep -qF "  $extra"; then
+        if ! printf '%s\n' "$ZP_FXAC_SHA256" | awk -v f="$extra" '$2 == f { found = 1 } END { exit !found }'; then
             ZP_ERROR="fx-autoconfig download contains an unexpected file: $extra"
             return 1
         fi
-    done
+    done < <(find "$dir/profile/chrome/utils" -mindepth 1 -maxdepth 1 2>/dev/null)
+    return 0
+}
+
+# Copy fx-autoconfig's loader (profile/chrome/utils of the tree <src>) to
+# <dest> (a profile's chrome/utils). From the tested version (<verified> =
+# true) exactly the pinned files are copied and each copy is checked; any other
+# version is copied as it is. Returns 1 with ZP_ERROR (and no <dest> left).
+# Usage: zp_fxac_copy_utils <src> <dest> <verified>
+zp_fxac_copy_utils() {
+    local src="$1/profile/chrome/utils" dest="$2" sum file
+    rm -rf "$dest"
+    if ! mkdir -p "$dest"; then
+        ZP_ERROR="could not create $dest"
+        return 1
+    fi
+    if [ "$3" = true ]; then
+        while read -r sum file; do
+            case "$file" in profile/chrome/utils/*) ;; *) continue ;; esac
+            if ! cp "$1/$file" "$dest/${file##*/}" 2>/dev/null || \
+               [ "$(zp_sha256 "$dest/${file##*/}")" != "$sum" ]; then
+                rm -rf "$dest"
+                ZP_ERROR="the copy of $file does not match the tested version"
+                return 1
+            fi
+        done <<EOF
+$ZP_FXAC_SHA256
+EOF
+    elif ! cp -R "$src/." "$dest/" 2>/dev/null; then
+        rm -rf "$dest"
+        ZP_ERROR="could not copy $src to $dest"
+        return 1
+    fi
     return 0
 }
 
@@ -1320,8 +1354,9 @@ set_gre_state() {
 }
 
 # Download fx-autoconfig (once per run) into $FXAC_SRC: the pinned, tested
-# commit, verified file by file. FX_AUTOCONFIG_DIR (a local checkout) and
-# FX_AUTOCONFIG_REF (another commit/branch) are used unverified.
+# commit, verified file by file (FXAC_VERIFIED). FX_AUTOCONFIG_DIR (a local
+# checkout) is verified too and used unverified if it is another version;
+# FX_AUTOCONFIG_REF (another commit/branch) is used unverified.
 fxac_fetch() {
     local dir ref
     if [ -n "$FXAC_SRC" ]; then
@@ -1337,7 +1372,12 @@ fxac_fetch() {
             return 1
         fi
         FXAC_SRC="$(cd "$FX_AUTOCONFIG_DIR" && pwd)"
-        warn "Using fx-autoconfig from $FXAC_SRC (FX_AUTOCONFIG_DIR, not verified)"
+        if zp_fxac_verify "$FXAC_SRC"; then
+            FXAC_VERIFIED=true
+            ok "Using fx-autoconfig from $FXAC_SRC (FX_AUTOCONFIG_DIR; the tested version)"
+        else
+            warn "Using fx-autoconfig from $FXAC_SRC (FX_AUTOCONFIG_DIR, not verified)"
+        fi
     else
         ref="${FX_AUTOCONFIG_REF:-$ZP_FXAC_PINNED_REF}"
         work_dir
@@ -1368,6 +1408,7 @@ fxac_fetch() {
         fi
         if [ "$ref" = "$ZP_FXAC_PINNED_REF" ]; then
             zp_fxac_verify "$dir" || return 1
+            FXAC_VERIFIED=true
         else
             warn "Using fx-autoconfig $ref (FX_AUTOCONFIG_REF: not the tested version, not verified)"
         fi
@@ -1495,7 +1536,10 @@ ensure_fxautoconfig_profile() {
         fxac_fetch || die "Could not get fx-autoconfig: $ZP_ERROR"
         rm -rf "$CHROME_DIR/utils.zenleap-backup"
         mv "$utils" "$CHROME_DIR/utils.zenleap-backup"
-        cp -R "$FXAC_SRC/profile/chrome/utils" "$utils"
+        if ! zp_fxac_copy_utils "$FXAC_SRC" "$utils" "$FXAC_VERIFIED"; then
+            mv "$CHROME_DIR/utils.zenleap-backup" "$utils"
+            die "Could not update fx-autoconfig's loader: $ZP_ERROR (the previous one is back in place)"
+        fi
         ok "Updated fx-autoconfig loader to $FXAC_VERSION (previous copy: chrome/utils.zenleap-backup)"
         return 0
     fi
@@ -1506,8 +1550,7 @@ ensure_fxautoconfig_profile() {
     fi
     fxac_fetch || die "Could not get fx-autoconfig: $ZP_ERROR"
     mkdir -p "$CHROME_DIR"
-    rm -rf "$utils"
-    cp -R "$FXAC_SRC/profile/chrome/utils" "$utils"
+    zp_fxac_copy_utils "$FXAC_SRC" "$utils" "$FXAC_VERIFIED" || die "Could not install fx-autoconfig's loader: $ZP_ERROR"
     ok "Installed fx-autoconfig loader (chrome/utils, $FXAC_VERSION)"
 }
 

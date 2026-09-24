@@ -62,11 +62,15 @@ make_fxac_zip() {  # make_fxac_zip <out.zip>
     done
     printf 'console.log("Hi mom");\n' > "$top/profile/chrome/JS/test.uc.js"
     printf '/* example */\n' > "$top/profile/chrome/CSS/agent_style.uc.css"
-    (cd "$(dirname "$top")" && python3 -c 'import sys, zipfile, os
+    zip_tree "$1" "$(dirname "$top")" "$(basename "$top")"
+}
+# zip_tree <out.zip> <parent-dir> <top>: zip <parent-dir>/<top> (hidden files too)
+zip_tree() {
+    (cd "$2" && python3 -c 'import sys, zipfile, os
 z = zipfile.ZipFile(sys.argv[1], "w")
 for root, _, files in os.walk(sys.argv[2]):
     for f in files: z.write(os.path.join(root, f))
-z.close()' "$1" "$(basename "$top")")
+z.close()' "$1" "$3")
 }
 make_fxac_zip "$T/fixtures/fxac.zip"
 

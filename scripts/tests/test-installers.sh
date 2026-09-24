@@ -539,6 +539,29 @@ run install.sh install --yes --all-profiles --zen-path "$APP"
 check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
 
+# 35. fx-autoconfig verification counts every entry of chrome/utils (hidden ones
+#     too, by exact name), and exactly the verified files are copied  [REV-LINST-13]
+new_home fxhidden
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+for extra in .hidden.mjs boot; do
+    rm -rf "$T/fxh"
+    mkdir -p "$T/fxh"
+    cp -a "$FXAC_TREE" "$T/fxh/"
+    printf 'evil\n' > "$T/fxh/$(basename "$FXAC_TREE")/profile/chrome/utils/$extra"
+    zip_tree "$T/fixtures/fxac-extra.zip" "$T/fxh" "$(basename "$FXAC_TREE")"
+    FAKE_FXAC_ZIP="$T/fixtures/fxac-extra.zip" run install.sh install --yes --zen-path "$APP"
+    check "archive with an extra chrome/utils/$extra: refused" rc_is 1
+    check "... names it" has "$OUT" "unexpected file: profile/chrome/utils/$extra"
+    check "... no loader installed" missing "$P/chrome/utils"
+    check "... no config.js" missing "$APP/config.js"
+done
+run install.sh install --yes --zen-path "$APP"
+# shellcheck disable=SC2012  # plain file names
+check "verified loader: exactly the pinned files in chrome/utils" \
+    test "$(ls -A "$P/chrome/utils" | tr '\n' ' ')" = "boot.sys.mjs chrome.manifest fs.sys.mjs module_loader.mjs uc_api.sys.mjs utils.sys.mjs "
+
 # 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
 #     (`sh` on macOS) works  [REV-LINST-17]
 new_home notbash
