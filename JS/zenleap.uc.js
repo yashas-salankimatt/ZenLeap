@@ -18756,400 +18756,413 @@
 
     // Handle keys when in leap mode
     if (!leapMode) return;
+    handleLeapKey(event);
+  }
 
+  // Leap mode and its sub-modes, in precedence order: Escape, browse (unless a
+  // mark sub-mode is waiting for its character), g, z, mark, goto mark, then the
+  // first key after the leap chord.
+  function handleLeapKey(event) {
     const key = navKey(event);
+    if (key === 'Escape') return handleLeapEscape(event);
+    if (browseMode && !markMode && !gotoMarkMode) return handleBrowseKey(event, key);
+    if (gMode) return handleGModeKey(event, key);
+    if (zMode) return handleZModeKey(event, key);
+    if (markMode) return handleMarkKey(event, key);
+    if (gotoMarkMode) return handleGotoMarkKey(event, key);
+    return handleInitialLeapKey(event, key);
+  }
 
-    // Escape to cancel
-    if (key === 'Escape') {
-      consumeEvent(event);
+  // Escape: leaves a mark sub-mode, then clears browse state, then leaves the mode
+  function handleLeapEscape(event) {
+    consumeEvent(event);
 
-      // Exit mark/goto-mark sub-mode first (in both leap and browse mode)
-      if (markMode || gotoMarkMode) {
-        markMode = false;
-        gotoMarkMode = false;
+    // Exit mark/goto-mark sub-mode first (in both leap and browse mode)
+    if (markMode || gotoMarkMode) {
+      markMode = false;
+      gotoMarkMode = false;
+      updateLeapOverlayState();
+      log('Escaped mark/goto-mark sub-mode');
+      return;
+    }
+
+    if (browseMode) {
+      // Two-stage escape: first clears any pending state, second exits browse mode
+      const hasSelection = selectedItems.size > 0;
+      const hasYankBuffer = yankItems.length > 0;
+      const hasPendingNumber = browseNumberBuffer.length > 0;
+      const hasPendingG = browseGPending;
+
+      if (hasSelection || hasYankBuffer || hasPendingNumber || hasPendingG) {
+        selectedItems.clear();
+        yankItems = [];
+        browseNumberBuffer = '';
+        clearTimeout(browseNumberTimeout);
+        browseNumberTimeout = null;
+        browseGPending = false;
+        clearTimeout(browseGTimeout);
+        browseGTimeout = null;
+        updateHighlight();
         updateLeapOverlayState();
-        log('Escaped mark/goto-mark sub-mode');
+        log('Cleared selection/yank/pending state, staying in browse mode');
+      } else {
+        cancelBrowseMode();
+      }
+    } else {
+      exitLeapMode(false);
+    }
+    return;
+  }
+
+  // Browse mode: move / select / yank / paste / close / open the highlighted item
+  function handleBrowseKey(event, key) {
+    consumeEvent(event);
+
+    const digit = digitFor(event);
+
+    // If a number buffer is accumulating and a non-digit key is pressed,
+    // cancel the pending number jump (the user changed their mind)
+    if (browseNumberBuffer && digit === null) {
+      clearTimeout(browseNumberTimeout);
+      browseNumberTimeout = null;
+      browseNumberBuffer = '';
+    }
+
+    if (keyMatchesAny(event, 'keys.browse.down', 'keys.browse.downAlt', 'keys.leap.browseDown', 'keys.leap.browseDownAlt')) {
+      event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
+      return;
+    }
+    if (keyMatchesAny(event, 'keys.browse.up', 'keys.browse.upAlt', 'keys.leap.browseUp', 'keys.leap.browseUpAlt')) {
+      event.shiftKey ? shiftMoveHighlight('up') : moveHighlight('up');
+      return;
+    }
+    // One-shot actions: ignore auto-repeat (holding x must not close a run of tabs)
+    if (event.repeat) return;
+
+    if (keyMatches(event, 'keys.browse.confirm')) {
+      confirmBrowseSelection();
+      return;
+    }
+    if (keyMatches(event, 'keys.browse.close')) {
+      closeHighlightedTab(event);
+      return;
+    }
+    if (keyMatches(event, 'keys.browse.select')) {
+      toggleItemSelection();
+      return;
+    }
+    // Case-sensitive bindings first (P before p, G before g, M before m)
+    if (keyMatches(event, 'keys.browse.pasteBefore')) {
+      pasteItems('before');
+      return;
+    }
+    if (keyMatches(event, 'keys.browse.yank')) {
+      yankSelectedItems();
+      return;
+    }
+    if (keyMatches(event, 'keys.browse.pasteAfter')) {
+      pasteItems('after');
+      return;
+    }
+    if (keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt',
+                             'keys.browse.nextWorkspace', 'keys.browse.nextWorkspaceAlt')) {
+      const isPrev = keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt');
+      browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
+      return;
+    }
+
+    // M = clear all marks
+    if (keyMatches(event, 'keys.leap.clearMarks')) {
+      clearAllMarks();
+      updateHighlight();
+      updateLeapOverlayState();
+      log('Browse: cleared all marks');
+      return;
+    }
+
+    // m = set mark on highlighted tab
+    if (keyMatches(event, 'keys.leap.setMark')) {
+      markMode = true;
+      updateLeapOverlayState();
+      log('Browse: entered mark mode');
+      return;
+    }
+
+    // ' = goto mark (move highlight to marked tab)
+    if (keyMatchesAny(event, 'keys.leap.gotoMark', 'keys.leap.gotoMarkAlt')) {
+      gotoMarkMode = true;
+      updateLeapOverlayState();
+      log('Browse: entered goto mark mode');
+      return;
+    }
+
+    // G = move highlight to last item
+    if (keyMatches(event, 'keys.browse.lastTab')) {
+      const items = getVisibleItems();
+      setHighlight(items.length - 1, items);
+      updateHighlight();
+      updateLeapOverlayState();
+      log(`Browse: jumped to last item (index ${highlightedTabIndex})`);
+      return;
+    }
+
+    // g = pending gg (move highlight to first item)
+    if (keyMatches(event, 'keys.browse.gMode')) {
+      if (browseGPending) {
+        // Second g pressed - move to first item (or first unpinned if setting enabled)
+        clearTimeout(browseGTimeout);
+        browseGPending = false;
+        browseGTimeout = null;
+        const items = getVisibleItems();
+        const firstUnpinned = S['display.ggSkipPinned'] ? firstUnpinnedIndex(items) : -1;
+        setHighlight(firstUnpinned >= 0 ? firstUnpinned : 0, items);
+        updateHighlight();
+        updateLeapOverlayState();
+        log(`Browse: jumped to first tab (index ${highlightedTabIndex})`);
         return;
       }
+      // First g pressed - wait for second g
+      browseGPending = true;
+      browseGTimeout = setTimeout(() => {
+        browseGPending = false;
+        browseGTimeout = null;
+        log(`Browse: g timed out with no second g`);
+      }, S['timing.browseGTimeout']);
+      return;
+    }
 
-      if (browseMode) {
-        // Two-stage escape: first clears any pending state, second exits browse mode
-        const hasSelection = selectedItems.size > 0;
-        const hasYankBuffer = yankItems.length > 0;
-        const hasPendingNumber = browseNumberBuffer.length > 0;
-        const hasPendingG = browseGPending;
+    // If g was pending but another key was pressed, cancel it
+    if (browseGPending) {
+      clearTimeout(browseGTimeout);
+      browseGPending = false;
+      browseGTimeout = null;
+    }
 
-        if (hasSelection || hasYankBuffer || hasPendingNumber || hasPendingG) {
-          selectedItems.clear();
-          yankItems = [];
-          browseNumberBuffer = '';
-          clearTimeout(browseNumberTimeout);
-          browseNumberTimeout = null;
-          browseGPending = false;
-          clearTimeout(browseGTimeout);
-          browseGTimeout = null;
-          updateHighlight();
-          updateLeapOverlayState();
-          log('Cleared selection/yank/pending state, staying in browse mode');
-        } else {
-          cancelBrowseMode();
+    // Digit keys: accumulate multi-digit number with timeout
+    if (digit !== null && (digit !== '0' || browseNumberBuffer.length > 0)) {
+      browseNumberBuffer += digit;
+      clearTimeout(browseNumberTimeout);
+      browseNumberTimeout = setTimeout(() => {
+        browseNumberTimeout = null;
+        const distance = parseInt(browseNumberBuffer);
+        browseNumberBuffer = '';
+        if (distance >= 1) {
+          log(`Browse: jumping distance ${distance}`);
+          jumpAndOpenTab(distance);
         }
+      }, S['timing.browseNumberTimeout']);
+      return;
+    }
+
+    return;
+  }
+
+  // g-mode: gg first, G last, g<number>[Enter] absolute position
+  function handleGModeKey(event, key) {
+    consumeEvent(event);
+    if (event.repeat) return;
+    const digit = digitFor(event);
+
+    // G in g-mode - go to last tab (case-sensitive, so check before gg)
+    if (keyMatches(event, 'keys.gMode.last') && gNumberBuffer === '') {
+      const items = getVisibleItems();
+      goToAbsoluteTab(items.length);
+      return;
+    }
+
+    // gg - go to first tab (or first unpinned if setting enabled)
+    if (keyMatches(event, 'keys.gMode.first') && gNumberBuffer === '') {
+      if (S['display.ggSkipPinned']) {
+        const items = getVisibleItems();
+        const firstUnpinned = firstUnpinnedIndex(items);
+        const targetIdx = firstUnpinned >= 0 ? firstUnpinned : 0;
+        const target = items[targetIdx];
+        if (isFolder(target)) {
+          goToAbsoluteTab(targetIdx + 1);
+        } else {
+          gBrowser.selectedTab = target;
+          log(`Jumped to first unpinned tab via gg (index ${targetIdx})`);
+          exitLeapMode(true);
+        }
+      } else {
+        goToAbsoluteTab(1);
+      }
+      return;
+    }
+
+    // Number keys - accumulate for absolute position
+    if (digit !== null) {
+      gNumberBuffer += digit;
+      clearTimeout(gNumberTimeout);
+      updateLeapOverlayState();
+
+      // Set timeout to auto-execute after pause
+      gNumberTimeout = setTimeout(() => {
+        if (gNumberBuffer) {
+          const tabNum = parseInt(gNumberBuffer);
+          if (tabNum > 0) {
+            goToAbsoluteTab(tabNum);
+          } else {
+            // 0 alone could mean first tab or cancel
+            gMode = false;
+            gNumberBuffer = '';
+            updateLeapOverlayState();
+          }
+        }
+      }, S['timing.gModeTimeout']);
+
+      log(`g-mode number buffer: ${gNumberBuffer}`);
+      return;
+    }
+
+    // Enter to confirm number immediately
+    if (key === 'Enter' && gNumberBuffer) {
+      clearTimeout(gNumberTimeout);
+      const tabNum = parseInt(gNumberBuffer);
+      if (tabNum > 0) {
+        goToAbsoluteTab(tabNum);
+      }
+      return;
+    }
+
+    // Invalid key, exit g-mode but stay in leap mode
+    gMode = false;
+    gNumberBuffer = '';
+    clearTimeout(gNumberTimeout);
+    updateLeapOverlayState();
+    log(`Invalid g-mode key: ${key}, exiting g-mode`);
+    return;
+  }
+
+  // z-mode: scroll the current tab to the center (zz), top (zt) or bottom (zb)
+  function handleZModeKey(event, key) {
+    consumeEvent(event);
+    if (event.repeat) return;
+
+    if (keyMatches(event, 'keys.zMode.center')) {
+      scrollTabIntoView('center');
+      exitLeapMode(false);
+      return;
+    }
+    if (keyMatches(event, 'keys.zMode.top')) {
+      scrollTabIntoView('top');
+      exitLeapMode(false);
+      return;
+    }
+    if (keyMatches(event, 'keys.zMode.bottom')) {
+      scrollTabIntoView('bottom');
+      exitLeapMode(false);
+      return;
+    }
+
+    // Invalid key, exit z-mode but stay in leap mode
+    zMode = false;
+    updateLeapOverlayState();
+    log(`Invalid z-mode key: ${key}, exiting z-mode`);
+    return;
+  }
+
+  // Mark mode (m): the next a-z/0-9 marks the current (or highlighted) tab
+  function handleMarkKey(event, key) {
+    consumeEvent(event);
+    if (event.repeat) return;
+
+    // Accept a-z and 0-9 as mark characters
+    const markChar = markCharFor(event);
+    if (markChar) {
+      // In browse mode, mark the highlighted tab; otherwise mark the current tab
+      let targetTab = currentTab();
+      if (browseMode && (highlightedItem || highlightedTabIndex >= 0)) {
+        if (!highlightStillThere()) {
+          markMode = false;
+          updateLeapOverlayState();
+          return;
+        }
+        const item = highlightedItem;
+        if (!item || isFolder(item)) {
+          // Can't mark a folder — exit mark sub-mode silently
+          markMode = false;
+          updateLeapOverlayState();
+          log('Cannot set mark on folder');
+          return;
+        }
+        targetTab = item;
+      }
+      setMark(markChar, targetTab);
+      if (browseMode) {
+        // Stay in browse mode, just exit mark sub-mode
+        markMode = false;
+        updateHighlight();
+        updateLeapOverlayState();
       } else {
         exitLeapMode(false);
       }
       return;
     }
 
-    // === BROWSE MODE HANDLING ===
-    // When mark/goto-mark sub-mode is active, skip browse keys and fall through
-    // to the mark/goto-mark handlers below.
-    if (browseMode && !markMode && !gotoMarkMode) {
-      consumeEvent(event);
+    // Invalid key, exit mark mode but stay in leap/browse mode
+    markMode = false;
+    updateLeapOverlayState();
+    log(`Invalid mark key: ${key}, exiting mark mode`);
+    return;
+  }
 
-      const digit = digitFor(event);
+  // Goto-mark mode (' or `): the next a-z/0-9 jumps to that mark
+  function handleGotoMarkKey(event, key) {
+    consumeEvent(event);
+    if (event.repeat) return;
 
-      // If a number buffer is accumulating and a non-digit key is pressed,
-      // cancel the pending number jump (the user changed their mind)
-      if (browseNumberBuffer && digit === null) {
-        clearTimeout(browseNumberTimeout);
-        browseNumberTimeout = null;
-        browseNumberBuffer = '';
-      }
-
-      if (keyMatchesAny(event, 'keys.browse.down', 'keys.browse.downAlt', 'keys.leap.browseDown', 'keys.leap.browseDownAlt')) {
-        event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
-        return;
-      }
-      if (keyMatchesAny(event, 'keys.browse.up', 'keys.browse.upAlt', 'keys.leap.browseUp', 'keys.leap.browseUpAlt')) {
-        event.shiftKey ? shiftMoveHighlight('up') : moveHighlight('up');
-        return;
-      }
-      // One-shot actions: ignore auto-repeat (holding x must not close a run of tabs)
-      if (event.repeat) return;
-
-      if (keyMatches(event, 'keys.browse.confirm')) {
-        confirmBrowseSelection();
-        return;
-      }
-      if (keyMatches(event, 'keys.browse.close')) {
-        closeHighlightedTab(event);
-        return;
-      }
-      if (keyMatches(event, 'keys.browse.select')) {
-        toggleItemSelection();
-        return;
-      }
-      // Case-sensitive bindings first (P before p, G before g, M before m)
-      if (keyMatches(event, 'keys.browse.pasteBefore')) {
-        pasteItems('before');
-        return;
-      }
-      if (keyMatches(event, 'keys.browse.yank')) {
-        yankSelectedItems();
-        return;
-      }
-      if (keyMatches(event, 'keys.browse.pasteAfter')) {
-        pasteItems('after');
-        return;
-      }
-      if (keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt',
-                               'keys.browse.nextWorkspace', 'keys.browse.nextWorkspaceAlt')) {
-        const isPrev = keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt');
-        browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
-        return;
-      }
-
-      // M = clear all marks
-      if (keyMatches(event, 'keys.leap.clearMarks')) {
-        clearAllMarks();
-        updateHighlight();
-        updateLeapOverlayState();
-        log('Browse: cleared all marks');
-        return;
-      }
-
-      // m = set mark on highlighted tab
-      if (keyMatches(event, 'keys.leap.setMark')) {
-        markMode = true;
-        updateLeapOverlayState();
-        log('Browse: entered mark mode');
-        return;
-      }
-
-      // ' = goto mark (move highlight to marked tab)
-      if (keyMatchesAny(event, 'keys.leap.gotoMark', 'keys.leap.gotoMarkAlt')) {
-        gotoMarkMode = true;
-        updateLeapOverlayState();
-        log('Browse: entered goto mark mode');
-        return;
-      }
-
-      // G = move highlight to last item
-      if (keyMatches(event, 'keys.browse.lastTab')) {
-        const items = getVisibleItems();
-        setHighlight(items.length - 1, items);
-        updateHighlight();
-        updateLeapOverlayState();
-        log(`Browse: jumped to last item (index ${highlightedTabIndex})`);
-        return;
-      }
-
-      // g = pending gg (move highlight to first item)
-      if (keyMatches(event, 'keys.browse.gMode')) {
-        if (browseGPending) {
-          // Second g pressed - move to first item (or first unpinned if setting enabled)
-          clearTimeout(browseGTimeout);
-          browseGPending = false;
-          browseGTimeout = null;
+    // Accept a-z and 0-9 as mark characters
+    const markChar = markCharFor(event);
+    if (markChar) {
+      if (browseMode) {
+        // In browse mode, move highlight to the marked tab
+        const markedTab = marks.get(markChar);
+        if (markedTab && !markedTab.closing && markedTab.parentNode) {
           const items = getVisibleItems();
-          const firstUnpinned = S['display.ggSkipPinned'] ? firstUnpinnedIndex(items) : -1;
-          setHighlight(firstUnpinned >= 0 ? firstUnpinned : 0, items);
-          updateHighlight();
-          updateLeapOverlayState();
-          log(`Browse: jumped to first tab (index ${highlightedTabIndex})`);
-          return;
-        }
-        // First g pressed - wait for second g
-        browseGPending = true;
-        browseGTimeout = setTimeout(() => {
-          browseGPending = false;
-          browseGTimeout = null;
-          log(`Browse: g timed out with no second g`);
-        }, S['timing.browseGTimeout']);
-        return;
-      }
-
-      // If g was pending but another key was pressed, cancel it
-      if (browseGPending) {
-        clearTimeout(browseGTimeout);
-        browseGPending = false;
-        browseGTimeout = null;
-      }
-
-      // Digit keys: accumulate multi-digit number with timeout
-      if (digit !== null && (digit !== '0' || browseNumberBuffer.length > 0)) {
-        browseNumberBuffer += digit;
-        clearTimeout(browseNumberTimeout);
-        browseNumberTimeout = setTimeout(() => {
-          browseNumberTimeout = null;
-          const distance = parseInt(browseNumberBuffer);
-          browseNumberBuffer = '';
-          if (distance >= 1) {
-            log(`Browse: jumping distance ${distance}`);
-            jumpAndOpenTab(distance);
-          }
-        }, S['timing.browseNumberTimeout']);
-        return;
-      }
-
-      return;
-    }
-
-    // === G-MODE HANDLING ===
-    if (gMode) {
-      consumeEvent(event);
-      if (event.repeat) return;
-      const digit = digitFor(event);
-
-      // G in g-mode - go to last tab (case-sensitive, so check before gg)
-      if (keyMatches(event, 'keys.gMode.last') && gNumberBuffer === '') {
-        const items = getVisibleItems();
-        goToAbsoluteTab(items.length);
-        return;
-      }
-
-      // gg - go to first tab (or first unpinned if setting enabled)
-      if (keyMatches(event, 'keys.gMode.first') && gNumberBuffer === '') {
-        if (S['display.ggSkipPinned']) {
-          const items = getVisibleItems();
-          const firstUnpinned = firstUnpinnedIndex(items);
-          const targetIdx = firstUnpinned >= 0 ? firstUnpinned : 0;
-          const target = items[targetIdx];
-          if (isFolder(target)) {
-            goToAbsoluteTab(targetIdx + 1);
-          } else {
-            gBrowser.selectedTab = target;
-            log(`Jumped to first unpinned tab via gg (index ${targetIdx})`);
-            exitLeapMode(true);
-          }
-        } else {
-          goToAbsoluteTab(1);
-        }
-        return;
-      }
-
-      // Number keys - accumulate for absolute position
-      if (digit !== null) {
-        gNumberBuffer += digit;
-        clearTimeout(gNumberTimeout);
-        updateLeapOverlayState();
-
-        // Set timeout to auto-execute after pause
-        gNumberTimeout = setTimeout(() => {
-          if (gNumberBuffer) {
-            const tabNum = parseInt(gNumberBuffer);
-            if (tabNum > 0) {
-              goToAbsoluteTab(tabNum);
-            } else {
-              // 0 alone could mean first tab or cancel
-              gMode = false;
-              gNumberBuffer = '';
-              updateLeapOverlayState();
-            }
-          }
-        }, S['timing.gModeTimeout']);
-
-        log(`g-mode number buffer: ${gNumberBuffer}`);
-        return;
-      }
-
-      // Enter to confirm number immediately
-      if (key === 'Enter' && gNumberBuffer) {
-        clearTimeout(gNumberTimeout);
-        const tabNum = parseInt(gNumberBuffer);
-        if (tabNum > 0) {
-          goToAbsoluteTab(tabNum);
-        }
-        return;
-      }
-
-      // Invalid key, exit g-mode but stay in leap mode
-      gMode = false;
-      gNumberBuffer = '';
-      clearTimeout(gNumberTimeout);
-      updateLeapOverlayState();
-      log(`Invalid g-mode key: ${key}, exiting g-mode`);
-      return;
-    }
-
-    // === Z-MODE HANDLING ===
-    if (zMode) {
-      consumeEvent(event);
-      if (event.repeat) return;
-
-      if (keyMatches(event, 'keys.zMode.center')) {
-        scrollTabIntoView('center');
-        exitLeapMode(false);
-        return;
-      }
-      if (keyMatches(event, 'keys.zMode.top')) {
-        scrollTabIntoView('top');
-        exitLeapMode(false);
-        return;
-      }
-      if (keyMatches(event, 'keys.zMode.bottom')) {
-        scrollTabIntoView('bottom');
-        exitLeapMode(false);
-        return;
-      }
-
-      // Invalid key, exit z-mode but stay in leap mode
-      zMode = false;
-      updateLeapOverlayState();
-      log(`Invalid z-mode key: ${key}, exiting z-mode`);
-      return;
-    }
-
-    // === MARK MODE HANDLING ===
-    if (markMode) {
-      consumeEvent(event);
-      if (event.repeat) return;
-
-      // Accept a-z and 0-9 as mark characters
-      const markChar = markCharFor(event);
-      if (markChar) {
-        // In browse mode, mark the highlighted tab; otherwise mark the current tab
-        let targetTab = currentTab();
-        if (browseMode && (highlightedItem || highlightedTabIndex >= 0)) {
-          if (!highlightStillThere()) {
-            markMode = false;
+          const idx = items.indexOf(markedTab);
+          if (idx >= 0) {
+            setHighlight(idx, items);
+            gotoMarkMode = false;
+            updateHighlight();
             updateLeapOverlayState();
-            return;
-          }
-          const item = highlightedItem;
-          if (!item || isFolder(item)) {
-            // Can't mark a folder — exit mark sub-mode silently
-            markMode = false;
-            updateLeapOverlayState();
-            log('Cannot set mark on folder');
-            return;
-          }
-          targetTab = item;
-        }
-        setMark(markChar, targetTab);
-        if (browseMode) {
-          // Stay in browse mode, just exit mark sub-mode
-          markMode = false;
-          updateHighlight();
-          updateLeapOverlayState();
-        } else {
-          exitLeapMode(false);
-        }
-        return;
-      }
-
-      // Invalid key, exit mark mode but stay in leap/browse mode
-      markMode = false;
-      updateLeapOverlayState();
-      log(`Invalid mark key: ${key}, exiting mark mode`);
-      return;
-    }
-
-    // === GOTO MARK MODE HANDLING ===
-    if (gotoMarkMode) {
-      consumeEvent(event);
-      if (event.repeat) return;
-
-      // Accept a-z and 0-9 as mark characters
-      const markChar = markCharFor(event);
-      if (markChar) {
-        if (browseMode) {
-          // In browse mode, move highlight to the marked tab
-          const markedTab = marks.get(markChar);
-          if (markedTab && !markedTab.closing && markedTab.parentNode) {
-            const items = getVisibleItems();
-            const idx = items.indexOf(markedTab);
-            if (idx >= 0) {
-              setHighlight(idx, items);
-              gotoMarkMode = false;
-              updateHighlight();
-              updateLeapOverlayState();
-              log(`Browse: moved highlight to mark '${markChar}'`);
-            } else {
-              gotoMarkMode = false;
-              updateLeapOverlayState();
-              log(`Mark '${markChar}' tab not in current visible items`);
-            }
+            log(`Browse: moved highlight to mark '${markChar}'`);
           } else {
             gotoMarkMode = false;
             updateLeapOverlayState();
-            if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
-              marks.delete(markChar);
-              saveEssentialMarks();
-              log(`Mark '${markChar}' tab was closed, removing mark`);
-            } else {
-              log(`Mark '${markChar}' not found`);
-            }
+            log(`Mark '${markChar}' tab not in current visible items`);
           }
         } else {
-          if (goToMark(markChar)) {
-            exitLeapMode(true); // Center scroll on the marked tab
+          gotoMarkMode = false;
+          updateLeapOverlayState();
+          if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
+            marks.delete(markChar);
+            saveEssentialMarks();
+            log(`Mark '${markChar}' tab was closed, removing mark`);
           } else {
-            // Mark not found, stay in goto mark mode for retry
             log(`Mark '${markChar}' not found`);
           }
         }
-        return;
+      } else {
+        if (goToMark(markChar)) {
+          exitLeapMode(true); // Center scroll on the marked tab
+        } else {
+          // Mark not found, stay in goto mark mode for retry
+          log(`Mark '${markChar}' not found`);
+        }
       }
-
-      // Invalid key, exit goto mark mode but stay in leap/browse mode
-      gotoMarkMode = false;
-      updateLeapOverlayState();
-      log(`Invalid goto mark key: ${key}, exiting goto mark mode`);
       return;
     }
 
-    // === INITIAL LEAP MODE (waiting for j/k/g/z/m/'/o/i) ===
+    // Invalid key, exit goto mark mode but stay in leap/browse mode
+    gotoMarkMode = false;
+    updateLeapOverlayState();
+    log(`Invalid goto mark key: ${key}, exiting goto mark mode`);
+    return;
+  }
+
+  // The first key after the leap chord (j/k/g/z/m/'/o/i, G, 0, $, ...)
+  function handleInitialLeapKey(event, key) {
     consumeEvent(event);
 
     if (keyMatchesAny(event, 'keys.leap.browseDown', 'keys.leap.browseDownAlt')) {
