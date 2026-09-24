@@ -18722,11 +18722,23 @@
 
   // The theme to apply: user themes are completed with Meridian's values, so
   // one that sets only a few keys (or has no `extends`) never yields
-  // `undefined` CSS values (LEAP-A-18).
+  // `undefined` CSS values (LEAP-A-18). Color values that aren't valid CSS
+  // colors (e.g. half-typed in the theme editor) fall back to Meridian's too:
+  // one bad --zl-accent would break every rule using it (REV-LCORE-11).
   function resolveTheme(themeId) {
     const base = BUILTIN_THEMES.meridian;
     const t = themes[themeId] || themes.meridian || base;
-    return t === base ? base : { ...base, ...t };
+    if (t === base) return base;
+    const resolved = { ...base, ...t };
+    for (const [prop, spec] of Object.entries(THEME_EDITOR_SCHEMA)) {
+      if (spec.type !== 'color' && spec.type !== 'rgba') continue;
+      const value = resolved[prop];
+      if (value === base[prop]) continue;
+      let valid = false;
+      try { valid = typeof value === 'string' && InspectorUtils.isValidCSSColor(value.trim()); } catch (e) { /* treat as invalid */ }
+      if (!valid) resolved[prop] = base[prop];
+    }
+    return resolved;
   }
 
   // Theme object currently applied (the saved theme or a live preview).
