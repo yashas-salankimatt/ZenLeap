@@ -233,14 +233,37 @@ check "running/cancel: says cancelled" has "$LOG" "Installation cancelled."
 kill "$ZPID" 2>/dev/null
 FAKE_LSOF_PID="" FAKE_LSOF_FILE="" FAKE_ZEN_PIDFILE=""
 
-# F. Sine-managed profile
+# F. Sine-managed profile (Sine's bootloader in the profile, ZenLeap as a Sine mod)
 new_mac sine
-mkdir -p "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS"
+mkdir -p "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS" "$P/chrome/utils" "$P/chrome/JS"
 printf '// @version 3.3.9\n' > "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS/zenleap.uc.js"
+printf 'content userchromejs ./\ncontent userscripts ../JS/\ncontent sine ../sine-mods/\n' > "$P/chrome/utils/chrome.manifest"
+: > "$P/chrome/JS/sine.sys.mjs"
 manager Install DEFAULT
-check "sine: points to Sine" has "$LOG" "installed through Sine"
+check "sine: points to Sine" has "$LOG" "Sine manages ZenLeap in this profile"
 check "sine: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
 check "sine: no fx-autoconfig program files" missing "$RES/config.js"
+check "sine: Sine's copy untouched" has "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS/zenleap.uc.js" "3.3.9"
+rm -rf "$P/chrome/sine-mods"
+manager Install DEFAULT
+check "sine bootloader profile without the mod: points to Sine" has "$LOG" "set up for Sine's bootloader"
+check "sine bootloader profile without the mod: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+# A sine-mods copy where Sine does not start is a leftover: install as usual [REV-LINST-05]
+new_mac sineleft
+mkdir -p "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS"
+printf '// @version 3.3.9\n' > "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS/zenleap.uc.js"
+echo '{}' > "$P/chrome/sine-mods/mods.json"
+manager Install DEFAULT No
+check "leftover Sine files: installed into chrome/JS" same "$T/fixtures/release-good/JS/zenleap.uc.js" "$P/chrome/JS/zenleap.uc.js"
+check "leftover Sine files: fx-autoconfig set up" exists "$RES/config.js"
+# chrome/utils of another loader
+new_mac foreignutils
+mkdir -p "$P/chrome/utils"
+printf 'content other ./\n' > "$P/chrome/utils/chrome.manifest"
+manager Install DEFAULT
+check "another loader's chrome/utils: error shown" has "$LOG" "holds another script loader"
+check "another loader's chrome/utils: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+check "another loader's chrome/utils: untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 
 # G. Foreign config.js in Zen.app
 new_mac foreign

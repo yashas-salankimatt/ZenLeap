@@ -672,11 +672,42 @@ zp_sine_zenleap_dir() {
     return 1
 }
 
-# True if <profile-dir> boots through Sine's loader (which only runs Sine mods,
-# not fx-autoconfig scripts in chrome/JS).
-zp_profile_uses_sine() {
-    if [ -f "$1/chrome/JS/sine.sys.mjs" ] || [ -f "$1/chrome/sine-mods/mods.json" ]; then return 0; fi
-    if grep -qs 'sine-mods' "$1/chrome/utils/chrome.manifest"; then return 0; fi
+# Which loader runs the scripts of <profile-dir>. What runs is decided by the
+# Zen installation's config.js (<program-status>, see zp_program_status; empty
+# if unknown) and the profile's chrome/utils, not by other files in the profile:
+#   fxac     fx-autoconfig runs chrome/JS: its loader is in chrome/utils, or
+#            chrome/utils is empty (the installers add it)
+#   sine     Sine's bootloader, which only runs Sine mods: Zen's config.js is
+#            Sine's, or chrome/utils is Sine's (its chrome.manifest maps sine-mods)
+#   foreign  chrome/utils holds some other loader
+# Sine can also run on top of fx-autoconfig (chrome/JS/sine.sys.mjs); that
+# profile is "fxac" (its chrome/JS scripts run too), see zp_sine_active.
+zp_profile_loader() {
+    local utils="$1/chrome/utils"
+    if [ "$2" = sine ] || [ "$2" = sine-noprefs ]; then
+        echo sine
+    elif [ -f "$utils/boot.sys.mjs" ] || [ -f "$utils/boot.jsm" ]; then
+        echo fxac
+    elif [ -z "$(ls -A "$utils" 2>/dev/null)" ]; then
+        echo fxac
+    elif grep -qs 'sine-mods' "$utils/chrome.manifest"; then
+        echo sine
+    else
+        echo foreign
+    fi
+}
+
+# True if Sine runs (or is set up to run) in <profile-dir>: through its
+# bootloader, or through fx-autoconfig (chrome/JS/sine.sys.mjs; sine.uc.mjs in
+# older Sine versions). A chrome/sine-mods folder alone is no evidence: it
+# stays behind when Sine is removed.
+# Usage: zp_sine_active <profile-dir> <program-status>
+zp_sine_active() {
+    case "$(zp_profile_loader "$1" "$2")" in
+        sine) return 0 ;;
+        fxac)
+            if [ -f "$1/chrome/JS/sine.sys.mjs" ] || [ -f "$1/chrome/JS/sine.uc.mjs" ]; then return 0; fi ;;
+    esac
     return 1
 }
 
@@ -1100,7 +1131,7 @@ install_fxautoconfig_profile() {
         return 0
     fi
     if [ -d "$utils" ] && [ -n "$(ls -A "$utils" 2>/dev/null)" ]; then
-        return 0   # something else lives in chrome/utils; leave it alone
+        return 0   # something else lives in chrome/utils; do_install refuses earlier
     fi
     fxac_fetch || return 1
     mkdir -p "$profile_path/chrome"
@@ -1314,7 +1345,7 @@ offer_cleanup() {
 
 # Install action
 do_install() {
-    local all=() i selected profile_path tag version
+    local all=() i selected profile_path tag version status
 
     for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do all+=("$i"); done
     if ! selected=$(pick_profile "Select the Zen profile to install ZenLeap into:" "${all[@]}"); then
@@ -1323,23 +1354,30 @@ do_install() {
     profile_path="${ZP_PROFILE_DIRS[$selected]}"
     use_profile_zen_app "$selected"
 
-    # Sine-managed profiles: Sine installs and updates ZenLeap there
-    if zp_sine_zenleap_dir "$profile_path" >/dev/null; then
-        show_alert "ZenLeap is installed through Sine in this profile.${NL}${NL}Update it from Sine's mods page instead."
+    # Which loader runs this profile's scripts (the same rules as install.sh).
+    # Sine manages ZenLeap where it runs and has it as a mod; a sine-mods copy
+    # in a profile where Sine doesn't start is a leftover.
+    status=$(zp_program_status "$ZEN_RESOURCES")
+    if zp_sine_zenleap_dir "$profile_path" >/dev/null && zp_sine_active "$profile_path" "$status"; then
+        show_alert "Sine manages ZenLeap in this profile.${NL}${NL}Update it from Sine's settings instead."
         exit 0
     fi
-    if zp_profile_uses_sine "$profile_path"; then
-        show_alert "This profile loads scripts through Sine, which does not run fx-autoconfig scripts.${NL}${NL}Install ZenLeap from Sine instead: open Sine's mods page and install yashas-salankimatt/ZenLeap."
-        exit 0
-    fi
-    case "$(zp_program_status "$ZEN_RESOURCES")" in
+    case "$(zp_profile_loader "$profile_path" "$status")" in
         sine)
-            show_error "$ZEN_APP starts Sine's bootloader, which only runs Sine mods.${NL}${NL}Install ZenLeap from Sine instead: open Sine's mods page and install yashas-salankimatt/ZenLeap."
-            exit 1 ;;
+            if [ "$status" = sine ] || [ "$status" = sine-noprefs ]; then
+                show_alert "$ZEN_APP starts Sine's bootloader, which only runs Sine mods, not fx-autoconfig scripts.${NL}${NL}Install ZenLeap from Sine instead: in Sine's settings, install yashas-salankimatt/ZenLeap."
+            else
+                show_alert "This profile is set up for Sine's bootloader, which only runs Sine mods, not fx-autoconfig scripts.${NL}${NL}Install ZenLeap from Sine instead: in Sine's settings, install yashas-salankimatt/ZenLeap."
+            fi
+            exit 0 ;;
         foreign)
-            show_error "$ZEN_APP already contains a config.js that is not fx-autoconfig's (another loader, or an old fx-autoconfig).${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
+            show_error "chrome/utils in this profile holds another script loader, not fx-autoconfig's.${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
             exit 1 ;;
     esac
+    if [ "$status" = foreign ]; then
+        show_error "$ZEN_APP already contains a config.js that is not fx-autoconfig's (another loader, or an old fx-autoconfig).${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
+        exit 1
+    fi
 
     # Download and verify the latest release first
     osascript -e 'display notification "Downloading ZenLeap..." with title "ZenLeap Manager"' 2>/dev/null || true

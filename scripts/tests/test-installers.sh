@@ -258,7 +258,7 @@ cp "$APP/config.js" "$T/sine-config"
 run install.sh install --yes --zen-path "$APP"
 check "Sine's config.js: untouched" same "$T/sine-config" "$APP/config.js"
 check "Sine's config.js: explains that Sine only runs Sine mods" has "$OUT" "starts Sine's bootloader"
-check "Sine's config.js, profile without Sine: skipped (exit 1)" rc_is 1
+check "Sine's config.js, profile without Sine: skipped (exit 2: nothing installed)" rc_is 2
 check "Sine's config.js, profile without Sine: nothing in chrome/JS" missing "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 printf "// some other autoconfig\nlockPref('a', 1);\n" > "$APP/config.js"
 cp "$APP/config.js" "$T/other-config"
@@ -296,7 +296,8 @@ check "read-only app dir: still installs the profile part" exists "$H/.config/ze
 check "read-only app dir: final summary repeats the commands" has "$OUT" "will not load until fx-autoconfig"
 check "read-only app dir: no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 
-# 18. Sine: ZenLeap as a Sine mod (--yes replaces Sine's copy); Sine-only profile is skipped
+# 18. Sine (its bootloader's profile part): Sine's copy of ZenLeap is left to Sine
+#     with --yes and replaced with --loader sine; a Sine-only profile is skipped
 new_home sine
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -308,13 +309,17 @@ printf 'content userchromejs ./\ncontent userscripts ../JS/\ncontent sine ../sin
 : > "$P/chrome/JS/sine.sys.mjs"
 cp "$P/chrome/utils/chrome.manifest" "$T/sine-manifest"
 run install.sh install --yes --profile 1 --zen-path "$APP"
-check "sine mod: --yes replaces Sine's copy" same "$REPO/JS/zenleap.uc.js" "$S/JS/zenleap.uc.js"
+check "sine mod (--yes): Sine's copy left to Sine" has "$S/JS/zenleap.uc.js" "3.3.9"
+check "sine mod (--yes): says so and names the override" has "$OUT" "--loader sine replaces Sine's copy"
+check "sine mod (--yes): nothing installed, exit 2" rc_is 2
+run install.sh install --yes --loader sine --profile 1 --zen-path "$APP"
+check "sine mod (--loader sine): replaces Sine's copy" same "$REPO/JS/zenleap.uc.js" "$S/JS/zenleap.uc.js"
 check "sine mod: no second copy in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 check "sine mod: Sine's loader untouched" same "$T/sine-manifest" "$P/chrome/utils/chrome.manifest"
 check "sine mod: no fx-autoconfig program files needed" missing "$APP/config.js"
 rm -rf "$P/chrome/sine-mods"
 run install.sh install --yes --profile 1 --zen-path "$APP"
-check "sine loader, no mod: exit 1 (nothing installed)" rc_is 1
+check "sine loader, no mod: exit 2 (nothing installed)" rc_is 2
 check "sine loader, no mod: tells the user to use Sine" has "$OUT" "Install ZenLeap from Sine instead"
 check "sine loader, no mod: nothing copied to chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 if $HAVE_SCRIPT; then
@@ -322,6 +327,8 @@ if $HAVE_SCRIPT; then
     printf '// @version 3.3.9\n' > "$S/JS/zenleap.uc.js"
     run_tty 'n\nn\n' install.sh install --profile 1 --zen-path "$APP"
     check "sine mod (interactive 'n'): Sine's copy kept" has "$S/JS/zenleap.uc.js" "3.3.9"
+    run_tty 'y\nn\n' install.sh install --profile 1 --zen-path "$APP"
+    check "sine mod (interactive 'y'): Sine's copy replaced" same "$REPO/JS/zenleap.uc.js" "$S/JS/zenleap.uc.js"
 fi
 
 # 19. Zen running with the profile: never killed; --yes continues and asks for a restart
@@ -561,6 +568,58 @@ printf '[Profile0]\n  Name=one\n\tIsRelative=1\n  Path=aaaa.one\n; Path=bbbb.two
 run install.sh install --yes --all-profiles --zen-path "$APP"
 check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
+
+# 31. The loader that runs a profile decides, not stray Sine files  [REV-LINST-05, REV-LINST-09]
+new_home loaders
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+run install.sh install --yes --zen-path "$APP"
+rm -f "$P/chrome/JS/zenleap.uc.js"
+mkdir -p "$P/chrome/sine-mods"
+echo '{}' > "$P/chrome/sine-mods/mods.json"
+run install.sh install --yes --zen-path "$APP"
+check "fx-autoconfig + a leftover Sine mods.json: exit 0" rc_is 0
+check "... installs into chrome/JS" exists "$P/chrome/JS/zenleap.uc.js"
+rm -f "$P/chrome/JS/zenleap.uc.js"
+: > "$P/chrome/JS/sine.sys.mjs"
+run install.sh install --yes --zen-path "$APP"
+check "Sine running on fx-autoconfig: into chrome/JS (fx-autoconfig runs it)" exists "$P/chrome/JS/zenleap.uc.js"
+check "... mentions letting Sine manage it instead" has "$OUT" "Sine runs in this profile too"
+S="$P/chrome/sine-mods/zenleap-relative-tab-nav/JS"
+mkdir -p "$S"
+printf '// @version 3.3.0\n' > "$S/zenleap.uc.js"
+rm -f "$P/chrome/JS/zenleap.uc.js"
+run install.sh install --yes --zen-path "$APP"
+check "Sine (on fx-autoconfig) manages ZenLeap, --yes: Sine's copy left alone" has "$S/zenleap.uc.js" "3.3.0"
+check "... no second copy in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
+check "... exit 2 (nothing installed)" rc_is 2
+run install.sh install --yes --loader fx-autoconfig --zen-path "$APP"
+check "--loader fx-autoconfig: into chrome/JS anyway" exists "$P/chrome/JS/zenleap.uc.js"
+check "--loader fx-autoconfig: warns about loading twice" has "$OUT" "doesn't load twice"
+check "--loader fx-autoconfig: Sine's copy untouched" has "$S/zenleap.uc.js" "3.3.0"
+rm -f "$P/chrome/JS/zenleap.uc.js" "$P/chrome/JS/sine.sys.mjs"
+run install.sh install --yes --zen-path "$APP"
+check "Sine copy left over (Sine doesn't start): into chrome/JS" exists "$P/chrome/JS/zenleap.uc.js"
+check "... says the Sine copy is unused" has "$OUT" "left over from Sine"
+check "... the leftover copy untouched" has "$S/zenleap.uc.js" "3.3.0"
+run install.sh install --yes --loader sine --zen-path "$APP"
+check "--loader sine: replaces Sine's copy" same "$REPO/JS/zenleap.uc.js" "$S/zenleap.uc.js"
+run install.sh install --yes --loader nonsense --zen-path "$APP"
+check "--loader <unknown>: rejected" rc_is 1
+new_home foreignutils
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+mkdir -p "$P/chrome/utils"
+printf 'content other ./\n' > "$P/chrome/utils/chrome.manifest"
+run install.sh install --yes --zen-path "$APP"
+check "chrome/utils of another loader: skipped, exit 2" rc_is 2
+check "... nothing in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
+check "... chrome/utils untouched" has "$P/chrome/utils/chrome.manifest" "content other"
+run install.sh install --yes --loader fx-autoconfig --zen-path "$APP"
+check "--loader fx-autoconfig + another loader: copied, exit 0" rc_is 0
+check "... chrome/utils still untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 
 # 32. --yes without --profile: update where ZenLeap is, else install into the default  [REV-LINST-08]
 new_home onlyother

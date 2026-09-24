@@ -661,11 +661,42 @@ zp_sine_zenleap_dir() {
     return 1
 }
 
-# True if <profile-dir> boots through Sine's loader (which only runs Sine mods,
-# not fx-autoconfig scripts in chrome/JS).
-zp_profile_uses_sine() {
-    if [ -f "$1/chrome/JS/sine.sys.mjs" ] || [ -f "$1/chrome/sine-mods/mods.json" ]; then return 0; fi
-    if grep -qs 'sine-mods' "$1/chrome/utils/chrome.manifest"; then return 0; fi
+# Which loader runs the scripts of <profile-dir>. What runs is decided by the
+# Zen installation's config.js (<program-status>, see zp_program_status; empty
+# if unknown) and the profile's chrome/utils, not by other files in the profile:
+#   fxac     fx-autoconfig runs chrome/JS: its loader is in chrome/utils, or
+#            chrome/utils is empty (the installers add it)
+#   sine     Sine's bootloader, which only runs Sine mods: Zen's config.js is
+#            Sine's, or chrome/utils is Sine's (its chrome.manifest maps sine-mods)
+#   foreign  chrome/utils holds some other loader
+# Sine can also run on top of fx-autoconfig (chrome/JS/sine.sys.mjs); that
+# profile is "fxac" (its chrome/JS scripts run too), see zp_sine_active.
+zp_profile_loader() {
+    local utils="$1/chrome/utils"
+    if [ "$2" = sine ] || [ "$2" = sine-noprefs ]; then
+        echo sine
+    elif [ -f "$utils/boot.sys.mjs" ] || [ -f "$utils/boot.jsm" ]; then
+        echo fxac
+    elif [ -z "$(ls -A "$utils" 2>/dev/null)" ]; then
+        echo fxac
+    elif grep -qs 'sine-mods' "$utils/chrome.manifest"; then
+        echo sine
+    else
+        echo foreign
+    fi
+}
+
+# True if Sine runs (or is set up to run) in <profile-dir>: through its
+# bootloader, or through fx-autoconfig (chrome/JS/sine.sys.mjs; sine.uc.mjs in
+# older Sine versions). A chrome/sine-mods folder alone is no evidence: it
+# stays behind when Sine is removed.
+# Usage: zp_sine_active <profile-dir> <program-status>
+zp_sine_active() {
+    case "$(zp_profile_loader "$1" "$2")" in
+        sine) return 0 ;;
+        fxac)
+            if [ -f "$1/chrome/JS/sine.sys.mjs" ] || [ -f "$1/chrome/JS/sine.uc.mjs" ]; then return 0; fi ;;
+    esac
     return 1
 }
 
