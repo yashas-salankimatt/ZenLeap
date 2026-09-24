@@ -20059,11 +20059,14 @@
         }
 
         /* The badge sits where the close button is: on badged tabs, show the
-           close button on hover only (untouched when badges are off) */
-        tab:has(> .tab-stack > .tab-content[data-zenleap-rel]):not(:hover) .tab-close-button {
+           close button on hover only (untouched when badges are off).
+           data-zenleap-direction is set and cleared with the badge text, but
+           changes far less often: keying on it (not :has() on the badge text,
+           which changes on every tab switch) keeps tab switches cheap. */
+        :root[data-zenleap-badges] tab[data-zenleap-direction]:not(:hover) .tab-close-button {
           display: none !important;
         }
-        tab:has(> .tab-stack > .tab-content[data-zenleap-rel]):hover .tab-close-button {
+        :root[data-zenleap-badges] tab[data-zenleap-direction]:hover .tab-close-button {
           display: flex !important;
           visibility: visible !important;
           opacity: 1 !important;
