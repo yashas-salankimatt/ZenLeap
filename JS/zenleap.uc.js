@@ -9632,7 +9632,7 @@
         return false;
       }
     } catch (e) {
-      log(`Split focus failed: ${e}`);
+      reportError('Moving focus to the split pane failed', e);
       return false;
     }
   }
@@ -9702,7 +9702,7 @@
 
       await window.gZenWorkspaces.changeWorkspaceWithID(workspaces[newIdx].uuid);
       log(`Quick switch workspace ${direction}`);
-    } catch (e) { log(`Quick workspace switch failed: ${e}`); }
+    } catch (e) { reportError('Switching workspace failed', e); }
   }
 
   // ============================================
@@ -19870,7 +19870,7 @@
         const result = _origOnWorkspaceChange(...args);
         if (S['appearance.applyToBrowser']) {
           // Pass duringAnimation so we don't clobber Zen's cross-fade spring
-          try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+          try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { reportError('Applying the browser theme failed', e); }
           // Zen repaints every window showing this space from here, bypassing
           // their own wrappers: let their ZenLeap re-apply too.
           try { Services.obs.notifyObservers(window, 'zenleap:reapply-browser-theme'); } catch (e) { /* ignore */ }
@@ -19887,7 +19887,7 @@
         delete picker._zenleapWrapped;
       });
     } catch (e) {
-      log(`Warning: Could not wrap onWorkspaceChange: ${e}`);
+      reportError('Could not hook into space switches for the browser theme (it may flash on switches)', e);
     }
 
     // Fallback: also use the official change listener API. During animated
@@ -19900,19 +19900,19 @@
         if (S['appearance.applyToBrowser'] && !_tornDown) {
           // Change listeners fire after Zen's tab animation completes, so the animation
           // is done. Call without duringAnimation to sync -old and opacity values.
-          try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+          try { applyBrowserTheme(); } catch (e) { reportError('Applying the browser theme failed', e); }
         }
       };
       gZenWorkspaces.addChangeListeners(onChange);
       onTeardown(() => gZenWorkspaces.removeChangeListeners?.(onChange));
     } catch (e) {
-      log(`Warning: Could not add workspace change listener: ${e}`);
+      reportError('Could not listen to space switches for the browser theme', e);
     }
 
     const reapplyObserver = {
       observe(subject) {
         if (subject === window || _tornDown || !S['appearance.applyToBrowser']) return;
-        try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+        try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { reportError('Applying the browser theme failed', e); }
       },
     };
     Services.obs.addObserver(reapplyObserver, 'zenleap:reapply-browser-theme');
@@ -19924,7 +19924,7 @@
     // already called (unwrapped) during SessionStore restoration before we could
     // install the hook, overwriting our --zen-* CSS properties.
     if (S['appearance.applyToBrowser']) {
-      try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+      try { applyBrowserTheme(); } catch (e) { reportError('Applying the browser theme failed', e); }
     }
 
     // Safety net: re-apply after Zen's workspace initialization fully completes.
@@ -19936,7 +19936,7 @@
       gZenWorkspaces.promiseInitialized.then(() => {
         if (S['appearance.applyToBrowser'] && !_tornDown) {
           requestAnimationFrame(() => requestAnimationFrame(() => {
-            try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+            try { applyBrowserTheme(); } catch (e) { reportError('Applying the browser theme failed', e); }
           }));
         }
       });
