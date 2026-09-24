@@ -11979,8 +11979,22 @@
       '<span><kbd>esc</kbd> cancel</span>',
     ].join('');
 
+    // Buttons for mouse users (a click outside cancels, like Escape)
+    const actions = document.createElement('div');
+    actions.className = 'zenleap-reorg-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'zenleap-reorg-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => exitReorgMode(false));
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'zenleap-reorg-btn primary';
+    applyBtn.textContent = 'Apply Order';
+    applyBtn.addEventListener('click', () => exitReorgMode(true));
+    actions.append(cancelBtn, applyBtn);
+
     container.appendChild(header);
     container.appendChild(list);
+    container.appendChild(actions);
     container.appendChild(footer);
     modal.appendChild(backdrop);
     modal.appendChild(container);
@@ -12106,6 +12120,19 @@
       .zenleap-reorg-footer span {
         display: inline-flex; align-items: center; gap: 4px;
       }
+      .zenleap-reorg-actions {
+        display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px 0;
+        border-top: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-reorg-btn {
+        padding: 6px 14px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-border-strong);
+        background: var(--zl-bg-raised); color: var(--zl-text-secondary); font-size: 12px; font-weight: 500;
+        font-family: var(--zl-font-ui); cursor: pointer;
+      }
+      .zenleap-reorg-btn:hover { background: var(--zl-bg-hover); color: var(--zl-text-primary); }
+      .zenleap-reorg-btn.primary { border-color: var(--zl-accent-border); background: var(--zl-accent-dim); color: var(--zl-accent); font-weight: 600; }
+      .zenleap-reorg-btn.primary:hover { background: var(--zl-accent-mid); border-color: var(--zl-accent); }
+      .zenleap-reorg-actions + .zenleap-reorg-footer { border-top: none; }
       .zenleap-reorg-footer kbd {
         display: inline-flex; align-items: center; justify-content: center;
         min-width: 18px; height: 18px; padding: 0 5px;
@@ -12437,7 +12464,7 @@
     event.stopPropagation();
     event.stopImmediatePropagation();
 
-    const key = event.key;
+    const key = navKey(event); // letters by position on non-Latin layouts, like the other modes
     const count = reorgWorkspaces.length;
 
     // Escape — cancel (discard changes)
