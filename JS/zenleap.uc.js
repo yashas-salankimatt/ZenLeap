@@ -7086,14 +7086,14 @@
               data._filePath = filePath;
               sessions.push(data);
             } else {
-              log(`Skipping session file with unexpected format: ${filePath}`);
+              console.warn(`[ZenLeap] Skipping session file with unexpected format: ${filePath}`);
             }
           } catch (e) {
-            log(`Skipping corrupt session file: ${filePath}: ${e}`);
+            console.warn(`[ZenLeap] Skipping unreadable session file ${filePath}:`, e);
           }
         }
       } catch (e) {
-        log(`Error loading sessions: ${e}`);
+        reportError('Loading saved sessions failed', e);
       } finally {
         sessionLoadPromise = null;
       }
@@ -7177,7 +7177,7 @@
           children.push(collectTabItem(item, splitGroupMap, options));
         }
       }
-    } catch (e) { log(`Error collecting folder tree: ${e}`); }
+    } catch (e) { reportError(`Saving the tabs of folder "${folderName(folder)}" failed`, e); }
     return {
       type: 'folder',
       name: folderName(folder),
@@ -7207,7 +7207,7 @@
           }
         }
       }
-    } catch (e) { log(`Error collecting split view data: ${e}`); }
+    } catch (e) { reportError('Saving the split views failed', e); }
 
     // Essential tabs are shared across workspaces (separate DOM section).
     // Collect them first so they appear at the top of the layout.
@@ -8225,7 +8225,7 @@
         const path = uri.QueryInterface(Ci.nsIFileURL).file.path;
         if (/\.uc\.js$/i.test(path)) return path;
       }
-    } catch (e) { log(`Could not resolve the running script's path (${ZENLEAP_LOADED_FROM}): ${e}`); }
+    } catch (e) { console.warn(`[ZenLeap] Could not resolve the running script's path (${ZENLEAP_LOADED_FROM}); updates go to chrome/JS/zenleap.uc.js:`, e); }
     return fallback;
   }
 
