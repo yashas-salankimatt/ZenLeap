@@ -6944,7 +6944,9 @@
 
   // --- Data Collection (v2: tree-based layout matching DOM structure) ---
 
-  function collectTabItem(tab, splitGroupMap) {
+  // withState (folder-delete undo only, never written to files): the tab's full
+  // SessionStore state (history, scroll, form data) and container.
+  function collectTabItem(tab, splitGroupMap, { withState = false } = {}) {
     const item = {
       type: 'tab',
       url: tab.linkedBrowser?.currentURI?.spec || 'about:blank',
@@ -6957,10 +6959,14 @@
     // Custom (user-chosen) tab icon; only small local icons (Zen's picker uses chrome:/data: SVGs)
     const icon = tab.zenStaticIcon;
     if (typeof icon === 'string' && /^(chrome|data):/.test(icon) && icon.length < 65536) item.customIcon = icon;
+    if (withState) {
+      item.userContextId = tab.userContextId || 0;
+      try { item.sessionState = SessionStore.getTabState(tab); } catch (e) { /* not tracked yet: URL only */ }
+    }
     return item;
   }
 
-  function collectFolderTree(folder, splitGroupMap) {
+  function collectFolderTree(folder, splitGroupMap, options = {}) {
     const children = [];
     try {
       // allItems returns immediate children (tabs + nested folders), excluding
@@ -6968,9 +6974,9 @@
       const items = folder.allItems || [];
       for (const item of items) {
         if (item.isZenFolder) {
-          children.push(collectFolderTree(item, splitGroupMap));
+          children.push(collectFolderTree(item, splitGroupMap, options));
         } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab')) {
-          children.push(collectTabItem(item, splitGroupMap));
+          children.push(collectTabItem(item, splitGroupMap, options));
         }
       }
     } catch (e) { log(`Error collecting folder tree: ${e}`); }
@@ -7548,7 +7554,7 @@
   // Open one saved tab: lazily (it loads when first selected, like Firefox's own session
   // restore), in place (skipRoute: Space Routing must not move restored tabs to other
   // spaces), never running javascript: URLs read from a file.
-  function addRestoredTab(item) {
+  function addRestoredTab(item, { tabState = false } = {}) {
     let url = typeof item.url === 'string' && item.url ? item.url : 'about:blank';
     if (/^\s*javascript:/i.test(url)) url = 'about:blank';
     const tab = gBrowser.addTab(url, {
@@ -7557,7 +7563,14 @@
       skipRoute: true,
       createLazyBrowser: true,
       lazyTabTitle: typeof item.title === 'string' ? item.title : url,
+      ...(tabState && Number.isInteger(item.userContextId) ? { userContextId: item.userContextId } : {}),
     });
+    // Undo of a folder deletion: bring back the tab's history, scroll and form data
+    // (the state is from this session's memory, never from a file).
+    if (tabState && typeof item.sessionState === 'string') {
+      try { SessionStore.setTabState(tab, item.sessionState); }
+      catch (e) { reportError(`Restoring the history of "${item.title}" failed`, e); }
+    }
     // Zen assigns a tab's workspace when its browser is inserted, which lazy tabs only
     // get on first selection; without this they would lose their workspace on restart.
     if (workspacesEnabled()) tab.setAttribute('zen-workspace-id', gZenWorkspaces.activeWorkspace);
@@ -7607,14 +7620,15 @@
     });
   }
 
-  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs) {
+  // options.tabState: apply the tabs' saved SessionStore state (folder-delete undo)
+  async function restoreFolderFromLayout(folderItem, insertAfterElement, openedTabs, normalTabRefs, options = {}) {
     // Phase 1: create direct tab children, defer subfolders
     const directTabRefs = [];
     const childItems = []; // { type: 'tab'|'folder', ref?, data? }
 
     for (const child of (Array.isArray(folderItem.children) ? folderItem.children : [])) {
       if (child?.type === 'tab') {
-        const tab = addRestoredTab(child);
+        const tab = addRestoredTab(child, options);
         directTabRefs.push(tab);
         openedTabs.push({ item: child, tab });
         childItems.push({ type: 'tab', ref: tab });
@@ -7657,7 +7671,7 @@
       } else if (childItem.type === 'folder') {
         const subInsertAfter = lastElement || folder.groupStartElement;
         const subFolder = await restoreFolderFromLayout(
-          childItem.data, subInsertAfter, openedTabs, normalTabRefs
+          childItem.data, subInsertAfter, openedTabs, normalTabRefs, options
         );
         if (subFolder) lastElement = subFolder;
       }
@@ -8895,7 +8909,7 @@
       folderLabel: folderName(folder),
       folderId: folder.id,
       workspaceId: folder.getAttribute('zen-workspace-id'),
-      tree: collectFolderTree(folder, null),
+      tree: collectFolderTree(folder, null, { withState: true }),
       anchor: folder.previousElementSibling,
       parentFolder: folder.group?.isZenFolder ? folder.group : null,
     };
@@ -9117,7 +9131,7 @@
     const anchor = (entry.anchor?.isConnected && !entry.anchor.closing) ? entry.anchor : null;
     const insertAfter = anchor || (entry.parentFolder?.isConnected ? entry.parentFolder.groupStartElement : null);
     const openedTabs = [];
-    const folder = await restoreFolderFromLayout(entry.tree, insertAfter, openedTabs, []);
+    const folder = await restoreFolderFromLayout(entry.tree, insertAfter, openedTabs, [], { tabState: true });
     if (folder) {
       const current = openedTabs.find(o => o.tab && !o.tab.closing)?.tab;
       if (current && !entry.tree.collapsed) gBrowser.selectedTab = current;
