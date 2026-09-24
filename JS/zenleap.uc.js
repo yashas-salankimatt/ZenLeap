@@ -17677,16 +17677,19 @@
     _modeGuards.set(name, ac);
     const opts = { capture: true, signal: ac.signal };
     const isInside = (el) => !!(el?.closest?.(GUARD_IGNORE_SELECTOR) || (inside && el?.closest?.(inside)));
+    // Window-/tab-modal dialogs (Firefox's "close N tabs?" prompt, prompt())
+    // are sub-documents: their clicks and focus are not click-away.
+    const isAway = (e) => !isInside(e.target) && !isEventForDialog(e);
     const exit = (reason) => {
       if (!_modeGuards.has(name) || _modeGuards.get(name) !== ac) return;
       disarmModeGuards(name);
       try { onExit(reason); } catch (e) { reportError(`Leaving ${name} mode failed`, e); }
     };
     window.addEventListener('mousedown', (e) => {
-      if (!isInside(e.target)) exit('click');
+      if (isAway(e)) exit('click');
     }, opts);
     window.addEventListener('focusin', (e) => {
-      if (!isInside(e.target) && isEditableChromeElement(e.target)) exit('focus');
+      if (isAway(e) && isEditableChromeElement(e.target)) exit('focus');
     }, opts);
     if (exitOnDeactivate) {
       window.addEventListener('deactivate', () => exit('deactivate'), opts);
@@ -17705,7 +17708,7 @@
 
   function armLeapGuards() {
     armModeGuards('leap', (reason) => exitLeapMode(false, { restoreFocus: reason !== 'focus' }), {
-      inside: '#zenleap-folder-delete-modal, #zenleap-close-confirm-modal',
+      inside: '#zenleap-folder-delete-modal, #zenleap-close-confirm-modal, #zenleap-preview-panel',
     });
   }
 
