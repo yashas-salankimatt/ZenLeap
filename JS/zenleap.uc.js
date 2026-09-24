@@ -3068,6 +3068,8 @@
   //   parent tab; browser.* acts on the page on screen (the Glance).
   //   commands.execute(key) runs a command without the palette's confirmation step
   //   (the plugin asked for it); commands that need input open the palette.
+  //   tabs.closeOthers/closeToLeft/closeToRight, like the palette, leave pinned tabs and
+  //   ZenRipple's agent tabs and pages open.
   //   init() throwing means no destroy() call; timers from the plugin's global
   //   setTimeout/setInterval are cleared when it is disabled.
 
@@ -3502,19 +3504,20 @@
         select: (tab) => { if (liveTab(tab)) return switchToTabAcrossWorkspaces(tab); return Promise.resolve(false); },
         close: (tab) => { if (liveTab(tab)) gBrowser.removeTab(tab); },
         closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), gBrowser.closingTabsEnum.MULTI_SELECTED),
+        // Like the palette commands: pinned tabs and ZenRipple's agent tabs/pages stay open
         closeOthers: (keepTab) => {
           const keep = keepTab || currentTab();
-          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned), gBrowser.closingTabsEnum.OTHER);
+          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.OTHER);
         },
         closeToRight: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || currentTab());
-          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_END);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.TO_END);
         },
         closeToLeft: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || currentTab());
-          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_START);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.TO_START);
         },
         // User-intent tab creation: Zen's Space Routing rules apply unless { skipRoute: true }
         create: (url, opts = {}) => gBrowser.addTab(url || 'about:newtab', {
@@ -5228,13 +5231,13 @@
       // removeTabs() closes them as one batch (one "Reopen closed tabs" restores them all)
       { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getOtherUnpinnedTabs(), n => `Close ${n} other tabs`),
-        command: () => { TabOps.close(getOtherUnpinnedTabs()); } },
+        command: () => { closeTabsInBulk(getOtherUnpinnedTabs()); } },
       { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('right'), n => `Close ${n} tabs to the right`),
-        command: () => { TabOps.close(getUnpinnedTabsBeside('right')); } },
+        command: () => { closeTabsInBulk(getUnpinnedTabsBeside('right')); } },
       { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('left'), n => `Close ${n} tabs to the left`),
-        command: () => { TabOps.close(getUnpinnedTabsBeside('left')); } },
+        command: () => { closeTabsInBulk(getUnpinnedTabsBeside('left')); } },
       // Inserted next to the source tab, like Zen's own duplicate command
       { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => {
         const tab = gBrowser.selectedTab;
@@ -5746,6 +5749,8 @@
   }
 
   // ── Bulk tab closing (Close Other / Left / Right) ──
+  // ZenRipple's agent tabs and pages are left open: in the agents' space the user means
+  // "close the tabs I opened here", not "end every agent's work".
   function getOtherUnpinnedTabs() {
     const current = currentTab();
     return getVisibleTabs().filter(t => t !== current && !t.pinned);
@@ -5760,13 +5765,26 @@
 
   // Ask before closing more than one tab (returns null = no confirmation needed)
   function bulkCloseConfirmation(tabs, describe) {
-    if (tabs.length <= 1) return null;
+    const kept = tabs.filter(isExternallyManagedTab).length;
+    const count = tabs.length - kept;
+    if (count <= 1) return null;
     return {
-      label: describe(tabs.length),
+      label: describe(count),
       icon: '✕',
-      sublabel: 'Closed tabs can be reopened with Reopen Closed Tab',
+      sublabel: `Closed tabs can be reopened with Reopen Closed Tab${kept ? ` \u00B7 ${zenRippleTabsKeptNote(kept)}` : ''}`,
       cancelLabel: 'Keep all tabs open',
     };
+  }
+
+  // Close as one batch, without ZenRipple's tabs; says so when no confirmation did.
+  function closeTabsInBulk(tabs) {
+    const userTabs = tabs.filter(t => !isExternallyManagedTab(t));
+    const kept = tabs.length - userTabs.length;
+    const closed = TabOps.close(userTabs);
+    if (kept && closed <= 1) {
+      showZenLeapToast(`${closed ? 'Closed 1 tab' : 'Nothing to close'} \u2014 ${zenRippleTabsKeptNote(kept)}`);
+    }
+    return closed;
   }
 
   // ============================================
