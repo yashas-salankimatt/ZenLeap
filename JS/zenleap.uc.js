@@ -45,6 +45,7 @@
     // Shadows the native "reopen closed tab" shortcut (Cmd+Shift+T on macOS, Ctrl+Shift+T elsewhere);
     // falls through to it when there is no recent folder deletion to undo.
     'keys.global.undoFolderDelete': { default: { key: 't', code: 'KeyT', ctrl: !IS_MACOS, shift: true, alt: false, meta: IS_MACOS }, type: 'combo', label: 'Undo Folder Delete', description: `Undo the last folder deletion (${IS_MACOS ? 'Cmd' : 'Ctrl'}+Shift+T)`, category: 'Keybindings', group: 'Global Triggers' },
+    'keys.macOptionHintShown':     { default: false, type: 'toggle', label: 'Option Layout Hint Shown', description: 'The macOS keyboard-layout hint was shown once (internal)', category: 'Keybindings', group: 'Keyboard Layout', hidden: true },
     'keys.physicalAltFallback':    { default: false, type: 'toggle', label: 'Match Option Shortcuts by Physical Key (macOS)', description: 'On macOS, Option+letter types a character on many layouts (e.g. @ or ł). Off: Option shortcuts only fire when the key types no real character, so those characters can still be typed. On: always match the physical key.', category: 'Keybindings', group: 'Keyboard Layout' },
 
     // --- Keybindings: Leap Mode ---
@@ -1617,7 +1618,17 @@
           MAC_US_OPTION_KEYS[event.code] === event.key) return true;
       if (!_macOptionHintShown) {
         _macOptionHintShown = true;
-        console.info(`[ZenLeap] Option+${event.code.replace(/^Key/, '')} typed "${event.key}" on this keyboard layout, so the ZenLeap shortcut ${formatKeyDisplay(combo, { type: 'combo' })} did not run. To use Option shortcuts by physical key, turn on Settings > Keybindings > "Match Option Shortcuts by Physical Key (macOS)".`);
+        const settingId = Object.keys(SETTINGS_SCHEMA).find(id => S[id] === combo);
+        const chord = formatKeyDisplay(combo, { type: 'combo' });
+        const what = settingId ? `"${SETTINGS_SCHEMA[settingId].label}" (${chord})` : chord;
+        const typed = `Option+${event.code.replace(/^Key/, '')} types "${event.key}" on this keyboard layout`;
+        console.info(`[ZenLeap] ${typed}, so the ZenLeap shortcut ${what} did not run. To use Option shortcuts by physical key, turn on Settings > Keybindings > "Match Option Shortcuts by Physical Key (macOS)".`);
+        // Once per profile: the default Option+H/J/K/L quick navigation stops on such layouts
+        if (!S['keys.macOptionHintShown']) {
+          S['keys.macOptionHintShown'] = true;
+          saveSettings();
+          showZenLeapToast(`${typed}, so ZenLeap's ${what} didn't run. To match Option shortcuts by key position instead, turn on Settings \u203A Keybindings \u203A Match Option Shortcuts by Physical Key.`, 12000);
+        }
       }
       return false;
     }
@@ -1628,15 +1639,17 @@
     return !(isPrintableAscii(event.key) && isPrintableAscii(want));
   }
 
-  // Helper: format a key setting for display
+  // Helper: format a key setting for display. Chords show letters in capitals (Shift
+  // is listed on its own) and macOS modifier names.
   function formatKeyDisplay(value, schema) {
     if (schema?.type === 'combo' && typeof value === 'object') {
       const parts = [];
       if (value.ctrl) parts.push('Ctrl');
       if (value.shift) parts.push('Shift');
-      if (value.alt) parts.push('Alt');
-      if (value.meta) parts.push('Meta');
-      parts.push(formatSingleKey(value.key));
+      if (value.alt) parts.push(IS_MACOS ? 'Option' : 'Alt');
+      if (value.meta) parts.push(IS_MACOS ? 'Cmd' : 'Meta');
+      const key = typeof value.key === 'string' && /^[a-z]$/.test(value.key) ? value.key.toUpperCase() : value.key;
+      parts.push(formatSingleKey(key));
       return parts.join(' + ');
     }
     return formatSingleKey(value);
@@ -6069,7 +6082,7 @@
     return [
       { key: 'delete-folder:cancel', label: 'Cancel', icon: '↩', sublabel: `Keep "${folderName(folder)}"`, tags: [] },
       { key: 'delete-folder:keep-tabs', label: `Delete folder only (keep ${tabsText})`, icon: '📦', sublabel: 'The tabs stay in the workspace', tags: [] },
-      { key: 'delete-folder:with-tabs', label: `Delete folder and close ${tabsText}`, icon: '🗑', sublabel: `Undo with ${formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete'])} within 30 seconds`, tags: [] },
+      { key: 'delete-folder:with-tabs', label: `Delete folder and close ${tabsText}`, icon: '🗑', sublabel: `Undo with ${formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete'])} within ${Math.round(FOLDER_UNDO_WINDOW_MS / 1000)} seconds`, tags: [] },
     ];
   }
 

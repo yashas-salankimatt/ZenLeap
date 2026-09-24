@@ -190,6 +190,7 @@ Navigate tabs, workspaces, and split panes without entering leap mode:
 - `Alt+h` / `Alt+l` — switch workspace (or focus split pane left/right)
 - In split view, pane focus is attempted first; at boundaries falls back to tab/workspace switching
 - In compact mode, the sidebar temporarily peeks on `Alt+J/K` so you can see which tab is selected (configurable delay in Settings > Timing)
+- **macOS, non-US keyboard layouts:** where `Option+H/J/K/L` type characters (for example `@` or `ł`), these shortcuts don't fire by default, so you can still type those characters; ZenLeap shows a hint the first time. Turn on Settings > Keybindings > **Match Option Shortcuts by Physical Key (macOS)** to use them by key position instead (those characters then can't be typed with Option)
 
 ### Split View Layout (gTile)
 Keyboard-driven grid overlay for resizing and rearranging split view tabs:
@@ -625,6 +626,7 @@ Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages; "Tog
 **Keyboard shortcuts not working:**
 - Check no extension is capturing `Ctrl+Space`
 - `Ctrl+Space` is also the default "switch input source" shortcut on macOS and in fcitx/fcitx5 on Linux; change one of them (ZenLeap: Settings > Keybindings)
+- macOS: `Option+H/J/K/L` do nothing on a layout where they type characters; see [Quick Navigation](#quick-navigation-althjkl) for the setting that matches them by key position
 - Click somewhere in browser chrome first
 
 **Sidebar not expanding in compact mode:**
