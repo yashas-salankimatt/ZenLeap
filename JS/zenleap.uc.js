@@ -8306,15 +8306,17 @@
         font-size: 13px; color: var(--zl-text-primary);
       }
       .zenleap-toast-text strong { color: var(--zl-accent); font-weight: 600; }
-      .zenleap-toast-keys {
-        display: flex; align-items: center; gap: 8px;
-        margin-left: 4px; font-size: 11px; color: var(--zl-text-muted);
+      .zenleap-toast-btn {
+        font-family: var(--zl-font-ui); font-size: 12px; font-weight: 600; cursor: pointer;
+        padding: 4px 12px; border-radius: var(--zl-r-sm);
+        background: transparent; color: var(--zl-text-primary);
+        border: 1px solid var(--zl-border-strong);
       }
-      .zenleap-toast-keys kbd {
-        display: inline-block; font-family: var(--zl-font-mono); font-size: 10px; font-weight: 600;
-        background: var(--zl-bg-elevated); color: var(--zl-text-secondary);
-        padding: 2px 6px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-border-subtle);
+      .zenleap-toast-btn:hover { background: var(--zl-bg-elevated); }
+      .zenleap-toast-btn.primary {
+        background: var(--zl-accent-dim); color: var(--zl-accent); border-color: var(--zl-accent-border);
       }
+      .zenleap-toast-btn.primary:hover { background: var(--zl-accent-mid); }
     `;
     document.head.appendChild(style);
   }
@@ -8681,7 +8683,17 @@
     if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
   }
 
-  // Show update toast notification — persistent centered bar
+  // Update toast: a centered bar with Update/Details and Dismiss buttons. Enter/Escape
+  // also work while nothing else has keyboard focus. It hides itself after a while
+  // (hover pauses that); only "Dismiss" (or Escape) skips this version for good.
+  const UPDATE_TOAST_AUTOHIDE_MS = 15000;
+  let _updateToastTimer = null;
+
+  function armUpdateToastTimer() {
+    clearTimeout(_updateToastTimer);
+    _updateToastTimer = setTimeout(() => dismissUpdateToast(false), UPDATE_TOAST_AUTOHIDE_MS);
+  }
+
   function showUpdateToast(remoteVersion) {
     // Don't show if user explicitly dismissed the toast for this version
     if (S['updates.dismissedVersion'] === remoteVersion) return;
@@ -8691,23 +8703,30 @@
 
     const toast = document.createElement('div');
     toast.id = 'zenleap-update-toast';
+    toast.setAttribute('role', 'status');
 
     const text = updateEl('span', 'zenleap-toast-text', 'ZenLeap ', updateEl('strong', null, `v${remoteVersion}`), ' available');
     if (isSineManaged) text.append(' \u2014 update via ', updateEl('strong', null, 'Sine'));
 
-    const keys = updateEl('span', 'zenleap-toast-keys',
-      updateEl('kbd', null, '\u21B5'), isSineManaged ? ' info ' : ' update ',
-      updateEl('kbd', null, 'Esc'), ' dismiss');
+    const open = updateEl('button', 'zenleap-toast-btn primary', isSineManaged ? 'Details' : 'Update');
+    open.addEventListener('click', () => { dismissUpdateToast(false); enterUpdateMode(); });
+    const dismiss = updateEl('button', 'zenleap-toast-btn', 'Dismiss');
+    dismiss.title = `Don't show this again for v${remoteVersion}`;
+    dismiss.addEventListener('click', () => dismissUpdateToast(true));
 
-    toast.appendChild(text);
-    toast.appendChild(keys);
+    toast.append(text, open, dismiss);
+    toast.addEventListener('mouseenter', () => clearTimeout(_updateToastTimer));
+    toast.addEventListener('mouseleave', () => { if (updateToast === toast) armUpdateToastTimer(); });
 
     document.documentElement.appendChild(toast);
     updateToast = toast;
     updateToastVersion = remoteVersion;
+    armUpdateToastTimer();
   }
 
   function dismissUpdateToast(suppress) {
+    clearTimeout(_updateToastTimer);
+    _updateToastTimer = null;
     if (updateToast) {
       if (suppress && updateToastVersion) {
         S['updates.dismissedVersion'] = updateToastVersion;
