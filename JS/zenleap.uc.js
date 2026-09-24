@@ -4819,14 +4819,6 @@
     return splitter?.splitViewActive ? (splitter._data?.[splitter.currentView] || null) : null;
   }
 
-  // Stable per-tab key for result rows (tab._tPos no longer exists since Firefox 151)
-  const _tabKeys = new WeakMap();
-  let _tabKeyCounter = 0;
-  function tabKey(tab) {
-    if (!_tabKeys.has(tab)) _tabKeys.set(tab, ++_tabKeyCounter);
-    return _tabKeys.get(tab);
-  }
-
   // ============================================
   // COMMAND PALETTE
   // ============================================
@@ -5664,7 +5656,7 @@
     const results = searchTabs(query, { includeCurrent: true });
     commandMatchedTabs = results.map(r => r.tab);
     return results.map(r => ({
-      key: `matched-tab:${tabKey(r.tab)}`,
+      key: `matched-tab:${r.tab.index}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '☑',
@@ -5706,7 +5698,7 @@
     // Reuse tab search for split view picker
     const results = searchTabs(query);
     return results.map(r => ({
-      key: `split-tab:${tabKey(r.tab)}`,
+      key: `split-tab:${r.tab.index}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '◫',
@@ -5738,7 +5730,7 @@
     const playingTabs = getPlayingTabs();
 
     let results = playingTabs.map(tab => ({
-      key: `playing-tab:${tabKey(tab)}`,
+      key: `playing-tab:${tab.index}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: tab.hasAttribute('muted') ? '🔇' : '🔊',
@@ -5809,7 +5801,7 @@
     dedupTabsToClose = tabsToClose;
 
     return tabsToClose.map(tab => ({
-      key: `dedup-tab:${tabKey(tab)}`,
+      key: `dedup-tab:${tab.index}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: '🧹',
