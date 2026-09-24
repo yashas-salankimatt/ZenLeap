@@ -9072,12 +9072,14 @@
     gtileOverlay.classList.add('active', 'mode-move');
     gtileOverlay.classList.remove('mode-resize');
     updateGtileOverlay();
+    armModeGuards('gtile', () => exitGtileMode(false), { inside: '#zenleap-gtile-panel' });
 
     log('Entered gTile mode (move)');
   }
 
   function exitGtileMode(apply) {
     if (!gtileMode) return;
+    disarmModeGuards('gtile');
 
     if (apply && gtileSubMode === 'resize') {
       applyGtileLayout();
@@ -11217,18 +11219,23 @@
     createHelpModal();
 
     helpMode = true;
+    _overlayFocus = captureFocusTarget();
     helpModal.classList.add('active');
+    armModeGuards('help', (reason) => exitHelpMode({ restoreFocus: reason !== 'focus' }), {
+      inside: '#zenleap-help-container',
+    });
 
     log('Entered help mode');
   }
 
-  function exitHelpMode() {
+  function exitHelpMode({ restoreFocus = true } = {}) {
     if (!helpMode) return;
 
+    disarmModeGuards('help');
     helpMode = false;
     helpModal.classList.remove('active');
 
-    if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
+    restoreOverlayFocus(restoreFocus);
     log('Exited help mode');
   }
 
@@ -11492,6 +11499,8 @@
     });
   }
 
+  let _reorgDragAbort = null; // window listeners of an in-progress drag
+
   function startReorgDrag(index, startY) {
     reorgDragState = { index, startY, currentY: startY, moved: false };
 
@@ -11539,8 +11548,8 @@
     };
 
     const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove, true);
-      window.removeEventListener('mouseup', onMouseUp, true);
+      _reorgDragAbort?.abort();
+      _reorgDragAbort = null;
 
       if (reorgDragState) {
         const list = document.getElementById('zenleap-reorg-list');
@@ -11558,8 +11567,11 @@
       }
     };
 
-    window.addEventListener('mousemove', onMouseMove, true);
-    window.addEventListener('mouseup', onMouseUp, true);
+    _reorgDragAbort?.abort();
+    _reorgDragAbort = new AbortController();
+    const dragOpts = { capture: true, signal: _reorgDragAbort.signal };
+    window.addEventListener('mousemove', onMouseMove, dragOpts);
+    window.addEventListener('mouseup', onMouseUp, dragOpts);
   }
 
   function reorgSwapDrag(fromIdx, toIdx) {
@@ -11689,13 +11701,21 @@
     renderReorgList();
 
     reorgMode = true;
+    _overlayFocus = captureFocusTarget();
     reorgModal.classList.add('active');
+    armModeGuards('reorg', (reason) => exitReorgMode(false, { restoreFocus: reason !== 'focus' }), {
+      inside: '#zenleap-reorg-container',
+    });
 
     log('Entered reorganize workspaces mode');
   }
 
-  function exitReorgMode(apply = false) {
+  function exitReorgMode(apply = false, { restoreFocus = true } = {}) {
     if (!reorgMode) return;
+
+    disarmModeGuards('reorg');
+    _reorgDragAbort?.abort();
+    _reorgDragAbort = null;
 
     if (apply) {
       applyReorgChanges();
@@ -11709,7 +11729,7 @@
     reorgMovingIndex = -1;
     reorgDragState = null;
 
-    if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
+    restoreOverlayFocus(restoreFocus);
     log('Exited reorganize workspaces mode');
   }
 
@@ -12965,7 +12985,14 @@
 
     createSettingsModal();
     settingsMode = true;
+    _overlayFocus = captureFocusTarget();
     settingsModal.classList.add('active');
+    // Settings stays open when the window loses focus (color pickers, editing
+    // the themes file in another app) but closes on click-away / URL bar focus.
+    armModeGuards('settings', (reason) => exitSettingsMode({ restoreFocus: reason !== 'focus' }), {
+      inside: '#zenleap-settings-container, #zenleap-import-overlay, .zenleap-settings-toast',
+      exitOnDeactivate: false,
+    });
 
     setTimeout(() => {
       const input = document.getElementById('zenleap-settings-search-input');
@@ -12975,8 +13002,9 @@
     log('Entered settings mode');
   }
 
-  function exitSettingsMode() {
+  function exitSettingsMode({ restoreFocus = true } = {}) {
     if (!settingsMode) return;
+    disarmModeGuards('settings');
     dismissImportConfirmation();
     stopKeyRecording();
     if (themeEditorActive) {
@@ -12994,7 +13022,7 @@
     settingsModal.classList.remove('active');
     aboutUpdateState = null;
     aboutRemoteVersion = null;
-    if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
+    restoreOverlayFocus(restoreFocus);
     log('Exited settings mode');
   }
 
@@ -13734,6 +13762,7 @@
     // Reset mode flags so enterSearchMode doesn't try to exit leap mode again
     leapMode = false;
     browseMode = false;
+    disarmModeGuards('leap');
 
     // Open the full command bar (browse commands injected via getDynamicCommands)
     enterSearchMode(true);
@@ -13749,6 +13778,8 @@
 
     // Close search modal
     searchMode = false;
+    disarmModeGuards('search');
+    _overlayFocus = null;
     if (searchModal) searchModal.classList.remove('active');
 
     // Reset vim mode for next search open
@@ -13801,6 +13832,7 @@
     document.documentElement.setAttribute('data-zenleap-active', 'true');
     stealFocusFromContent();
     showLeapOverlay();
+    armLeapGuards();
     updateHighlight();
     updateLeapOverlayState();
     log('Returned to browse mode from command bar');
@@ -13813,8 +13845,14 @@
     // Exit other modes if active
     if (leapMode) exitLeapMode(false);
     if (reorgMode) exitReorgMode(false);
+    if (helpMode) exitHelpMode();
+    if (gtileMode) exitGtileMode(false);
 
     createSearchModal();
+    if (!browseCommandMode) _overlayFocus = captureFocusTarget();
+    armModeGuards('search', (reason) => exitSearchMode({ restoreFocus: reason !== 'focus' }), {
+      inside: '#zenleap-search-container, #zenleap-preview-panel',
+    });
 
     // Reset all search state
     searchMode = true;
@@ -13858,10 +13896,12 @@
     log(`Entered search mode${asCommand ? ' (command)' : ''}`);
   }
 
-  // Exit search mode
-  function exitSearchMode() {
+  // Exit search mode. restoreFocus=false when focus already moved elsewhere on
+  // purpose (e.g. Ctrl+L put it into the URL bar).
+  function exitSearchMode({ restoreFocus = true } = {}) {
     if (!searchMode) return;
 
+    disarmModeGuards('search');
     searchMode = false;
     searchModal.classList.remove('active');
     cancelPendingJJ();
@@ -13910,9 +13950,10 @@
     }
 
     // Clean up browse command state and restore focus/attributes from leap mode
+    const wasBrowseCommand = browseCommandMode;
     if (browseCommandMode) {
       document.documentElement.removeAttribute('data-zenleap-active');
-      restoreFocusToContent();
+      restoreFocusToContent(restoreFocus);
       // Strip relative numbers if in 'active' mode (leap/browse modes are already false)
       if (S['display.showRelativeNumbers'] === 'active') updateRelativeNumbers();
       // Restore sidebar if we expanded it for compact mode
@@ -13928,7 +13969,8 @@
     browseCommandTabs = [];
     savedBrowseState = null;
 
-    if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
+    if (wasBrowseCommand) _overlayFocus = null;
+    else restoreOverlayFocus(restoreFocus);
     _pluginEventBus.emit('searchMode:exit', {});
     log('Exited search mode');
   }
@@ -16369,9 +16411,11 @@
   // Steal focus from content area to prevent keyboard events from reaching web pages
   // (e.g., Space toggling YouTube playback, j/k editing Google Sheets,
   //  about:newtab search input capturing browse mode keys)
+  let _leapFocus = null; // where focus was before ZenLeap took it (see restoreFocusToContent)
   function stealFocusFromContent() {
     if (contentFocusStolen) return;
     try {
+      _leapFocus = captureFocusTarget();
       const browser = gBrowser.selectedBrowser;
       browser.blur();
       // Also blur any focused element inside content (especially about:newtab search)
@@ -16383,16 +16427,16 @@
     }
   }
 
-  // Restore focus to the content area after leaving leap mode
-  function restoreFocusToContent() {
+  // Give focus back after leaving leap mode: to the element that had it (URL
+  // bar, find bar, ...) or, if that was the page or the tab changed, the page.
+  function restoreFocusToContent(restore = true) {
     if (!contentFocusStolen) return;
-    try {
-      gBrowser.selectedBrowser.focus();
-      log('Restored focus to content');
-    } catch (e) {
-      log(`Failed to restore focus to content: ${e}`);
-    }
     contentFocusStolen = false;
+    const saved = _leapFocus;
+    _leapFocus = null;
+    if (!restore) return;
+    restoreFocusTarget(saved);
+    log('Restored focus after leap mode');
   }
 
   // Intercept input for Alt+HJKL quick navigation: steal focus from content
@@ -16443,15 +16487,10 @@
 
     document.documentElement.setAttribute('data-zenleap-active', 'true');
     showLeapOverlay();
+    armLeapGuards();
 
     // Set timeout (will be cleared if entering browse mode)
-    clearTimeout(leapModeTimeout);
-    leapModeTimeout = setTimeout(() => {
-      if (leapMode && !browseMode) {
-        log('Leap mode timed out');
-        exitLeapMode();
-      }
-    }, CONFIG.leapModeTimeout);
+    armLeapTimeout();
 
     _pluginEventBus.emit('leapMode:enter', {});
     log('Entered leap mode');
@@ -17145,8 +17184,10 @@
     exitLeapMode(true); // Center scroll on original tab
   }
 
-  // Exit leap mode
-  function exitLeapMode(centerScroll = false) {
+  // Exit leap mode. restoreFocus=false when focus already moved somewhere on
+  // purpose (the user clicked into the URL bar, find bar, ...).
+  function exitLeapMode(centerScroll = false, { restoreFocus = true } = {}) {
+    disarmModeGuards('leap');
     clearHighlight();
     hidePreviewPanel(true);
 
@@ -17201,8 +17242,8 @@
       setTimeout(() => scrollTabIntoView('center'), 50);
     }
 
-    // Restore focus to content area so keyboard input resumes going to the web page
-    restoreFocusToContent();
+    // Restore focus so keyboard input resumes where it was (usually the page)
+    restoreFocusToContent(restoreFocus);
 
     _pluginEventBus.emit('leapMode:exit', {});
     log('Exited leap mode');
@@ -17473,6 +17514,93 @@
     const frame = doc.defaultView?.browsingContext?.embedderElement;
     return !!frame && (frame.classList?.contains('dialogFrame') ||
       !!frame.closest?.('.dialogBox, .dialogOverlay, #window-modal-dialog, dialog'));
+  }
+
+  // ============================================
+  // MODE EXIT GUARDS + FOCUS RESTORE
+  // ============================================
+
+  // While a keyboard mode or overlay is open, a click outside ZenLeap's UI, the
+  // window losing focus, or focus moving into an editable field (URL bar, find
+  // bar, ...) ends it. Otherwise text typed after clicking into a page would
+  // still run ZenLeap commands (typing "fox" closed a tab: LEAP-B-02).
+  const _modeGuards = new Map(); // mode name -> AbortController
+
+  function isEditableChromeElement(el) {
+    if (!el || el.localName === 'browser') return false;
+    return !!(el.isContentEditable || el.closest?.('input, textarea, #urlbar, findbar'));
+  }
+
+  // Popups (select dropdowns, context menus, tooltips) live outside the overlay
+  // but belong to it.
+  const GUARD_IGNORE_SELECTOR = 'menupopup, panel, tooltip, #ContentSelectDropdown';
+
+  function armModeGuards(name, onExit, { inside = '', exitOnDeactivate = true } = {}) {
+    disarmModeGuards(name);
+    const ac = new AbortController();
+    _modeGuards.set(name, ac);
+    const opts = { capture: true, signal: ac.signal };
+    const isInside = (el) => !!(el?.closest?.(GUARD_IGNORE_SELECTOR) || (inside && el?.closest?.(inside)));
+    const exit = (reason) => {
+      if (!_modeGuards.has(name) || _modeGuards.get(name) !== ac) return;
+      disarmModeGuards(name);
+      try { onExit(reason); } catch (e) { reportError(`Leaving ${name} mode failed`, e); }
+    };
+    window.addEventListener('mousedown', (e) => {
+      if (!isInside(e.target)) exit('click');
+    }, opts);
+    window.addEventListener('focusin', (e) => {
+      if (!isInside(e.target) && isEditableChromeElement(e.target)) exit('focus');
+    }, opts);
+    if (exitOnDeactivate) {
+      window.addEventListener('deactivate', () => exit('deactivate'), opts);
+    }
+  }
+
+  function disarmModeGuards(name) {
+    _modeGuards.get(name)?.abort();
+    _modeGuards.delete(name);
+  }
+
+  function disarmAllModeGuards() {
+    for (const ac of _modeGuards.values()) ac.abort();
+    _modeGuards.clear();
+  }
+
+  function armLeapGuards() {
+    armModeGuards('leap', (reason) => exitLeapMode(false, { restoreFocus: reason !== 'focus' }), {
+      inside: '#zenleap-folder-delete-modal, #zenleap-close-confirm-modal',
+    });
+  }
+
+  // Focus to return to when a mode/overlay closes: the element that had it
+  // before (URL bar, find bar, ...) unless the selected tab changed meanwhile;
+  // then the new page gets it (LEAP-B-26).
+  function captureFocusTarget() {
+    let el = null;
+    try { el = document.commandDispatcher?.focusedElement || null; } catch (e) { /* ignore */ }
+    if (el?.closest?.('[id^="zenleap-"]')) el = null;
+    return { el, tab: gBrowser.selectedTab };
+  }
+
+  function restoreFocusTarget(saved) {
+    try {
+      const el = saved?.el;
+      if (el && el.isConnected && el.localName !== 'browser' && saved.tab === gBrowser.selectedTab) {
+        el.focus();
+        return;
+      }
+      gBrowser.selectedBrowser.focus();
+    } catch (e) { /* window closing */ }
+  }
+
+  // Overlays (help, reorganize, settings, search) remember where focus was.
+  let _overlayFocus = null;
+
+  function restoreOverlayFocus(restore = true) {
+    const saved = _overlayFocus;
+    _overlayFocus = null;
+    if (restore && S['display.refocusOnClose']) restoreFocusTarget(saved);
   }
 
   // Handle keydown events
@@ -19784,6 +19912,7 @@
   function teardown({ full = true } = {}) {
     if (_tornDown) return;
     if (full) exitAllModes();
+    disarmAllModeGuards();
     _tornDown = true;
 
     _lifetime.abort();
