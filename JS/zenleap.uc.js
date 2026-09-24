@@ -183,6 +183,51 @@
     return escapeHtml(icon || fallback);
   }
 
+  // --- ZenRipple (AI agent browser mod) ---
+  // ZenRipple runs agents in their own tabs and space next to the user's. ZenLeap does
+  // not depend on it: these only read the markers ZenRipple puts on its tabs, so that
+  // bulk and heuristic commands (deduplicate, close other tabs, sort, session save)
+  // leave the agents' work alone. Single-tab actions the user aims at a tab still work.
+  const ZENRIPPLE_PAGES_PREFIX = 'resource://zenripple-pages/';
+  const ZENRIPPLE_SPACE_NAME = 'ZenRipple'; // ZenRipple finds its space by this name
+
+  function zenRippleActive() {
+    return !!window.__zenrippleInitDone;
+  }
+
+  // A tab an agent session owns (ZenRipple stamps every window's copy of it; a tab the
+  // user took over keeps data-agent-tab-id but loses the session id).
+  function isAgentTab(tab) {
+    return !!tab?.hasAttribute?.('data-agent-session-id');
+  }
+
+  // ZenRipple's own pages (dashboard, sessions, spawn, settings); ZenRipple recreates them.
+  function isZenRipplePage(tab) {
+    let url = '';
+    try { url = tab?.linkedBrowser?.currentURI?.spec || ''; } catch (e) { /* no browser */ }
+    if (url === 'about:blank' && typeof tab?._zenPinnedInitialState?.entry?.url === 'string') {
+      url = tab._zenPinnedInitialState.entry.url; // pinned tab not restored yet
+    }
+    return url.startsWith(ZENRIPPLE_PAGES_PREFIX);
+  }
+
+  function isExternallyManagedTab(tab) {
+    return isAgentTab(tab) || isZenRipplePage(tab);
+  }
+
+  // ZenRipple's agent space (only while ZenRipple runs: otherwise it's an ordinary name)
+  function isAgentSpace(workspaceId) {
+    if (!workspaceId || !zenRippleActive()) return false;
+    try {
+      return gZenWorkspaces.getWorkspaces().some(w => w.uuid === workspaceId && w.name === ZENRIPPLE_SPACE_NAME);
+    } catch (e) { return false; }
+  }
+
+  // "3 ZenRipple tabs stay open" (agent tabs and ZenRipple pages left out of a bulk close)
+  function zenRippleTabsKeptNote(count) {
+    return `${count} ZenRipple tab${count !== 1 ? 's stay' : ' stays'} open`;
+  }
+
   // ============================================
   // THEME ENGINE
   // ============================================
@@ -6120,7 +6165,9 @@
       allTabs = getVisibleTabs();
     }
 
-    // Filter to valid, non-essential, non-pinned tabs
+    // Filter to valid, non-essential, non-pinned tabs. ZenRipple's agent tabs and pages
+    // are never candidates: an agent's copy of a page is its working tab, and dedup
+    // would always pick it (the user never selects it, so it is the least recent).
     const validTabs = allTabs.filter(t =>
       isLiveTab(t) &&
       !t.pinned &&
@@ -6128,10 +6175,12 @@
       !t.hasAttribute('zen-glance-tab') &&
       !t.hasAttribute('zen-empty-tab')
     );
+    const managed = validTabs.filter(isExternallyManagedTab);
+    const candidates = managed.length ? validTabs.filter(t => !isExternallyManagedTab(t)) : validTabs;
 
     // Group by URL
     const urlGroups = new Map();
-    for (const tab of validTabs) {
+    for (const tab of candidates) {
       const url = tab.linkedBrowser?.currentURI?.spec;
       if (!url || url === 'about:blank' || url === 'about:newtab') continue;
       if (!urlGroups.has(url)) urlGroups.set(url, []);
@@ -6159,7 +6208,8 @@
     const n = tabsToClose.length;
     const actions = [
       { key: 'dedup:cancel', label: 'Cancel', icon: '↩', sublabel: 'Close nothing', tags: [] },
-      { key: 'dedup:close', label: `Close ${n} duplicate tab${n !== 1 ? 's' : ''}`, icon: '🧹', sublabel: 'The most recently used copy of each page stays open', tags: [] },
+      { key: 'dedup:close', label: `Close ${n} duplicate tab${n !== 1 ? 's' : ''}`, icon: '🧹', tags: [],
+        sublabel: `The most recently used copy of each page stays open${managed.length ? ` \u00B7 ZenRipple agent tabs are not included` : ''}` },
     ];
     return actions.concat(tabsToClose.map(tab => ({
       key: `dedup-tab:${tab.index}`,
@@ -6685,13 +6735,16 @@
     } catch (e) { return ''; }
   }
 
-  // Get loose tabs eligible for sorting: non-pinned, non-essential, not in folders
+  // Get loose tabs eligible for sorting: non-pinned, non-essential, not in folders, and
+  // not ZenRipple's (it keeps each agent session's tabs together; foldering them would
+  // also pin them, which ZenRipple reads as "the user took this tab")
   function getSortableLooseTabs() {
     return getVisibleTabs().filter(t =>
       !t.pinned &&
       !t.hasAttribute('zen-essential') &&
       !t.group &&
-      !t.closing
+      !t.closing &&
+      !isExternallyManagedTab(t)
     );
   }
 
