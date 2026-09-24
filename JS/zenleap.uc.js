@@ -1672,6 +1672,8 @@
   // Record a jump to the jump list
   function recordJump(tab) {
     if (!recordingJumps || !tab) return;
+    // A Glance preview is recorded as its parent tab
+    try { tab = window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab; } catch (e) { /* keep tab */ }
 
     // Clean up any closed tabs from the list
     filterJumpList();
@@ -1706,7 +1708,7 @@
   // so success is verified afterwards. Resolves to true if the tab ended up selected.
   async function switchToTabAcrossWorkspaces(tab, { record = true } = {}) {
     if (!tab || tab.closing || !tab.isConnected) return false;
-    const origin = gBrowser.selectedTab;
+    const origin = currentTab();
     const wsId = tab.getAttribute('zen-workspace-id');
     const needsSwitch = !!(wsId && window.gZenWorkspaces && !tab.hasAttribute('zen-essential') &&
       wsId !== gZenWorkspaces.activeWorkspace);
@@ -1744,8 +1746,8 @@
     }
 
     // If we haven't recorded current position yet, do it now
-    if (jumpListIndex === jumpList.length - 1 && gBrowser.selectedTab !== jumpList[jumpListIndex]) {
-      recordJump(gBrowser.selectedTab);
+    if (jumpListIndex === jumpList.length - 1 && currentTab() !== jumpList[jumpListIndex]) {
+      recordJump(currentTab());
     }
 
     if (jumpListIndex > 0) {
@@ -1800,7 +1802,7 @@
 
   // Set a mark on the current tab (or toggle off if same mark on same tab)
   function setMark(char, tab) {
-    if (!tab) tab = gBrowser.selectedTab;
+    if (!tab) tab = currentTab();
 
     // Check if this exact mark is already on this tab - if so, toggle it off
     if (marks.get(char) === tab) {
@@ -2254,12 +2256,12 @@
   // Combines fuzzy match score with recency bonus for ranking
   // Omits the current tab from results (you don't need to search for where you already are)
   function searchTabs(query, { includeCurrent = false } = {}) {
-    const currentTab = gBrowser.selectedTab;
+    const current = currentTab();
 
     // Get searchable tabs (respects cross-workspace setting), optionally excluding current
     const tabs = includeCurrent
       ? getSearchableTabs()
-      : getSearchableTabs().filter(tab => tab !== currentTab);
+      : getSearchableTabs().filter(tab => tab !== current);
 
     // Empty query: return tabs sorted purely by recency
     if (!query || query.trim() === '') {
@@ -2843,7 +2845,9 @@
   // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
   //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
   //   asynchronously; browser.getSelectedText() returns a Promise; tabs.getAll()/findBy*
-  //   cover the active workspace unless called with { allWorkspaces: true }.
+  //   cover the active workspace unless called with { allWorkspaces: true }. While a
+  //   Glance is open, tabs.getCurrent() (and the tabs.* default tab) is the Glance's
+  //   parent tab; browser.* acts on the page on screen (the Glance).
 
   // ── Plugin State ──
   let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, loaded, instance, exports, sandbox, error, _dynamicCommands }
@@ -3188,7 +3192,8 @@
     return {
       // ─── Tab Operations ───
       tabs: {
-        getCurrent: () => gBrowser.selectedTab,
+        // The tab in the tab list (a Glance's parent); browser.* acts on the page on screen
+        getCurrent: () => currentTab(),
         // Active workspace (+ essentials) by default; { allWorkspaces: true } for every workspace
         getAll: (opts) => allTabs(opts),
         getVisible: () => getVisibleTabs(),
@@ -3210,17 +3215,17 @@
         close: (tab) => { if (liveTab(tab)) gBrowser.removeTab(tab); },
         closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), gBrowser.closingTabsEnum.MULTI_SELECTED),
         closeOthers: (keepTab) => {
-          const keep = keepTab || gBrowser.selectedTab;
+          const keep = keepTab || currentTab();
           return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned), gBrowser.closingTabsEnum.OTHER);
         },
         closeToRight: (fromTab) => {
           const tabs = getVisibleTabs();
-          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
+          const idx = tabs.indexOf(fromTab || currentTab());
           return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_END);
         },
         closeToLeft: (fromTab) => {
           const tabs = getVisibleTabs();
-          const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
+          const idx = tabs.indexOf(fromTab || currentTab());
           return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_START);
         },
         // User-intent tab creation: Zen's Space Routing rules apply unless { skipRoute: true }
@@ -3229,7 +3234,7 @@
           skipRoute: !!opts.skipRoute,
         }),
         duplicate: (tab) => {
-          const t = tab || gBrowser.selectedTab;
+          const t = tab || currentTab();
           return gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
         },
         move: (tab, toIndex) => {
@@ -3238,38 +3243,38 @@
             gBrowser.moveTabBefore(tab, tabs[toIndex]);
           }
         },
-        pin: (tab) => gBrowser.pinTab(tab || gBrowser.selectedTab),
-        unpin: (tab) => gBrowser.unpinTab(tab || gBrowser.selectedTab),
-        isPinned: (tab) => (tab || gBrowser.selectedTab).pinned,
-        mute: (tab) => { const t = tab || gBrowser.selectedTab; if (!t.hasAttribute('muted')) t.toggleMuteAudio(); },
-        unmute: (tab) => { const t = tab || gBrowser.selectedTab; if (t.hasAttribute('muted')) t.toggleMuteAudio(); },
-        toggleMute: (tab) => (tab || gBrowser.selectedTab).toggleMuteAudio(),
-        isMuted: (tab) => (tab || gBrowser.selectedTab).hasAttribute('muted'),
-        reload: (tab) => gBrowser.reloadTab(tab || gBrowser.selectedTab),
+        pin: (tab) => gBrowser.pinTab(tab || currentTab()),
+        unpin: (tab) => gBrowser.unpinTab(tab || currentTab()),
+        isPinned: (tab) => (tab || currentTab()).pinned,
+        mute: (tab) => { const t = tab || currentTab(); if (!t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        unmute: (tab) => { const t = tab || currentTab(); if (t.hasAttribute('muted')) t.toggleMuteAudio(); },
+        toggleMute: (tab) => (tab || currentTab()).toggleMuteAudio(),
+        isMuted: (tab) => (tab || currentTab()).hasAttribute('muted'),
+        reload: (tab) => gBrowser.reloadTab(tab || currentTab()),
         // Firefox picks another tab to select first when unloading the selected one
-        unload: (tab) => TabOps.unload([tab || gBrowser.selectedTab]),
-        getUrl: (tab) => (tab || gBrowser.selectedTab).linkedBrowser?.currentURI?.spec || '',
-        getTitle: (tab) => (tab || gBrowser.selectedTab).label || '',
-        getLastAccessed: (tab) => getTabLastAccessed(tab || gBrowser.selectedTab),
-        getFavicon: (tab) => (tab || gBrowser.selectedTab).image || '',
-        isLoading: (tab) => (tab || gBrowser.selectedTab).hasAttribute('busy'),
-        isPending: (tab) => (tab || gBrowser.selectedTab).hasAttribute('pending'),
-        isEssential: (tab) => (tab || gBrowser.selectedTab).hasAttribute('zen-essential'),
+        unload: (tab) => TabOps.unload([tab || currentTab()]),
+        getUrl: (tab) => (tab || currentTab()).linkedBrowser?.currentURI?.spec || '',
+        getTitle: (tab) => (tab || currentTab()).label || '',
+        getLastAccessed: (tab) => getTabLastAccessed(tab || currentTab()),
+        getFavicon: (tab) => (tab || currentTab()).image || '',
+        isLoading: (tab) => (tab || currentTab()).hasAttribute('busy'),
+        isPending: (tab) => (tab || currentTab()).hasAttribute('pending'),
+        isEssential: (tab) => (tab || currentTab()).hasAttribute('zen-essential'),
         // Returns false when Zen refuses (essentials limit, container-specific essentials)
         addToEssentials: (tab) => {
-          const t = tab || gBrowser.selectedTab;
+          const t = tab || currentTab();
           try {
             if (!window.gZenPinnedTabManager?.canEssentialBeAdded(t)) return false;
             return gZenPinnedTabManager.addToEssentials(t) !== false;
           } catch (e) { reportError(`Plugin "${pluginId}": addToEssentials failed`, e); return false; }
         },
         removeFromEssentials: (tab) => {
-          try { window.gZenPinnedTabManager?.removeEssentials(tab || gBrowser.selectedTab); }
+          try { window.gZenPinnedTabManager?.removeEssentials(tab || currentTab()); }
           catch (e) { reportError(`Plugin "${pluginId}": removeFromEssentials failed`, e); }
         },
         bookmark: (tab) => {
           try {
-            const t = tab || gBrowser.selectedTab;
+            const t = tab || currentTab();
             if (t === gBrowser.selectedTab) PlacesCommandHook.bookmarkPage();
             else PlacesCommandHook.bookmarkTabs([t]);
           } catch (e) { reportError(`Plugin "${pluginId}": bookmark failed`, e); }
@@ -4813,6 +4818,20 @@
     return isImageIcon(cleaned) ? cleaned : Array.from(cleaned).slice(0, 8).join('');
   }
 
+  // The tab the user is "on". While a Glance preview is open the selected tab is the
+  // glance child; tab-list operations (position, pinning, folders, workspaces, marks,
+  // jumps) act on its parent. Page operations (reload, mute, bookmark, close) keep
+  // using gBrowser.selectedTab, like Zen's own shortcuts. Same definition as the core
+  // region's currentTab(); once both branches are merged, one copy can go.
+  function currentTab() {
+    const tab = gBrowser.selectedTab;
+    try {
+      return window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab;
+    } catch (e) {
+      return tab;
+    }
+  }
+
   // Data of the active split view (null when none is active)
   function activeSplitView() {
     const splitter = window.gZenViewSplitter;
@@ -4860,7 +4879,7 @@
         gBrowser.duplicateTab(tab, true, { tabIndex: tab.index + 1 });
       }},
       { key: 'pin-unpin-tab', label: 'Pin/Unpin Tab', icon: '📌', tags: ['tab', 'pin', 'unpin'], command: () => {
-        const tab = gBrowser.selectedTab;
+        const tab = currentTab();
         if (tab.pinned) gBrowser.unpinTab(tab); else gBrowser.pinTab(tab);
       }},
 
@@ -4868,17 +4887,17 @@
       // Zen enforces the essentials limit and container-specific essentials
       { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
         condition: () => {
-          const tab = gBrowser.selectedTab;
+          const tab = currentTab();
           return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
             gZenPinnedTabManager.canEssentialBeAdded(tab);
         },
-        command: () => { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); } },
+        command: () => { gZenPinnedTabManager.addToEssentials(currentTab()); } },
       { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
-        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'),
-        command: () => { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); } },
+        condition: () => !!window.gZenPinnedTabManager && currentTab().hasAttribute('zen-essential'),
+        command: () => { gZenPinnedTabManager.removeEssentials(currentTab()); } },
       { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
         command: () => {
-          const tab = gBrowser.selectedTab;
+          const tab = currentTab();
           exitSearchMode();
           setTimeout(() => {
             try {
@@ -4889,7 +4908,7 @@
       }},
       { key: 'edit-tab-icon', label: 'Edit Tab Icon', icon: '🎨', tags: ['tab', 'icon', 'emoji', 'edit', 'custom', 'zen'],
         command: () => {
-          const tab = gBrowser.selectedTab;
+          const tab = currentTab();
           exitSearchMode();
           setTimeout(() => {
             try {
@@ -4899,11 +4918,11 @@
           }, 100);
       }},
       { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
-        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned,
-        command: () => { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); } },
+        condition: () => !!window.gZenPinnedTabManager && currentTab().pinned,
+        command: () => { gZenPinnedTabManager.resetPinnedTab(currentTab()); } },
       { key: 'replace-pinned-url', label: 'Replace Pinned URL with Current', icon: '📌', tags: ['tab', 'pinned', 'replace', 'url', 'current', 'update', 'zen'],
-        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned,
-        command: () => { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); } },
+        condition: () => !!window.gZenPinnedTabManager && currentTab().pinned,
+        command: () => { gZenPinnedTabManager.replacePinnedUrlWithCurrent(currentTab()); } },
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
       { key: 'find-playing-tab', label: 'Find Playing Tab', icon: '🔊', tags: ['tab', 'audio', 'media', 'sound', 'playing', 'music', 'video', 'find', 'go'],
         command: async () => {
@@ -4923,7 +4942,7 @@
       },
       // Firefox selects another tab first (and handles split views / beforeunload)
       { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'],
-        command: () => TabOps.unload([gBrowser.selectedTab]) },
+        command: () => TabOps.unload([currentTab()]) },
 
       // --- Tab Actions (Context Menu Parity) ---
       { key: 'reload-tab', label: 'Reload Tab', icon: '🔄', tags: ['tab', 'reload', 'refresh', 'r'], command: () => { gBrowser.reloadTab(gBrowser.selectedTab); } },
@@ -4939,7 +4958,7 @@
 
       // --- Tab Movement ---
       { key: 'move-tab-to-top', label: 'Move Tab to Top', icon: '⤒', tags: ['tab', 'move', 'top', 'first', 'beginning', 'mv'], command: () => {
-        const tab = gBrowser.selectedTab;
+        const tab = currentTab();
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
@@ -4951,7 +4970,7 @@
         }
       }},
       { key: 'move-tab-to-bottom', label: 'Move Tab to Bottom', icon: '⤓', tags: ['tab', 'move', 'bottom', 'last', 'end', 'mv'], command: () => {
-        const tab = gBrowser.selectedTab;
+        const tab = currentTab();
         // Unpin if pinned (except essentials) so it can move to the regular tab area
         if (tab.pinned && !tab.hasAttribute('zen-essential')) gBrowser.unpinTab(tab);
         const tabs = getVisibleTabs();
@@ -5029,10 +5048,10 @@
         resetLayoutSizes();
       }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
-        const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
+        const container = currentTab().linkedBrowser?.closest('.browserSidebarContainer');
         // Zen >= 1.19b: removeTabFromSplit(event, container); a non-Shift event keeps the tab selected
         if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
-      }, condition: () => !!activeSplitView()?.tabs?.includes(gBrowser.selectedTab) },
+      }, condition: () => !!activeSplitView()?.tabs?.includes(currentTab()) },
       { key: 'split-resize-gtile', label: 'Split View: Resize (gTile)', icon: '\u25A6', tags: ['split', 'view', 'resize', 'gtile', 'grid', 'tile', 'move', 'layout'], command: () => {
         enterGtileMode();
       }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
@@ -5062,13 +5081,13 @@
       'folders',
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
-        condition: () => !!window.gZenFolders && !gBrowser.selectedTab.hasAttribute('zen-essential'),
-        command: () => { gZenFolders.createFolder([gBrowser.selectedTab], { renameFolder: true }); } },
+        condition: () => !!window.gZenFolders && !currentTab().hasAttribute('zen-essential'),
+        command: () => { gZenFolders.createFolder([currentTab()], { renameFolder: true }); } },
       { key: 'delete-folder', label: 'Delete Folder...', icon: '🗑', tags: ['folder', 'delete', 'remove', 'destroy', 'group', 'del', 'rm', 'fld', 'fol'],
         condition: () => getWorkspaceFolders().length > 0,
         subFlow: 'delete-folder-picker' },
       { key: 'add-to-folder', label: 'Add Tab to Folder...', icon: '📂', tags: ['folder', 'add', 'move', 'tab', 'group', 'mv', 'fld', 'fol'],
-        condition: () => !gBrowser.selectedTab.hasAttribute('zen-essential') && getWorkspaceFolders().some(f => f !== gBrowser.selectedTab.group),
+        condition: () => !currentTab().hasAttribute('zen-essential') && getWorkspaceFolders().some(f => f !== currentTab().group),
         subFlow: 'add-to-folder-picker' },
       { key: 'rename-folder', label: 'Rename Folder...', icon: '✏', tags: ['folder', 'rename', 'edit', 'name', 'group', 'ren', 'fld', 'fol'],
         condition: () => getWorkspaceFolders().length > 0,
@@ -5363,13 +5382,13 @@
 
   // ── Bulk tab closing (Close Other / Left / Right) ──
   function getOtherUnpinnedTabs() {
-    const current = gBrowser.selectedTab;
+    const current = currentTab();
     return getVisibleTabs().filter(t => t !== current && !t.pinned);
   }
 
   function getUnpinnedTabsBeside(side) {
     const tabs = getVisibleTabs();
-    const idx = tabs.indexOf(gBrowser.selectedTab);
+    const idx = tabs.indexOf(currentTab());
     if (idx < 0) return [];
     return (side === 'right' ? tabs.slice(idx + 1) : tabs.slice(0, idx)).filter(t => !t.pinned);
   }
@@ -5976,9 +5995,9 @@
       results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
       select: (r) => {
         if (r.key === 'move-to-workspace:create-new') {
-          enterCreateWorkspaceStep({ originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab });
+          enterCreateWorkspaceStep({ originFlow: 'move-to-workspace-picker', tabToMove: currentTab() });
         } else if (r.workspaceId) {
-          const tabToMove = gBrowser.selectedTab;
+          const tabToMove = currentTab();
           exitSearchMode();
           // Move, then follow the tab into the target workspace
           TabOps.moveToWorkspace([tabToMove], r.workspaceId);
@@ -6034,7 +6053,7 @@
     'add-to-folder-picker': {
       placeholder: 'Select a folder to add tab to...',
       // Skip the folder the tab is already in
-      results: q => folderPickerResults(q, { keyPrefix: 'add-to-folder', verb: 'add', icon: '📂', skip: gBrowser.selectedTab?.group }),
+      results: q => folderPickerResults(q, { keyPrefix: 'add-to-folder', verb: 'add', icon: '📂', skip: currentTab()?.group }),
       select: (r) => { if (r.folder) addTabToFolder(r.folder); },
     },
     'rename-folder-picker': {
@@ -6269,7 +6288,7 @@
       browseDirection = 'down';
       const currentIdx = findCurrentItemIndex(visibleItems);
       originalTabIndex = currentIdx >= 0 ? currentIdx : 0;
-      originalTab = gBrowser.selectedTab;
+      originalTab = currentTab();
       highlightedTabIndex = firstMatchIdx >= 0 ? firstMatchIdx : originalTabIndex;
 
       // Pre-select the matched tabs
@@ -6624,7 +6643,7 @@
   function splitWithTab(tab) {
     try {
       if (window.gZenViewSplitter && tab) {
-        window.gZenViewSplitter.splitTabs([gBrowser.selectedTab, tab]);
+        window.gZenViewSplitter.splitTabs([currentTab(), tab]);
         log(`Split view with tab: ${tab.label}`);
       }
     } catch (e) { reportError('Split view failed', e); }
@@ -6663,7 +6682,7 @@
   }
 
   function addTabToFolder(folder) {
-    addTabsToFolder([gBrowser.selectedTab], { folder });
+    addTabsToFolder([currentTab()], { folder });
   }
 
   function renameFolder(folderId, newName) {
@@ -6927,7 +6946,7 @@
       }
     }
 
-    const activeTab = gBrowser.selectedTab;
+    const activeTab = currentTab();
     const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId)
       ? (activeTab.linkedBrowser?.currentURI?.spec || '') : '';
 
@@ -9003,8 +9022,8 @@
       const viewData = splitter?._data?.[splitter.currentView];
       if (!viewData?.tabs || viewData.tabs.length < 2) return false;
 
-      const currentTab = gBrowser.selectedTab;
-      const currentNode = splitter.getSplitNodeFromTab(currentTab);
+      const current = currentTab();
+      const currentNode = splitter.getSplitNodeFromTab(current);
       if (!currentNode?.positionToRoot) return false;
 
       const cur = currentNode.positionToRoot;
@@ -9015,7 +9034,7 @@
       let bestDistance = Infinity;
 
       for (const tab of viewData.tabs) {
-        if (tab === currentTab) continue;
+        if (tab === current) continue;
 
         const node = splitter.getSplitNodeFromTab(tab);
         if (!node?.positionToRoot) continue;
@@ -9086,8 +9105,8 @@
   // first non-split tab outside the group.
   function quickSwitchTab(direction, skipSplitGroup = false) {
     const items = getVisibleItems().filter(item => !isFolder(item));
-    const currentTab = gBrowser.selectedTab;
-    const currentIndex = items.indexOf(currentTab);
+    // During a Glance the selected tab is the glance child; move from its parent
+    const currentIndex = items.indexOf(currentTab());
     if (currentIndex === -1) return;
 
     let splitTabs = null;
