@@ -9239,7 +9239,7 @@
     const targetInfoEl = gtileOverlay.querySelector('.zenleap-gtile-target-info');
     if (targetInfoEl && gtileSubMode === 'resize' && gtileFocusedTab) {
       const targetRect = gtileTabRects.find(r => r.tab === gtileFocusedTab);
-      const t = themes[S['appearance.theme']] || themes.meridian;
+      const t = _appliedTheme;
       const colorMap = { blue: t.regionBlue, purple: t.regionPurple, green: t.regionGreen, yellow: t.regionGold };
       const hue = targetRect ? colorMap[targetRect.color] || t.accent : t.accent;
       targetInfoEl.querySelector('.gtile-target-dot').style.setProperty('--target-hue', hue);
@@ -13201,7 +13201,7 @@
   }
 
   function createThemeCard(key) {
-    const theme = themes[key];
+    const theme = resolveTheme(key);
     const card = document.createElement('div');
     card.className = 'zenleap-theme-card';
     if (S['appearance.theme'] === key) card.classList.add('active-theme');
@@ -13575,17 +13575,19 @@
     return strip;
   }
 
+  // Live preview of the theme being edited, at most once per frame (color
+  // inputs fire on every drag step; LEAP-B-34).
+  let _themeEditorPreviewRaf = 0;
   function applyThemeEditorPreview() {
-    if (!themeEditorActive) return;
-    const base = BUILTIN_THEMES[themeEditorBase] || BUILTIN_THEMES.meridian;
-    const merged = { ...base, name: themeEditorName, ...themeEditorDraft };
-    const previewKey = '__zenleap_preview__';
-    themes[previewKey] = merged;
-    const prevTheme = S['appearance.theme'];
-    S['appearance.theme'] = previewKey;
-    applyTheme();
-    S['appearance.theme'] = prevTheme;
-    delete themes[previewKey];
+    if (!themeEditorActive || _themeEditorPreviewRaf) return;
+    _themeEditorPreviewRaf = requestAnimationFrame(() => {
+      _themeEditorPreviewRaf = 0;
+      if (!themeEditorActive) return;
+      const base = BUILTIN_THEMES[themeEditorBase] || BUILTIN_THEMES.meridian;
+      const previewKey = '__zenleap_preview__';
+      themes[previewKey] = { ...base, name: themeEditorName, ...themeEditorDraft };
+      try { applyTheme(previewKey); } finally { delete themes[previewKey]; }
+    });
   }
 
   async function saveThemeFromEditor() {
@@ -13634,7 +13636,7 @@
   async function deleteUserTheme(key) {
     const themeName = themes[key]?.name || key;
     // Show inline confirmation on the delete button
-    const btn = settingsModal?.querySelector(`.zenleap-theme-card-btn.delete[data-key="${key}"]`);
+    const btn = settingsModal?.querySelector(`.zenleap-theme-card-btn.delete[data-key="${CSS.escape(key)}"]`);
     if (btn && !btn.dataset.confirming) {
       btn.dataset.confirming = 'true';
       btn.textContent = 'Confirm?';
@@ -13868,8 +13870,6 @@
 
     // Restore theme if exiting while in theme live-preview
     if (_themePreviewOriginal) {
-      S['appearance.theme'] = _themePreviewOriginal;
-      saveSettings();
       applyTheme();
       _themePreviewOriginal = null;
     }
@@ -14052,13 +14052,13 @@
       items[newIndex].scrollIntoView({ block: 'nearest', behavior: 'auto' });
     }
 
-    // Live-preview theme when navigating the theme-picker
+    // Live-preview theme when navigating the theme-picker (the saved theme
+    // setting only changes when a theme is picked)
     if (commandSubFlow?.type === 'theme-picker') {
       const results = commandMode ? commandResults : searchResults;
       const selectedResult = results[newIndex];
       if (selectedResult?.themeId && themes[selectedResult.themeId]) {
-        S['appearance.theme'] = selectedResult.themeId;
-        applyTheme();
+        applyTheme(selectedResult.themeId);
       }
     }
 
@@ -18424,18 +18424,31 @@
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
 
-  // Normalize any color string to strict #RRGGBB for <input type="color">
-  function toHex6(val) {
-    if (!val) return '#000000';
-    if (/^#[0-9a-fA-F]{6}$/i.test(val)) return val;
-    if (/^#[0-9a-fA-F]{3}$/i.test(val)) {
-      const [, r, g, b] = val.match(/^#(.)(.)(.)$/);
-      return `#${r}${r}${g}${g}${b}${b}`;
-    }
-    const m = val.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-    if (m) return '#' + [m[1], m[2], m[3]].map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
-    return '#000000';
+  // Normalize any CSS color (hex, rgb(), hsl(), named, ...) to #RRGGBB for
+  // <input type="color"> and the derived rgba() variables. Invalid values
+  // return `fallback` (the regex parser used to turn red / hsl() black).
+  function toHex6(val, fallback = '#000000') {
+    if (typeof val !== 'string' || !val.trim()) return fallback;
+    const v = val.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) return v;
+    try {
+      const rgba = InspectorUtils.colorToRGBA(v);
+      if (rgba) return '#' + [rgba.r, rgba.g, rgba.b].map(n => Math.round(n).toString(16).padStart(2, '0')).join('');
+    } catch (e) { /* not a color */ }
+    return fallback;
   }
+
+  // The theme to apply: user themes are completed with Meridian's values, so
+  // one that sets only a few keys (or has no `extends`) never yields
+  // `undefined` CSS values (LEAP-A-18).
+  function resolveTheme(themeId) {
+    const base = BUILTIN_THEMES.meridian;
+    const t = themes[themeId] || themes.meridian || base;
+    return t === base ? base : { ...base, ...t };
+  }
+
+  // Theme object currently applied (the saved theme or a live preview).
+  let _appliedTheme = BUILTIN_THEMES.meridian;
 
   // Generate a kebab-case theme key from a display name
   function generateThemeKey(name, existingThemes) {
@@ -18449,10 +18462,16 @@
     return candidate;
   }
 
-  // Apply theme: set all CSS custom properties on :root from the active theme
-  function applyTheme() {
-    const themeName = S['appearance.theme'] || 'meridian';
-    const t = themes[themeName] || themes.meridian;
+  // Apply theme: set all CSS custom properties on :root from the active theme.
+  // previewThemeId shows another theme without touching the saved setting, so
+  // an unrelated saveSettings() during a live preview can't persist it
+  // (LEAP-A-36).
+  function applyTheme(previewThemeId = null) {
+    if (_tornDown) return;
+    const themeName = previewThemeId || S['appearance.theme'] || 'meridian';
+    const t = resolveTheme(themeName);
+    const base = BUILTIN_THEMES.meridian;
+    _appliedTheme = t;
     const root = document.documentElement;
 
     // Background layers
@@ -18471,7 +18490,7 @@
     root.style.setProperty('--zl-accent-glow', t.accentGlow);
     root.style.setProperty('--zl-accent-border', t.accentBorder);
     // Derived accent opacities (for browse mode compatibility)
-    const accentHex = toHex6(t.accent);
+    const accentHex = toHex6(t.accent, base.accent);
     root.style.setProperty('--zl-accent-20', hexToRgba(accentHex, 0.2));
     root.style.setProperty('--zl-accent-15', hexToRgba(accentHex, 0.15));
     root.style.setProperty('--zl-accent-60', hexToRgba(accentHex, 0.6));
@@ -18522,9 +18541,9 @@
     root.style.setProperty('--zl-blur', `blur(${t.backdropBlur})`);
 
     // Browse mode variables (derived from theme — normalize for user themes)
-    const highlight = toHex6(t.highlight);
-    const selected = toHex6(t.selected);
-    const mark = toHex6(t.mark);
+    const highlight = toHex6(t.highlight, base.highlight);
+    const selected = toHex6(t.selected, base.selected);
+    const mark = toHex6(t.mark, base.mark);
 
     root.style.setProperty('--zl-highlight', highlight);
     root.style.setProperty('--zl-highlight-20', hexToRgba(highlight, 0.2));
@@ -18577,7 +18596,6 @@
     '--zen-urlbar-background',
     '--toolbox-textcolor',
     '--toolbar-color',
-    '--toolbar-bgcolor',
   ];
 
   // Apply or revert Zen Browser chrome theme colors.
@@ -18654,23 +18672,19 @@
       return;
     }
 
-    // Use the theme object passed from applyTheme(), or resolve it
-    if (!t) {
-      const themeName = S['appearance.theme'] || 'meridian';
-      t = themes[themeName] || themes.meridian;
-    }
+    // Use the theme object passed from applyTheme(), or the applied one
+    if (!t) t = _appliedTheme;
+    const base = BUILTIN_THEMES.meridian;
 
     // Resolve all theme colors
-    const accent = toHex6(t.accent);
-    const accentBright = toHex6(t.accentBright);
-    const bgBase = toHex6(t.bgBase);
-    const bgDeep = toHex6(t.bgDeep);
-    const bgSurface = toHex6(t.bgSurface);
-    const bgRaised = toHex6(t.bgRaised);
-    const bgVoid = toHex6(t.bgVoid);
-    const textPrimary = toHex6(t.textPrimary);
-    const textSecondary = toHex6(t.textSecondary);
-    const textMuted = toHex6(t.textMuted);
+    const accent = toHex6(t.accent, base.accent);
+    const bgBase = toHex6(t.bgBase, base.bgBase);
+    const bgDeep = toHex6(t.bgDeep, base.bgDeep);
+    const bgSurface = toHex6(t.bgSurface, base.bgSurface);
+    const bgRaised = toHex6(t.bgRaised, base.bgRaised);
+    const textPrimary = toHex6(t.textPrimary, base.textPrimary);
+    const textSecondary = toHex6(t.textSecondary, base.textSecondary);
+    const textMuted = toHex6(t.textMuted, base.textMuted);
 
     const bgGradient = `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`;
     const toolbarGradient = `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`;
@@ -18679,8 +18693,8 @@
     // remain there in all Zen versions
     root.style.setProperty('--zen-primary-color', accent);
 
-    // Background gradients: new Zen reads these from dedicated elements, not :root.
-    // Set on the correct targets; also set on :root for legacy Zen compat.
+    // Background gradients: Zen reads these from its dedicated background
+    // elements (#zen-browser-background / #zen-toolbar-background), not :root.
     if (zenBgEl) {
       zenBgEl.style.setProperty('--zen-main-browser-background', bgGradient);
       // During workspace-switch animations, Zen is animating --zen-background-opacity
@@ -18698,10 +18712,6 @@
         zenToolbarBgEl.style.setProperty('--zen-background-opacity', '1');
       }
     }
-    // Legacy / fallback: always set on :root too (harmless on new Zen, required on old)
-    root.style.setProperty('--zen-main-browser-background', bgGradient);
-    root.style.setProperty('--zen-main-browser-background-toolbar', toolbarGradient);
-
     // Toolbar element backgrounds (urlbar collapsed state)
     root.style.setProperty('--zen-toolbar-element-bg', hexToRgba(textPrimary, 0.08));
     root.style.setProperty('--zen-toolbar-element-bg-hover', hexToRgba(textPrimary, 0.15));
@@ -18709,7 +18719,6 @@
     // Text colors
     root.style.setProperty('--toolbox-textcolor', textPrimary);
     root.style.setProperty('--toolbar-color', textPrimary);
-    root.style.setProperty('--toolbar-bgcolor', hexToRgba(bgBase, 0.6));
 
     // Branding (base bg and contrast text)
     root.style.setProperty('--zen-branding-bg', bgDeep);
@@ -18774,9 +18783,6 @@
         background-color: ${accent} !important;
         color: ${bgDeep} !important;
       }
-      .urlbar {
-        --urlbarView-separator-color: ${hexToRgba(textPrimary, 0.1)} !important;
-      }
       #urlbar .urlbar-input-box {
         color: ${textPrimary} !important;
       }
@@ -18821,6 +18827,9 @@
         if (S['appearance.applyToBrowser']) {
           // Pass duringAnimation so we don't clobber Zen's cross-fade spring
           try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+          // Zen repaints every window showing this space from here, bypassing
+          // their own wrappers: let their ZenLeap re-apply too (LEAP-B-34).
+          try { Services.obs.notifyObservers(window, 'zenleap:reapply-browser-theme'); } catch (e) { /* ignore */ }
         }
         return result;
       };
@@ -18855,6 +18864,15 @@
     } catch (e) {
       log(`Warning: Could not add workspace change listener: ${e}`);
     }
+
+    const reapplyObserver = {
+      observe(subject) {
+        if (subject === window || _tornDown || !S['appearance.applyToBrowser']) return;
+        try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
+      },
+    };
+    Services.obs.addObserver(reapplyObserver, 'zenleap:reapply-browser-theme');
+    onTeardown(() => Services.obs.removeObserver(reapplyObserver, 'zenleap:reapply-browser-theme'));
 
     log('Workspace theme hook installed');
 
