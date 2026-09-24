@@ -1809,6 +1809,7 @@
   let settingsActiveTab = 'Keybindings';
   let settingsSearchQuery = '';
   let settingsRecordingId = null;
+  let settingsRecordingButton = null; // the recorder button showing "Press key…"
   let settingsRecordingHandler = null;
 
   // About page state
@@ -13695,6 +13696,7 @@
   function startKeyRecording(settingId, buttonElement) {
     stopKeyRecording();
     settingsRecordingId = settingId;
+    settingsRecordingButton = buttonElement;
     const schema = SETTINGS_SCHEMA[settingId];
     const row = buttonElement.closest('.zenleap-settings-row');
 
@@ -13765,10 +13767,18 @@
     window.addEventListener('keydown', settingsRecordingHandler, true);
   }
 
+  // Also when recording is interrupted (Settings closed by a click outside, another
+  // recorder started): the button shows the binding again instead of "Press key…".
   function stopKeyRecording() {
     if (settingsRecordingHandler) {
       window.removeEventListener('keydown', settingsRecordingHandler, true);
       settingsRecordingHandler = null;
+    }
+    const btn = settingsRecordingButton;
+    settingsRecordingButton = null;
+    if (btn && settingsRecordingId && SETTINGS_SCHEMA[settingsRecordingId]) {
+      btn.classList.remove('recording');
+      btn.textContent = formatKeyDisplay(S[settingsRecordingId], SETTINGS_SCHEMA[settingsRecordingId]);
     }
     settingsRecordingId = null;
   }
@@ -13780,7 +13790,10 @@
     if (searchMode) exitSearchMode();
     if (reorgMode) exitReorgMode(false);
 
+    const existed = !!settingsModal;
     createSettingsModal();
+    // Values may have changed meanwhile (theme, search scope, another window)
+    if (existed) renderSettingsContent();
     settingsMode = true;
     _overlayFocus = captureFocusTarget();
     settingsModal.classList.add('active');
