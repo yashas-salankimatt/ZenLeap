@@ -16936,8 +16936,7 @@
     browseCloseConfirmMode = true;
     browseClosePending = { tabs, folders, event };
 
-    const folderTabCount = folders.reduce((n, f) =>
-      n + (f.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0), 0);
+    const insideCount = folders.reduce((n, f) => n + folderTabCount(f), 0);
     const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
     let modal = document.getElementById('zenleap-close-confirm-modal');
@@ -16960,7 +16959,7 @@
     title.className = 'zenleap-folder-delete-title';
     const parts = [];
     if (tabs.length) parts.push(`close ${plural(tabs.length, 'tab')}`);
-    parts.push(`delete ${plural(folders.length, 'folder')} (${plural(folderTabCount, 'tab')} inside)`);
+    parts.push(`delete ${plural(folders.length, 'folder')} (${plural(insideCount, 'tab')} inside)`);
     const text = parts.join(' and ');
     title.textContent = `${text[0].toUpperCase()}${text.slice(1)}?`;
     container.appendChild(title);
@@ -16971,7 +16970,7 @@
       return el;
     };
     container.appendChild(option('1', 'Delete folders and everything in them',
-      `Closes ${plural(tabs.length + folderTabCount, 'tab')} in total`, () => confirmBrowseClose(true), true));
+      `Closes ${plural(tabs.length + insideCount, 'tab')} in total`, () => confirmBrowseClose(true), true));
     container.appendChild(option('2', 'Delete folders but keep their tabs',
       `Closes ${plural(tabs.length, 'selected tab')}; folder tabs stay open`, () => confirmBrowseClose(false), false));
     container.appendChild(option('Esc', 'Cancel', 'Nothing is closed', () => closeBrowseCloseConfirm(), false));
@@ -17004,22 +17003,15 @@
     if (!pending) return;
     const { tabs, folders, event } = pending;
     selectedItems.clear();
+    // Same helpers as the folder-delete modal and palette: they record an undo
+    // snapshot, so the undo shortcut rebuilds the real Zen folder (subfolders,
+    // position, space) instead of reopening a plain tab group.
     for (const folder of folders) {
       if (!folder.isConnected) continue;
-      const label = folder.label || 'Unnamed Folder';
-      const folderTabs = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
       try {
-        if (withContents) {
-          folderUndoStack.push({ type: 'folder-and-contents', folderLabel: label, folderId: folder.id,
-                                 tabCount: folderTabs.length, timestamp: Date.now() });
-          await folder.delete();
-        } else {
-          folderUndoStack.push({ type: 'folder-only', folderLabel: label, folderId: folder.id,
-                                 tabRefs: [...folderTabs], timestamp: Date.now() });
-          folder.unpackTabs();
-        }
+        await (withContents ? deleteFolderWithTabs(folder) : dissolveFolder(folder));
       } catch (e) {
-        reportError(`Deleting folder "${label}" failed`, e);
+        reportError(`Deleting folder "${folderName(folder)}" failed`, e);
       }
     }
     await closeTabsLikeZen(tabs, event);
