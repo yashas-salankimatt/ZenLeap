@@ -838,26 +838,24 @@
     'Effects':         { desc: 'Noise texture, backdrop blur, panel transparency' },
   };
 
-  // Command palette group definitions (for section headers when input is empty)
+  // Command palette groups, in display order (section headers when the input is empty).
+  // Commands name their group (see getStaticCommands); one group per enabled plugin is
+  // appended at runtime by syncPluginCommandGroups().
   const COMMAND_GROUPS = [
-    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}', keys: ['new-tab','close-tab','close-other-tabs','close-tabs-right','close-tabs-left','duplicate-tab','pin-unpin-tab','add-to-essentials','remove-from-essentials','rename-tab','edit-tab-icon','reset-pinned-tab','replace-pinned-url','mute-unmute-tab','find-playing-tab','unload-tab','reload-tab','bookmark-tab','reopen-closed-tab','select-all-tabs','select-matching-tabs','deduplicate-tabs','move-tab-to-top','move-tab-to-bottom','sort-tabs','group-by-domain'] },
-    { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}', keys: ['go-first-tab','go-last-tab','browse-mode-down','browse-mode-up','open-tab-search'] },
-    { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}', keys: ['toggle-fullscreen','toggle-sidebar','zoom-in','zoom-out','zoom-reset'] },
-    { id: 'split', label: 'Split View', icon: '\u25EB', keys: ['unsplit-view','split-with-tab','split-rotate-tabs','split-rotate-layout','split-reset-sizes','remove-tab-from-split','split-resize-gtile'] },
-    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}', keys: ['create-workspace','delete-workspace','switch-workspace','move-to-workspace','rename-workspace','reorganize-workspaces'] },
-    { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
-    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','switch-theme','reload-themes','open-themes-file'] },
-    { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
-    { id: 'plugins', label: 'Plugins', icon: '\u{1F9E9}', keys: ['plugin-manager'] },
-    // One group per enabled plugin is appended at runtime by syncPluginCommandGroups()
+    { id: 'tab-mgmt', label: 'Tab Management', icon: '\u{1F4CB}' },
+    { id: 'navigation', label: 'Navigation', icon: '\u{1F9ED}' },
+    { id: 'view', label: 'View & Browser', icon: '\u{1F5A5}' },
+    { id: 'split', label: 'Split View', icon: '\u25EB' },
+    { id: 'workspaces', label: 'Workspaces', icon: '\u{1F5C2}' },
+    { id: 'folders', label: 'Folders', icon: '\u{1F4C1}' },
+    { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1' },
+    { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}' },
+    { id: 'plugins', label: 'Plugins', icon: '\u{1F9E9}' },
   ];
   const STATIC_COMMAND_GROUP_COUNT = COMMAND_GROUPS.length;
 
-  // Build reverse lookup: command key → group id
+  // Command key → group id for the commands currently listed (read by the renderer)
   const _commandGroupMap = new Map();
-  for (const g of COMMAND_GROUPS) {
-    for (const k of g.keys) _commandGroupMap.set(k, g.id);
-  }
 
   // Current settings (defaults + saved overrides)
   const S = {};
@@ -4103,17 +4101,13 @@
         });
       }
     }
-    syncPluginCommandGroups(groups, commands);
+    syncPluginCommandGroups(groups);
     return commands;
   }
 
   // Give each plugin its own palette section (after the built-in groups).
-  function syncPluginCommandGroups(groups, commands) {
+  function syncPluginCommandGroups(groups) {
     COMMAND_GROUPS.splice(STATIC_COMMAND_GROUP_COUNT, COMMAND_GROUPS.length, ...groups);
-    for (const key of [..._commandGroupMap.keys()]) {
-      if (key.startsWith('plugin:')) _commandGroupMap.delete(key);
-    }
-    for (const cmd of commands) _commandGroupMap.set(cmd.key, cmd.group);
   }
 
   function getRegisteredPlugins() {
@@ -4819,6 +4813,12 @@
     return isImageIcon(cleaned) ? cleaned : Array.from(cleaned).slice(0, 8).join('');
   }
 
+  // Data of the active split view (null when none is active)
+  function activeSplitView() {
+    const splitter = window.gZenViewSplitter;
+    return splitter?.splitViewActive ? (splitter._data?.[splitter.currentView] || null) : null;
+  }
+
   // Stable per-tab key for result rows (tab._tPos no longer exists since Firefox 151)
   const _tabKeys = new WeakMap();
   let _tabKeyCounter = 0;
@@ -4831,9 +4831,21 @@
   // COMMAND PALETTE
   // ============================================
 
+  // Each command gets the group named by the closest preceding group id string.
+  function withCommandGroups(entries) {
+    let group = null;
+    const commands = [];
+    for (const entry of entries) {
+      if (typeof entry === 'string') group = entry;
+      else commands.push(entry.group ? entry : { ...entry, group });
+    }
+    return commands;
+  }
+
   // Static commands registry
   function getStaticCommands() {
-    return [
+    return withCommandGroups([
+      'tab-mgmt',
       // --- Tab Management ---
       // A real, selected new tab through Firefox's standard path (focuses the URL bar).
       // Zen's floating URL bar that replaces new tabs stays on Ctrl+T.
@@ -4864,18 +4876,13 @@
       // Zen enforces the essentials limit and container-specific essentials
       { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
         condition: () => {
-          try {
-            const tab = gBrowser.selectedTab;
-            return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
-              gZenPinnedTabManager.canEssentialBeAdded(tab);
-          } catch(e) { return false; }
+          const tab = gBrowser.selectedTab;
+          return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
+            gZenPinnedTabManager.canEssentialBeAdded(tab);
         },
         command: () => { gZenPinnedTabManager.addToEssentials(gBrowser.selectedTab); } },
       { key: 'remove-from-essentials', label: 'Remove from Essentials', icon: '⭐', tags: ['tab', 'essential', 'remove', 'unstar', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'); }
-          catch(e) { return false; }
-        },
+        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.hasAttribute('zen-essential'),
         command: () => { gZenPinnedTabManager.removeEssentials(gBrowser.selectedTab); } },
       { key: 'rename-tab', label: 'Rename Tab', icon: '✏', tags: ['tab', 'rename', 'title', 'edit', 'name', 'ren', 'zen'],
         command: () => {
@@ -4900,16 +4907,10 @@
           }, 100);
       }},
       { key: 'reset-pinned-tab', label: 'Reset Pinned Tab', icon: '↺', tags: ['tab', 'pinned', 'reset', 'original', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
-          catch(e) { return false; }
-        },
+        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned,
         command: () => { gZenPinnedTabManager.resetPinnedTab(gBrowser.selectedTab); } },
       { key: 'replace-pinned-url', label: 'Replace Pinned URL with Current', icon: '📌', tags: ['tab', 'pinned', 'replace', 'url', 'current', 'update', 'zen'],
-        condition: () => {
-          try { return !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned; }
-          catch(e) { return false; }
-        },
+        condition: () => !!window.gZenPinnedTabManager && gBrowser.selectedTab.pinned,
         command: () => { gZenPinnedTabManager.replacePinnedUrlWithCurrent(gBrowser.selectedTab); } },
       { key: 'mute-unmute-tab', label: 'Mute/Unmute Tab', icon: '🔇', tags: ['tab', 'mute', 'unmute', 'audio', 'sound'], command: () => { gBrowser.selectedTab.toggleMuteAudio(); } },
       { key: 'find-playing-tab', label: 'Find Playing Tab', icon: '🔊', tags: ['tab', 'audio', 'media', 'sound', 'playing', 'music', 'video', 'find', 'go'],
@@ -4974,6 +4975,7 @@
         condition: () => !!window.gZenFolders,
         command: () => { groupLooseTabsByDomain(); exitSearchMode(); } },
 
+      'navigation',
       // --- Navigation ---
       { key: 'go-first-tab', label: 'Go to First Tab', icon: '⇤', tags: ['navigate', 'first', 'top', 'gg', 'nav', 'go'], command: () => {
         const tabs = getVisibleTabs();
@@ -5001,6 +5003,7 @@
         exitCommandMode();
       }},
 
+      'view',
       // --- View & Browser ---
       { key: 'toggle-fullscreen', label: 'Toggle Fullscreen', icon: '⛶', tags: ['view', 'fullscreen', 'screen'], command: () => { window.fullScreen = !window.fullScreen; } },
       // Zen's own toggle (same as its keyboard shortcut)
@@ -5011,87 +5014,38 @@
       { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => { ZoomManager.reduce(); } },
       { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => { ZoomManager.reset(); } },
 
+      'split',
       // --- Split View ---
       { key: 'unsplit-view', label: 'Unsplit View', icon: '▣', tags: ['split', 'unsplit', 'close', 'cl'], command: () => {
         if (window.gZenViewSplitter?.splitViewActive) window.gZenViewSplitter.unsplitCurrentView();
-      }, condition: () => { try { return window.gZenViewSplitter?.splitViewActive; } catch(e) { return false; } } },
+      }, condition: () => window.gZenViewSplitter?.splitViewActive },
       { key: 'split-with-tab', label: 'Split View with Tab...', icon: '◫', tags: ['split', 'view', 'side'], subFlow: 'split-tab-picker' },
       { key: 'split-rotate-tabs', label: 'Split View: Rotate Tabs', icon: '🔄', tags: ['split', 'view', 'swap', 'rotate', 'tabs', 'panes'], command: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return;
-          const viewData = splitter._data[splitter.currentView];
-          if (!viewData || !viewData.tabs || viewData.tabs.length < 2) return;
-
-          if (viewData.tabs.length === 2) {
-            // For 2 tabs: simple swap
-            const node1 = splitter.getSplitNodeFromTab(viewData.tabs[0]);
-            const node2 = splitter.getSplitNodeFromTab(viewData.tabs[1]);
-            splitter.swapNodes(node1, node2);
-            splitter.applyGridLayout(viewData.layoutTree);
-          } else {
-            // For 3+ tabs: rotate positions (shift each tab to the next position)
-            const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
-            if (nodes.length > 0 && nodes.every(n => n)) {
-              // Rotate: last goes to first position, everything shifts right
-              const lastNode = nodes[nodes.length - 1];
-              for (let i = nodes.length - 1; i > 0; i--) {
-                splitter.swapNodes(nodes[i], nodes[i - 1]);
-              }
-              splitter.applyGridLayout(viewData.layoutTree);
-            }
-          }
-        } catch (e) { reportError('Split rotate tabs failed', e); }
-      }, condition: () => {
-        try {
-          return window.gZenViewSplitter?.splitViewActive &&
-            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
-        } catch(e) { return false; }
-      }},
+        const splitter = window.gZenViewSplitter;
+        const viewData = activeSplitView();
+        if (!viewData || (viewData.tabs?.length ?? 0) < 2) return;
+        const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
+        if (!nodes.every(n => n)) return;
+        // 2 tabs: swap; 3+: rotate (last goes to first position, everything shifts right)
+        for (let i = nodes.length - 1; i > 0; i--) splitter.swapNodes(nodes[i], nodes[i - 1]);
+        splitter.applyGridLayout(viewData.layoutTree);
+      }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
       { key: 'split-rotate-layout', label: 'Split View: Rotate Layout', icon: '\u27F3', tags: ['split', 'view', 'rotate', 'layout', 'orientation', 'horizontal', 'vertical'], command: () => {
-        try {
-          rotateSplitLayout();
-        } catch (e) { reportError('Split rotate layout failed', e); }
-      }, condition: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return false;
-          const viewData = splitter._data[splitter.currentView];
-          return !!(viewData?.layoutTree);
-        } catch(e) { return false; }
-      }},
+        rotateSplitLayout();
+      }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'split-reset-sizes', label: 'Split View: Reset Layout Sizes', icon: '\u2B1C', tags: ['split', 'view', 'reset', 'sizes', 'equal', 'normalize', 'balance'], command: () => {
-        try {
-          resetLayoutSizes();
-        } catch (e) { reportError('Split reset sizes failed', e); }
-      }, condition: () => {
-        try {
-          const splitter = window.gZenViewSplitter;
-          if (!splitter?.splitViewActive) return false;
-          const viewData = splitter._data[splitter.currentView];
-          return !!(viewData?.layoutTree);
-        } catch(e) { return false; }
-      }},
+        resetLayoutSizes();
+      }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
         const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
         // Zen >= 1.19b: removeTabFromSplit(event, container); a non-Shift event keeps the tab selected
         if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
-      }, condition: () => {
-        try {
-          if (!window.gZenViewSplitter?.splitViewActive) return false;
-          const viewData = window.gZenViewSplitter._data[window.gZenViewSplitter.currentView];
-          return viewData?.tabs?.includes(gBrowser.selectedTab);
-        } catch(e) { return false; }
-      }},
+      }, condition: () => !!activeSplitView()?.tabs?.includes(gBrowser.selectedTab) },
       { key: 'split-resize-gtile', label: 'Split View: Resize (gTile)', icon: '\u25A6', tags: ['split', 'view', 'resize', 'gtile', 'grid', 'tile', 'move', 'layout'], command: () => {
         enterGtileMode();
-      }, condition: () => {
-        try {
-          return window.gZenViewSplitter?.splitViewActive &&
-            window.gZenViewSplitter._data[window.gZenViewSplitter.currentView]?.tabs?.length >= 2;
-        } catch(e) { return false; }
-      }},
+      }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
 
+      'workspaces',
       // --- Workspace Management ---
       { key: 'create-workspace', label: 'Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create', 'mk', 'ws'],
         condition: () => workspacesEnabled(),
@@ -5113,6 +5067,7 @@
         condition: () => workspaceCount() > 1,
         command: () => { exitSearchMode(); setTimeout(() => enterReorgMode(), 50); } },
 
+      'folders',
       // --- Folder Management ---
       { key: 'create-folder', label: 'Create Folder with Current Tab', icon: '📁', tags: ['folder', 'create', 'new', 'group', 'tab', 'add', 'mk', 'fld', 'fol'],
         condition: () => !!window.gZenFolders && !gBrowser.selectedTab.hasAttribute('zen-essential'),
@@ -5145,6 +5100,7 @@
         condition: () => !!window.gZenFolders && workspaceCount() > 1 && getWorkspaceFolders().length > 0,
         subFlow: 'move-folder-to-ws-folder-picker' },
 
+      'zenleap',
       // --- ZenLeap Meta ---
       { key: 'toggle-browse-preview', label: 'Toggle Browse Preview', icon: '🖼', tags: ['preview', 'browse', 'thumbnail', 'zenleap'], command: () => {
         S['display.browsePreview'] = !S['display.browsePreview'];
@@ -5189,12 +5145,14 @@
         }
       }},
 
+      'plugins',
       // --- Plugin Management ---
       { key: 'plugin-manager', label: 'Manage Plugins', icon: '🧩', tags: ['plugin', 'plugins', 'manage', 'extensions', 'addons', 'install', 'uninstall', 'enable', 'disable'], command: () => {
         exitSearchMode();
         setTimeout(() => enterPluginManagerMode(), 100);
       }},
 
+      'sessions',
       // --- Session Management --- (not in private windows: nothing from them may be written to disk)
       { key: 'save-session', label: 'Save Workspace Session', icon: '💾', tags: ['session', 'save', 'snapshot', 'backup', 'checkpoint', 'workspace', 'resurrect'],
         condition: () => !isPrivateWindow(), subFlow: 'save-session-scope' },
@@ -5202,7 +5160,7 @@
         condition: () => workspacesEnabled(), subFlow: 'restore-session-picker' },
       { key: 'list-sessions', label: 'List Saved Sessions', icon: '📋', tags: ['session', 'list', 'saved', 'history', 'snapshots', 'view'],
         condition: () => !isPrivateWindow(), subFlow: 'list-sessions-picker' },
-    ];
+    ]);
   }
 
   // Generate dynamic commands based on current state
@@ -5238,7 +5196,7 @@
       { key: 'browse:unload', label: `Unload ${tabLabel} (Save Memory)`, icon: '💤', tags: [...browseTags, 'unload', 'discard', 'memory', 'suspend'],
         command: () => { unloadMatchedTabs(browseCommandTabs); } },
       { key: 'browse:split-view', label: `Split ${tabLabel} into Split View`, icon: '◫', tags: [...browseTags, 'split', 'view', 'side', 'pane'],
-        condition: () => { try { return !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4; } catch(e) { return false; } },
+        condition: () => !!window.gZenViewSplitter && browseCommandTabs.length >= 2 && browseCommandTabs.length <= 4,
         command: () => { splitBrowseTabs(browseCommandTabs); } },
       { key: 'browse:reload', label: `Reload ${tabLabel}`, icon: '🔄', tags: [...browseTags, 'reload', 'refresh'],
         command: () => { reloadMatchedTabs(browseCommandTabs); } },
@@ -5247,32 +5205,28 @@
     ];
   }
 
-  // Get all available commands (static + dynamic)
-  // Caches the condition-filtered command list briefly to avoid re-evaluating
-  // expensive conditions (DOM queries, workspace lookups) on every keystroke.
-  // Cache is invalidated after 500ms or when command mode is exited.
+  // Get all available commands (static + dynamic + plugins), filtered by their
+  // conditions. Conditions (DOM queries, workspace lookups) are evaluated once per
+  // palette session, not per keystroke: the list is cached until invalidated (opening
+  // or leaving search/command mode, plugin changes).
   let _commandListCache = null;
-  let _commandListCacheTime = 0;
-  const COMMAND_CACHE_TTL = 500;
 
   function getAllCommands() {
-    const now = Date.now();
-    if (_commandListCache && (now - _commandListCacheTime) < COMMAND_CACHE_TTL) {
-      return _commandListCache;
+    if (_commandListCache) return _commandListCache;
+    const all = [...getStaticCommands(), ...getDynamicCommands(), ...getPluginCommands()];
+    _commandListCache = all.filter(cmd => {
+      if (!cmd.condition) return true;
+      try { return !!cmd.condition(); } catch (e) { return false; }
+    });
+    _commandGroupMap.clear();
+    for (const cmd of _commandListCache) {
+      if (cmd.group) _commandGroupMap.set(cmd.key, cmd.group);
     }
-    const statics = getStaticCommands();
-    const dynamics = getDynamicCommands();
-    const plugins = getPluginCommands();
-    const all = [...statics, ...dynamics, ...plugins];
-    // Filter by condition
-    _commandListCache = all.filter(cmd => !cmd.condition || cmd.condition());
-    _commandListCacheTime = now;
     return _commandListCache;
   }
 
   function invalidateCommandCache() {
     _commandListCache = null;
-    _commandListCacheTime = 0;
   }
 
   // Filter commands by query using fuzzy match
@@ -5294,10 +5248,8 @@
       COMMAND_GROUPS.forEach((g, i) => groupOrder.set(g.id, i));
       const sorted = [...all];
       sorted.sort((a, b) => {
-        const aGroup = _commandGroupMap.get(a.key);
-        const bGroup = _commandGroupMap.get(b.key);
-        const aIdx = aGroup ? (groupOrder.get(aGroup) ?? 999) : 999;
-        const bIdx = bGroup ? (groupOrder.get(bGroup) ?? 999) : 999;
+        const aIdx = groupOrder.get(a.group) ?? 999;
+        const bIdx = groupOrder.get(b.group) ?? 999;
         if (aIdx !== bIdx) return aIdx - bIdx;
         return a.label.localeCompare(b.label);
       });
