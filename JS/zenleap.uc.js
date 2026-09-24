@@ -3030,10 +3030,14 @@
     return result;
   }
 
-  // Escape HTML special characters (XHTML-safe)
+  // Escape HTML special characters (XHTML-safe). Characters XML 1.0 forbids (C0
+  // controls except tab/LF/CR, U+FFFE/U+FFFF, lone surrogates) become U+FFFD: this
+  // chrome document is XHTML, so innerHTML parses markup as XML and throws on them,
+  // and one page title with a control character would blank a whole result list.
   function escapeHtml(text) {
     if (text == null) return '';
     return String(text)
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -11181,7 +11185,7 @@
       `;
     });
 
-    searchResultsList.innerHTML = html;
+    setResultsHtml(html);
 
     // Update hint bar
     updateSearchHintBar();
@@ -11204,6 +11208,21 @@
       } else {
         hidePreviewPanelVisual();
       }
+    }
+  }
+
+  // Result rows are HTML templates (escaped with escapeHtml). If one still fails to
+  // parse (this document is XHTML: markup is parsed as XML), show an error row
+  // instead of leaving a stale or empty list.
+  function setResultsHtml(html) {
+    try {
+      searchResultsList.innerHTML = html;
+    } catch (e) {
+      reportError('Showing the result list failed', e);
+      const row = document.createElement('div');
+      row.className = 'zenleap-search-empty';
+      row.textContent = 'The results could not be shown \u2014 see the Browser Console';
+      searchResultsList.replaceChildren(row);
     }
   }
 
@@ -11308,7 +11327,7 @@
       }
     });
 
-    searchResultsList.innerHTML = html;
+    setResultsHtml(html);
     updateSearchHintBar();
 
     // Scroll selected into view
@@ -15969,7 +15988,7 @@
 
     if (text.length === 0) {
       // Empty - show placeholder with cursor
-      searchInputDisplay.innerHTML = `<span class="cursor-empty"></span><span class="placeholder">${placeholder}</span>`;
+      searchInputDisplay.innerHTML = `<span class="cursor-empty"></span><span class="placeholder">${escapeHtml(placeholder)}</span>`;
       return;
     }
 
