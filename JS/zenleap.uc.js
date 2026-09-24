@@ -7381,15 +7381,21 @@
     });
   }
 
-  function getRestoreSessionPickerResults(query) {
-    // loadAllSessions is async, but subflow results are sync — use cached data
-    if (!sessionCache) {
-      // Trigger async load and show loading state
-      loadAllSessions().then(() => renderCommandResults());
-      return [{ key: 'restore:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+  // Sessions for the (synchronous) pickers: the cached list, refreshed in the background
+  // when it is older than the load cache (files may have changed since). Returns null
+  // while nothing has been loaded yet; the picker re-renders once loading finishes.
+  function getSessionsForPicker() {
+    const stale = !sessionCache || Date.now() - sessionCache.loadedAt >= 5000;
+    if (stale && !sessionLoadPromise) {
+      loadAllSessions().then(() => { if (commandSubFlow) renderCommandResults(); });
     }
-    const results = buildSessionPickerResults(sessionCache.sessions, 'restore-session');
-    return fuzzyFilterAndSort(results, query);
+    return sessionCache?.sessions ?? null;
+  }
+
+  function getRestoreSessionPickerResults(query) {
+    const sessions = getSessionsForPicker();
+    if (!sessions) return [{ key: 'restore:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    return fuzzyFilterAndSort(buildSessionPickerResults(sessions, 'restore-session'), query);
   }
 
   function getRestoreSessionModeResults(query) {
@@ -7864,12 +7870,9 @@
   // --- List / Detail Flow ---
 
   function getListSessionsPickerResults(query) {
-    if (!sessionCache) {
-      loadAllSessions().then(() => renderCommandResults());
-      return [{ key: 'list:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
-    }
-    const results = buildSessionPickerResults(sessionCache.sessions, 'list-session');
-    return fuzzyFilterAndSort(results, query);
+    const sessions = getSessionsForPicker();
+    if (!sessions) return [{ key: 'list:loading', label: 'Loading sessions...', icon: '⏳', tags: [] }];
+    return fuzzyFilterAndSort(buildSessionPickerResults(sessions, 'list-session'), query);
   }
 
   function getSessionDetailViewResults(query) {
