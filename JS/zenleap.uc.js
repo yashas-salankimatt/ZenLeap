@@ -5914,8 +5914,9 @@
 
   // Workspaces as picker rows. Options: markCurrent (label "(current)"), excludeActive,
   // currentLast (never pre-select the current workspace), createKey (adds a
-  // "+ Create New Workspace" row with that key), emptyLabel (row shown when empty).
-  function workspacePickerResults(query, { keyPrefix, verb, icon = '🗂', markCurrent = false, excludeActive = false, currentLast = false, createKey = null, emptyLabel = null } = {}) {
+  // "+ Create New Workspace" row with that key), emptyLabel (row shown when empty),
+  // moving (tabs go there: ZenRipple's agent space is listed last, with a note).
+  function workspacePickerResults(query, { keyPrefix, verb, icon = '🗂', markCurrent = false, excludeActive = false, currentLast = false, createKey = null, emptyLabel = null, moving = false } = {}) {
     const activeId = window.gZenWorkspaces?.activeWorkspace;
     const rows = [];
     try {
@@ -5923,14 +5924,17 @@
         const isActive = ws.uuid === activeId;
         if (excludeActive && isActive) continue;
         const name = ws.name || 'Unnamed';
+        const agentSpace = isAgentSpace(ws.uuid);
         rows.push({
           key: `${keyPrefix}:${ws.uuid}`,
           label: `${name}${markCurrent && isActive ? ' (current)' : ''}`,
           icon: safeIconText(ws.icon, icon),
+          ...(agentSpace ? { sublabel: 'ZenRipple agent space: agents can see and use the tabs here' } : {}),
           tags: ['workspace', ...(verb ? [verb] : []), name.toLowerCase()],
           workspaceId: ws.uuid,
           workspaceName: name,
           isActive,
+          agentSpace,
         });
       }
     } catch (e) { reportError('Listing workspaces failed', e); }
@@ -5938,6 +5942,7 @@
       return [{ key: `${keyPrefix}:none`, label: emptyLabel, icon: '🗂', tags: [] }];
     }
     if (currentLast) rows.sort((a, b) => (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0));
+    if (moving) rows.sort((a, b) => (a.agentSpace ? 1 : 0) - (b.agentSpace ? 1 : 0));
     const filtered = fuzzyFilterAndSort(rows, query);
     if (createKey) filtered.push({ key: createKey, label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
     return filtered;
@@ -6283,7 +6288,7 @@
     },
     'workspace-picker': {
       placeholder: 'Choose a workspace...',
-      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new', moving: true }),
       select: (r) => {
         if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'workspace-picker' });
         else moveTabsToWorkspace(commandMatchedTabs, r.workspaceId);
@@ -6407,7 +6412,7 @@
     },
     'move-to-workspace-picker': {
       placeholder: 'Select a workspace to move tab to...',
-      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new', moving: true }),
       select: (r) => {
         if (r.key === 'move-to-workspace:create-new') {
           enterCreateWorkspaceStep({ originFlow: 'move-to-workspace-picker', tabToMove: currentTab() });
@@ -6416,6 +6421,7 @@
           exitSearchMode();
           // Move, then follow the tab into the target workspace
           TabOps.moveToWorkspace([tabToMove], r.workspaceId);
+          noteMovedIntoAgentSpace([tabToMove], r.workspaceId);
           switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
         }
       },
@@ -6546,7 +6552,7 @@
     },
     'move-folder-to-ws-workspace-picker': {
       placeholder: 'Select destination workspace...',
-      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new', moving: true }),
       select: (r, data) => {
         if (r.key === 'move-to-workspace:create-new') {
           enterCreateWorkspaceStep({ originFlow: 'move-folder-to-ws-workspace-picker', folder: data?.folder, folderName: data?.folderName });
@@ -6555,6 +6561,7 @@
           if (data?.folder && window.gZenFolders) {
             try {
               gZenFolders.changeFolderToSpace(data.folder, r.workspaceId);
+              noteMovedIntoAgentSpace(data.folder.tabs || [], r.workspaceId);
               log(`Moved folder "${data.folderName}" to workspace`);
             } catch (e) { reportError('Move folder to workspace failed', e); }
           }
@@ -6565,7 +6572,7 @@
     // Browse-mode selection (the palette opened from browse mode acts on browseCommandTabs)
     'browse-workspace-picker': {
       placeholder: 'Choose a workspace...',
-      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new', moving: true }),
       select: (r) => {
         if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'browse-workspace-picker' });
         else if (r.workspaceId) moveTabsToWorkspace(browseCommandTabs, r.workspaceId);
@@ -6917,9 +6924,16 @@
   function moveTabsToWorkspace(tabs, workspaceId) {
     try {
       const count = TabOps.moveToWorkspace(tabs, workspaceId);
+      if (count) noteMovedIntoAgentSpace(tabs, workspaceId);
       log(`Moved ${count} tabs to workspace ${workspaceId}`);
     } catch (e) { reportError('Moving tabs to workspace failed', e); }
     exitSearchMode();
+  }
+
+  // The user moved their own tabs into ZenRipple's agent space: say what that means.
+  function noteMovedIntoAgentSpace(tabs, workspaceId) {
+    if (!isAgentSpace(workspaceId) || !Array.from(tabs || []).some(t => isLiveTab(t) && !isAgentTab(t))) return;
+    showZenLeapToast('Moved to the ZenRipple space: ZenRipple agents can see and use the tabs there', 6000);
   }
 
   async function handleCreateWorkspaceAndChain(name, data) {
@@ -17569,6 +17583,8 @@
     const anchorPinned = anchorIsFolder ? false : anchorItem.pinned;
     const anchorWorkspaceId = anchorItem.getAttribute('zen-workspace-id') || window.gZenWorkspaces?.activeWorkspace;
 
+    const movedToOtherSpace = [];
+
     // Separate yanked items into folders and loose tabs
     const yankFolders = yankItems.filter(isFolder);
     const yankLooseTabs = yankItems.filter(item => !isFolder(item));
@@ -17591,6 +17607,7 @@
         const tabWsId = tab.getAttribute('zen-workspace-id') || window.gZenWorkspaces.activeWorkspace;
         if (tabWsId !== anchorWorkspaceId) {
           window.gZenWorkspaces.moveTabToWorkspace(tab, anchorWorkspaceId);
+          movedToOtherSpace.push(tab);
           log(`  Moved tab "${tab.label}" to workspace ${anchorWorkspaceId}`);
         }
       }
@@ -17650,6 +17667,7 @@
         try {
           // hasDndSwitch: true means only update IDs, don't auto-reposition or switch workspace
           gZenFolders.changeFolderToSpace(folder, anchorWorkspaceId, { hasDndSwitch: true });
+          movedToOtherSpace.push(...(folder.tabs || []));
           log(`  Moved folder "${folder.label}" to workspace ${anchorWorkspaceId}`);
         } catch(e) { reportError('Moving folder to workspace failed', e); }
       }
@@ -17707,6 +17725,7 @@
     }
 
     log(`Pasted ${yankLooseTabs.length} tabs + ${yankFolders.length} folders ${position} anchor`);
+    noteMovedIntoAgentSpace(movedToOtherSpace, anchorWorkspaceId);
 
     // Clear yank buffer
     yankItems = [];
