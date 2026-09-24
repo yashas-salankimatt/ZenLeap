@@ -514,6 +514,32 @@ EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh instal
 check "FX_AUTOCONFIG_DIR + loader already there: reported as up to date" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
 check "FX_AUTOCONFIG_DIR + loader already there: not called outdated" lacks "$OUT" "older than the tested one"
 
+# 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
+#     (`sh` on macOS) works  [REV-LINST-17]
+new_home notbash
+mk_two_profiles "$H/.config/zen"
+DASH=$(command -v dash || true)
+if [ -n "$DASH" ]; then
+    OUT="$T/out.dash.log"
+    env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" "$DASH" -s -- --yes < "$REPO/install.sh" > "$OUT" 2>&1
+    RC=$?
+    check "piped into dash: exit 1" rc_is 1
+    check "piped into dash: says bash is needed" has "$OUT" "needs bash"
+    check "piped into dash: no parse error" lacks "$OUT" "Bad substitution"
+    for s in install-plugin.sh clean-legacy-css.sh; do
+        env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" "$DASH" "$REPO/$s" --list > "$OUT" 2>&1
+        RC=$?
+        check "$s under dash: says bash is needed" has "$OUT" "needs bash"
+    done
+fi
+OUT="$T/out.posix.log"
+env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" TMPDIR="$T" FAKE_ROOT="$T" FAKE_FXAC_ZIP="$T/fixtures/fxac.zip" \
+    FAKE_TAG="v$VERSION" FAKE_RELEASE="$T/fixtures/release-good" \
+    "$TEST_BASH" --posix -s -- --yes --zen-path "$APP" < "$REPO/install.sh" > "$OUT" 2>&1
+RC=$?
+check "bash --posix (macOS sh): exit 0" rc_is 0
+check "bash --posix (macOS sh): installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+
 # ---------------------------------------------------------------- install-plugin.sh
 
 new_home plugins

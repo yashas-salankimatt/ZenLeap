@@ -34,6 +34,16 @@
 #   ./install.sh install --profile 2 --yes
 #   ./install.sh uninstall --profile all --yes --remove-fxautoconfig
 
+# This script needs bash. `curl ... | sh` runs a POSIX shell such as dash, which
+# would stop with a parse error further down; say what to do instead.
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This installer needs bash. Run it with bash, for example:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash" >&2
+    exit 1
+fi
+# `sh` on macOS is bash in POSIX mode, which has no <(...)
+set +o posix
+
 set -e
 
 # Colors for output (use $'...' for proper escape interpretation)

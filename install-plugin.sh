@@ -26,6 +26,12 @@
 #   ./install-plugin.sh --list
 #   ./install-plugin.sh --uninstall tab-stats --profile 1
 
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This script needs bash: bash install-plugin.sh ..." >&2
+    exit 1
+fi
+set +o posix   # `sh` on macOS is bash in POSIX mode, which has no <(...)
+
 set -e
 
 # Colors

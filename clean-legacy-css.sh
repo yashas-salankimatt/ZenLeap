@@ -16,6 +16,12 @@
 #   --yes, -y            Auto-confirm all prompts (non-interactive mode)
 #   --dry-run            Show what would be removed without modifying files
 
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo "This script needs bash: bash clean-legacy-css.sh ..." >&2
+    exit 1
+fi
+set +o posix   # `sh` on macOS is bash in POSIX mode, which has no <(...)
+
 set -e
 
 RED=$'\033[0;31m'
