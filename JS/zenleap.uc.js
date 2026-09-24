@@ -14309,7 +14309,7 @@
         event.preventDefault();
         event.stopPropagation();
 
-        handleCommandVimNormalMode(key, event);
+        handleBarVimNormalMode(key, event);
         return true;
       }
 
@@ -14396,7 +14396,7 @@
       event.preventDefault();
       event.stopPropagation();
 
-      handleVimNormalMode(key, event);
+      handleBarVimNormalMode(key, event);
       return true;
     }
 
@@ -14405,219 +14405,70 @@
     return false;
   }
 
-  // Handle vim normal mode commands
-  function handleVimNormalMode(key, event) {
-    const text = searchQuery;
+  // Vim NORMAL mode in the tab-search and command bar (one implementation for
+  // both; they differ only in the text/results they edit and in what x does).
+  function handleBarVimNormalMode(key, event) {
+    const bar = commandMode
+      ? {
+          text: commandQuery || '',
+          count: commandResults.length,
+          setText: (v) => { commandQuery = v; if (searchInput) searchInput.value = v; },
+          render: renderCommandResults,
+          pick: (idx) => { searchSelectedIndex = idx; handleCommandSelect(); },
+        }
+      : {
+          text: searchQuery,
+          count: searchResults.length,
+          setText: (v) => { searchQuery = v; if (searchInput) searchInput.value = v; },
+          render: renderSearchResults,
+          pick: (idx) => selectSearchResult(idx),
+        };
+    const text = bar.text;
     const len = text.length;
+    const toInsert = (pos = searchCursorPos) => {
+      searchCursorPos = pos;
+      searchVimMode = 'insert';
+      updateSearchVimIndicator(); // This will show input, focus and set cursor
+    };
+    const deleteRange = (start, end) => {
+      bar.setText(text.slice(0, start) + text.slice(end));
+      bar.render();
+    };
 
     // Quick jump with numbers 1-9
     if (key >= '1' && key <= '9') {
       const idx = parseInt(key) - 1;
-      if (idx < searchResults.length) {
-        selectSearchResult(idx);
-      }
+      if (idx < bar.count) bar.pick(idx);
       return;
     }
 
-    // Result navigation with j/k in normal mode
-    if (key === 'j') {
-      moveSearchSelection('down');
-      return;
-    }
-    if (key === 'k') {
-      moveSearchSelection('up');
-      return;
-    }
-
-    // Cursor movement commands
-    switch (key) {
-      case 'h': // Left
-        searchCursorPos = Math.max(0, searchCursorPos - 1);
-        renderSearchDisplay();
-        break;
-
-      case 'l': // Right
-        searchCursorPos = Math.min(len > 0 ? len - 1 : 0, searchCursorPos + 1);
-        renderSearchDisplay();
-        break;
-
-      case '0': // Beginning of line
-        searchCursorPos = 0;
-        renderSearchDisplay();
-        break;
-
-      case '$': // End of line
-        searchCursorPos = Math.max(0, len - 1);
-        renderSearchDisplay();
-        break;
-
-      case 'w': // Word forward
-        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'forward');
-        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
-        renderSearchDisplay();
-        break;
-
-      case 'b': // Word backward
-        searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'backward');
-        renderSearchDisplay();
-        break;
-
-      case 'e': // End of word
-        searchCursorPos = findWordEnd(text, searchCursorPos);
-        if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
-        renderSearchDisplay();
-        break;
-
-      // Insert mode switches
-      case 'i': // Insert at cursor
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will focus and set cursor
-        break;
-
-      case 'a': // Insert after cursor
-        searchCursorPos = Math.min(len, searchCursorPos + 1);
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will focus and set cursor
-        break;
-
-      case 'I': // Insert at beginning
-        searchCursorPos = 0;
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will focus and set cursor
-        break;
-
-      case 'A': // Insert at end
-        searchCursorPos = len;
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will focus and set cursor
-        break;
-
-      // Editing commands
-      case 'x': // Close selected tab
-        closeSelectedSearchResult();
-        break;
-
-      case 's': // Substitute (delete and insert)
-        if (searchCursorPos < len) {
-          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          searchInput.value = searchQuery;
-          renderSearchResults();
-        }
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will show input and focus
-        break;
-
-      case 'D': // Delete to end of line
-        searchQuery = text.slice(0, searchCursorPos);
-        searchInput.value = searchQuery;
-        // Adjust cursor to end
-        if (searchCursorPos > 0) searchCursorPos = searchQuery.length > 0 ? searchQuery.length - 1 : 0;
-        renderSearchResults();
-        renderSearchDisplay();
-        break;
-
-      case 'C': // Change to end of line
-        searchQuery = text.slice(0, searchCursorPos);
-        searchInput.value = searchQuery;
-        renderSearchResults();
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will show input and focus
-        break;
-
-      case 'S': // Substitute entire line (clear all and enter insert mode)
-        searchQuery = '';
-        searchInput.value = '';
-        searchCursorPos = 0;
-        renderSearchResults();
-        searchVimMode = 'insert';
-        updateSearchVimIndicator(); // This will show input and focus
-        break;
-
-      case 'd': // Wait for second key (dd for delete line)
-        // For simplicity, just clear on 'd' press
-        // A more complete implementation would wait for the second key
-        // For now, we'll treat 'd' alone as delete character like 'x'
-        if (searchCursorPos < len) {
-          searchQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          searchInput.value = searchQuery;
-          if (searchCursorPos >= searchQuery.length && searchQuery.length > 0) {
-            searchCursorPos = searchQuery.length - 1;
-          }
-          renderSearchResults();
-          renderSearchDisplay();
-        }
-        break;
-    }
-  }
-
-  // Handle vim normal mode commands in command bar
-  function handleCommandVimNormalMode(key, event) {
-    const text = commandQuery || '';
-    const len = text.length;
-
-    // Quick jump with numbers 1-9
-    if (key >= '1' && key <= '9') {
-      const idx = parseInt(key) - 1;
-      if (idx < commandResults.length) {
-        searchSelectedIndex = idx;
-        handleCommandSelect();
-      }
-      return;
-    }
-
-    // Result navigation with j/k
+    // Result navigation: j/k, G = last, g = first
     if (key === 'j') { moveSearchSelection('down'); return; }
     if (key === 'k') { moveSearchSelection('up'); return; }
-
-    // G to go to last result, g to first
-    if (key === 'G') {
-      if (commandResults.length > 0) {
+    if (key === 'G' || key === 'g') {
+      if (bar.count > 0) {
         const oldIndex = searchSelectedIndex;
-        searchSelectedIndex = commandResults.length - 1;
+        searchSelectedIndex = key === 'G' ? bar.count - 1 : 0;
         updateSelectionHighlight(oldIndex, searchSelectedIndex);
       }
       return;
     }
-    if (key === 'g') {
-      const oldIndex = searchSelectedIndex;
-      searchSelectedIndex = 0;
-      updateSelectionHighlight(oldIndex, searchSelectedIndex);
-      return;
-    }
 
-    // Cursor movement commands
     switch (key) {
-      case 'h': // Left
-        searchCursorPos = Math.max(0, searchCursorPos - 1);
-        renderSearchDisplay();
-        break;
-
-      case 'l': // Right
-        searchCursorPos = Math.min(len > 0 ? len - 1 : 0, searchCursorPos + 1);
-        renderSearchDisplay();
-        break;
-
-      case '0': // Beginning of line
-        searchCursorPos = 0;
-        renderSearchDisplay();
-        break;
-
-      case '$': // End of line
-        searchCursorPos = Math.max(0, len - 1);
-        renderSearchDisplay();
-        break;
-
+      // Cursor movement
+      case 'h': searchCursorPos = Math.max(0, searchCursorPos - 1); renderSearchDisplay(); break;
+      case 'l': searchCursorPos = Math.min(len > 0 ? len - 1 : 0, searchCursorPos + 1); renderSearchDisplay(); break;
+      case '0': searchCursorPos = 0; renderSearchDisplay(); break;
+      case '$': searchCursorPos = Math.max(0, len - 1); renderSearchDisplay(); break;
       case 'w': // Word forward
         searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'forward');
         if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
         renderSearchDisplay();
         break;
-
       case 'b': // Word backward
         searchCursorPos = findNextWordBoundary(text, searchCursorPos, 'backward');
         renderSearchDisplay();
         break;
-
       case 'e': // End of word
         searchCursorPos = findWordEnd(text, searchCursorPos);
         if (searchCursorPos >= len && len > 0) searchCursorPos = len - 1;
@@ -14625,88 +14476,41 @@
         break;
 
       // Insert mode switches
-      case 'i':
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
-        break;
+      case 'i': toInsert(); break;
+      case 'a': toInsert(Math.min(len, searchCursorPos + 1)); break;
+      case 'I': toInsert(0); break;
+      case 'A': toInsert(len); break;
 
-      case 'a': // Insert after cursor
-        searchCursorPos = Math.min(len, searchCursorPos + 1);
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
-        break;
-
-      case 'I': // Insert at beginning
-        searchCursorPos = 0;
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
-        break;
-
-      case 'A': // Insert at end
-        searchCursorPos = len;
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
-        break;
-
-      // Editing commands
-      case 'x': // Delete character at cursor
+      // Editing
+      case 'x':
+        // Tab search: x closes the selected tab; command bar: delete character
+        if (!commandMode) { closeSelectedSearchResult(); break; }
+        // falls through
+      case 'd': // Delete character (like x)
         if (searchCursorPos < len) {
-          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          if (searchInput) searchInput.value = commandQuery;
-          if (searchCursorPos >= commandQuery.length && commandQuery.length > 0) {
-            searchCursorPos = commandQuery.length - 1;
-          }
-          renderCommandResults();
+          deleteRange(searchCursorPos, searchCursorPos + 1);
+          const newLen = bar.text.length - 1;
+          if (searchCursorPos >= newLen && newLen > 0) searchCursorPos = newLen - 1;
           renderSearchDisplay();
         }
         break;
-
       case 's': // Substitute (delete char and enter insert)
-        if (searchCursorPos < len) {
-          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          if (searchInput) searchInput.value = commandQuery;
-          renderCommandResults();
-        }
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
+        if (searchCursorPos < len) deleteRange(searchCursorPos, searchCursorPos + 1);
+        toInsert();
         break;
-
       case 'S': // Substitute entire line
-        commandQuery = '';
-        if (searchInput) searchInput.value = '';
-        searchCursorPos = 0;
         searchSelectedIndex = 0;
-        renderCommandResults();
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
+        deleteRange(0, len);
+        toInsert(0);
         break;
-
       case 'D': // Delete to end of line
-        commandQuery = text.slice(0, searchCursorPos);
-        if (searchInput) searchInput.value = commandQuery;
-        if (searchCursorPos > 0) searchCursorPos = commandQuery.length > 0 ? commandQuery.length - 1 : 0;
-        renderCommandResults();
+        deleteRange(searchCursorPos, len);
+        if (searchCursorPos > 0) searchCursorPos -= 1;
         renderSearchDisplay();
         break;
-
-      case 'C': // Change to end of line (delete to end + insert mode)
-        commandQuery = text.slice(0, searchCursorPos);
-        if (searchInput) searchInput.value = commandQuery;
-        renderCommandResults();
-        searchVimMode = 'insert';
-        updateSearchVimIndicator();
-        break;
-
-      case 'd': // Delete character (like x for simplicity)
-        if (searchCursorPos < len) {
-          commandQuery = text.slice(0, searchCursorPos) + text.slice(searchCursorPos + 1);
-          if (searchInput) searchInput.value = commandQuery;
-          if (searchCursorPos >= commandQuery.length && commandQuery.length > 0) {
-            searchCursorPos = commandQuery.length - 1;
-          }
-          renderCommandResults();
-          renderSearchDisplay();
-        }
+      case 'C': // Change to end of line
+        deleteRange(searchCursorPos, len);
+        toInsert();
         break;
     }
   }
