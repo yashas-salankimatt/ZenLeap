@@ -6518,10 +6518,16 @@
         const folder = data?.folder;
         if (r.key === 'delete-folder:keep-tabs' && folder) {
           exitSearchMode();
-          dissolveFolder(folder).catch(e => reportError('Deleting folder failed', e));
+          const name = folderName(folder);
+          dissolveFolder(folder)
+            .then(done => { if (done) showFolderUndoHint(`Folder "${name}"`); })
+            .catch(e => reportError('Deleting folder failed', e));
         } else if (r.key === 'delete-folder:with-tabs' && folder) {
           exitSearchMode();
-          deleteFolderWithTabs(folder).catch(e => reportError('Deleting folder failed', e));
+          const name = folderName(folder);
+          deleteFolderWithTabs(folder)
+            .then(done => { if (done) showFolderUndoHint(`Folder "${name}"`); })
+            .catch(e => reportError('Deleting folder failed', e));
         } else {
           exitSubFlow();
         }
@@ -9398,6 +9404,7 @@
   function showFolderDeleteModal(folder) {
     folderDeleteMode = true;
     folderDeleteTarget = folder;
+    hidePreviewPanel(); // the preview floats above dialogs
 
     const name = folderName(folder);
     const tabCount = folderTabCount(folder);
@@ -9476,8 +9483,10 @@
   function deleteFolderAndContents(folder) {
     _expectedGone.add(folder);
     for (const t of folder?.tabs || []) _expectedGone.add(t);
+    const name = folderName(folder);
     closeFolderDeleteModal();
     deleteFolderWithTabs(folder)
+      .then(done => { if (done) showFolderUndoHint(`Folder "${name}"`); })
       .catch(e => reportError('Deleting folder and its tabs failed', e))
       .finally(() => adjustHighlightAfterDeletion());
   }
@@ -9485,10 +9494,21 @@
   // Browse-mode modal option 2
   function deleteFolderKeepTabs(folder) {
     _expectedGone.add(folder);
+    const name = folderName(folder);
     closeFolderDeleteModal();
     dissolveFolder(folder)
+      .then(done => { if (done) showFolderUndoHint(`Folder "${name}"`); })
       .catch(e => reportError('Deleting folder failed', e))
       .finally(() => adjustHighlightAfterDeletion());
+  }
+
+  // After a folder delete: how to get it back
+  function showFolderUndoHint(what, count = 1) {
+    const key = formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete']);
+    const secs = Math.round(FOLDER_UNDO_WINDOW_MS / 1000);
+    showZenLeapToast(count > 1
+      ? `${what} deleted \u2014 ${key} within ${secs} seconds brings them back, one per press`
+      : `${what} deleted \u2014 ${key} within ${secs} seconds brings it back`, 5000);
   }
 
   function adjustHighlightAfterDeletion() {
@@ -17542,6 +17562,7 @@
   function showBrowseCloseConfirm(tabs, folders, event) {
     browseCloseConfirmMode = true;
     browseClosePending = { tabs, folders, event };
+    hidePreviewPanel(); // the preview floats above dialogs
 
     const insideCount = folders.reduce((n, f) => n + folderTabCount(f), 0);
     const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -17579,7 +17600,8 @@
     container.appendChild(option('1', 'Delete folders and everything in them',
       `Closes ${plural(tabs.length + insideCount, 'tab')} in total`, () => confirmBrowseClose(true), true));
     container.appendChild(option('2', 'Delete folders but keep their tabs',
-      `Closes ${plural(tabs.length, 'selected tab')}; folder tabs stay open`, () => confirmBrowseClose(false), false));
+      tabs.length ? `Closes ${plural(tabs.length, 'selected tab')}; folder tabs stay open` : 'Their tabs stay open',
+      () => confirmBrowseClose(false), false));
     container.appendChild(option('Esc', 'Cancel', 'Nothing is closed', () => closeBrowseCloseConfirm(), false));
 
     modal.appendChild(backdrop);
@@ -17615,15 +17637,18 @@
     // Same helpers as the folder-delete modal and palette: they record an undo
     // snapshot, so the undo shortcut rebuilds the real Zen folder (subfolders,
     // position, space) instead of reopening a plain tab group.
+    let deleted = 0, lastName = '';
     for (const folder of folders) {
       if (!folder.isConnected) continue;
+      lastName = folderName(folder);
       try {
-        await (withContents ? deleteFolderWithTabs(folder) : dissolveFolder(folder));
+        if (await (withContents ? deleteFolderWithTabs(folder) : dissolveFolder(folder))) deleted++;
       } catch (e) {
         reportError(`Deleting folder "${folderName(folder)}" failed`, e);
       }
     }
     await closeTabsLikeZen(tabs, event);
+    if (deleted) showFolderUndoHint(deleted === 1 ? `Folder "${lastName}"` : `${deleted} folders`, deleted);
     refreshBrowseAfterClose();
   }
 
@@ -18463,10 +18488,11 @@
       return;
     }
 
-    // Handle folder delete modal
+    // Handle folder delete modal: 1/2 choose, and like the other destructive
+    // confirmations Enter/Space/Escape cancel (never delete)
     if (folderDeleteMode) {
       consumeEvent(event);
-      if (event.key === 'Escape') {
+      if (event.key === 'Escape' || ((event.key === 'Enter' || event.key === ' ') && !event.repeat)) {
         closeFolderDeleteModal();
         return;
       }
