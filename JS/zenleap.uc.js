@@ -12345,7 +12345,6 @@
         background: color-mix(in srgb, var(--zl-error) 15%, transparent); border-color: color-mix(in srgb, var(--zl-error) 35%, transparent);
       }
       .zenleap-settings-reset-all:active { transform: scale(0.97); }
-      .zenleap-color-control { display: flex; align-items: center; gap: 8px; }
       .zenleap-color-picker {
         width: 32px; height: 32px; border: none; border-radius: var(--zl-r-sm);
         cursor: pointer; padding: 0; background: none; -moz-appearance: none; appearance: none;
@@ -19237,18 +19236,7 @@
         from { opacity: 0; transform: scale(0.96) translateY(-8px); }
         to { opacity: 1; transform: scale(1) translateY(0); }
       }
-      /* Used by the plugin manager and plugin toasts, which can open before the
-         settings or update styles were ever injected */
-      @keyframes zenleap-settings-appear {
-        from { opacity: 0; transform: scale(0.97); }
-        to { opacity: 1; transform: scale(1); }
-      }
-      @keyframes zenleap-toast-in {
-        from { opacity: 0; transform: translateX(-50%) translateY(12px); }
-        to   { opacity: 1; transform: translateX(-50%) translateY(0); }
-      }
-
-      /* Toggle switch */
+      /* Toggle switch (Settings) */
       .zenleap-toggle {
         position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer;
       }
