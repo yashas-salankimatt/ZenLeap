@@ -15947,60 +15947,6 @@
     captureTabThumbnail(tab, captureId);
   }
 
-  // Get scroll position from a tab's content process
-  function getTabScrollPosition(browser) {
-    // Method 1: direct contentWindow access
-    try {
-      const win = browser.contentWindow;
-      if (win && typeof win.scrollY === 'number') {
-        return Promise.resolve({ x: win.scrollX || 0, y: win.scrollY || 0 });
-      }
-    } catch (e) {}
-    // Method 2: unwrapped access (bypass Xray wrappers)
-    try {
-      const win = browser.contentWindow?.wrappedJSObject;
-      if (win && typeof win.scrollY === 'number') {
-        return Promise.resolve({ x: win.scrollX || 0, y: win.scrollY || 0 });
-      }
-    } catch (e) {}
-    // Method 3: frame script injection (Fission-compatible, queries content process directly)
-    // Uses a single static frame script per browser to avoid accumulating scripts,
-    // but includes a per-call requestId so concurrent responses don't collide.
-    try {
-      return new Promise((resolve) => {
-        const mm = browser.messageManager;
-        if (!mm) { resolve({ x: 0, y: 0 }); return; }
-        const requestId = Date.now() + '_' + Math.random();
-        const timer = setTimeout(() => {
-          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
-          resolve({ x: 0, y: 0 });
-        }, 300);
-        function handler(msg) {
-          if (msg.data?.requestId !== requestId) return; // Not our response
-          clearTimeout(timer);
-          try { mm.removeMessageListener('ZenLeap:ScrollPos:Response', handler); } catch (e) {}
-          resolve(msg.data || { x: 0, y: 0 });
-        }
-        mm.addMessageListener('ZenLeap:ScrollPos:Response', handler);
-        // Install the static frame script once per browser (allowDelayedLoad=false prevents re-injection)
-        if (!browser._zenleapScrollScriptLoaded) {
-          mm.loadFrameScript(`data:,
-            addMessageListener('ZenLeap:ScrollPos:Request', function(msg) {
-              sendAsyncMessage('ZenLeap:ScrollPos:Response', {
-                requestId: msg.data && msg.data.requestId,
-                x: content.scrollX || 0,
-                y: content.scrollY || 0
-              });
-            });
-          `, false);
-          browser._zenleapScrollScriptLoaded = true;
-        }
-        mm.sendAsyncMessage('ZenLeap:ScrollPos:Request', { requestId });
-      });
-    } catch (e) {}
-    return Promise.resolve({ x: 0, y: 0 });
-  }
-
   async function captureTabThumbnail(tab, captureId) {
     try {
       const browser = tab.linkedBrowser;
@@ -16012,14 +15958,14 @@
         return;
       }
 
+      // Snapshot the tab's current viewport (rect = null), i.e. what the user
+      // was looking at, at the preview's width and the screen's pixel density.
+      // No content script needed (the old scroll-position frame script broke
+      // after process switches and injected code into web pages).
       const w = browser.clientWidth || 1280;
-      const h = browser.clientHeight || 720;
-      // Get the tab's scroll position to capture what the user was actually looking at
-      const scroll = await getTabScrollPosition(browser);
-      const rect = new DOMRect(scroll.x, scroll.y, w, h);
-      const scale = 320 / w;
+      const scale = (320 / w) * (window.devicePixelRatio || 1);
       const imageBitmap = await browser.browsingContext.currentWindowGlobal
-        .drawSnapshot(rect, scale, 'white');
+        .drawSnapshot(null, scale, 'white');
 
       // Check if this capture is still relevant
       if (captureId !== previewCaptureId) {
