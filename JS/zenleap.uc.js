@@ -132,10 +132,10 @@
     'advanced.debug':              { default: false, type: 'toggle', label: 'Debug Logging', description: 'Log actions to browser console', category: 'Advanced', group: 'Debugging' },
     'advanced.tabRecencyFloor':    { default: 0.8, type: 'number', label: 'Tab Recency Floor', description: 'Minimum recency multiplier', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 2, step: 0.1 },
     'advanced.tabRecencyRange':    { default: 1.0, type: 'number', label: 'Tab Recency Range', description: 'Recency multiplier range', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 5, step: 0.1 },
-    'advanced.tabRecencyHalflife': { default: 12, type: 'number', label: 'Tab Recency Halflife', description: 'Minutes until 50% decay', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
+    'advanced.tabRecencyHalflife': { default: 12, type: 'number', label: 'Tab Recency Halflife', description: 'Minutes for the recency boost to fall to about a third (1/e)', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
     'advanced.cmdRecencyFloor':    { default: 0.8, type: 'number', label: 'Command Recency Floor', description: 'Minimum recency multiplier', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 2, step: 0.1 },
     'advanced.cmdRecencyRange':    { default: 2.2, type: 'number', label: 'Command Recency Range', description: 'Recency multiplier range', category: 'Advanced', group: 'Recency Tuning', min: 0, max: 5, step: 0.1 },
-    'advanced.cmdRecencyHalflife': { default: 30, type: 'number', label: 'Command Recency Halflife', description: 'Minutes until 50% decay', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
+    'advanced.cmdRecencyHalflife': { default: 30, type: 'number', label: 'Command Recency Halflife', description: 'Minutes for the recency boost to fall to about a third (1/e)', category: 'Advanced', group: 'Recency Tuning', min: 1, max: 120, step: 1 },
 
     // --- Updates ---
     'updates.autoCheck':       { default: true, type: 'toggle', label: 'Check for Updates Automatically', description: 'Periodically check GitHub for new ZenLeap versions', category: 'Advanced', group: 'Updates' },
@@ -985,7 +985,7 @@
 
   // Parse the settings pref. Returns {} when unset; on corrupt JSON keeps a copy of the
   // raw string in a sibling pref instead of silently discarding it: one copy per
-  // corrupt value, whichever window reads it first (REV-LCMDS-07).
+  // corrupt value, whichever window reads it first.
   function readSettingsOverrides() {
     let raw = '';
     try {
@@ -1132,7 +1132,7 @@
 
   // Re-render the open Settings view, but not under a field being edited: that
   // would throw away what is being typed (number/text fields commit on change).
-  // Wait until the field loses focus instead (REV-LCMDS-08).
+  // Wait until the field loses focus instead.
   let _settingsRefreshField = null; // the field whose blur will re-render
   function refreshSettingsViewWhenIdle() {
     const field = document.activeElement;
@@ -1620,7 +1620,7 @@
     if (!combo.code || event.code !== combo.code) return false;
     // Physical-key fallback. On macOS, Option changes `key` to the layout's
     // Option character; only fall back when that is not a real character,
-    // unless the user opted in (LEAP-B-01). Elsewhere Alt doesn't change `key`
+    // unless the user opted in (keys.physicalAltFallback). Elsewhere Alt doesn't change `key`
     // (AltGr isn't altKey).
     if (IS_MACOS && event.altKey) {
       if (S['keys.physicalAltFallback'] || event.key === 'Dead' || event.key === 'Unidentified' ||
@@ -1736,8 +1736,7 @@
   let searchSelectedIndex = 0;
   let searchVimMode = 'insert';  // 'insert' or 'normal'
   let searchCursorPos = 0;
-  // jj-to-normal-mode state
-  // jj threshold is now configurable via S['timing.jjThreshold']
+  // jj-to-normal-mode state (max gap between the two j presses: S['timing.jjThreshold'])
   let jjPending = false;          // true while waiting for a possible second j
   let jjPendingTimeout = null;    // timeout handle for flushing a single j
   let jjSavedValue = null;        // input value snapshot before first j
@@ -2137,7 +2136,7 @@
   // Restoring gave up: no Essential has these URLs any more (removed while the
   // browser was closed). Drop their entries, which no window can ever claim,
   // unless the pref changed meanwhile. Essentials are the same in every window;
-  // a pending one is matched by its session URL too (REV-LCMDS-12).
+  // a pending one is matched by its session URL too.
   function dropStaleEssentialMarks(unmatched) {
     if (isPrivateWindow()) return;
     const urls = new Set();
@@ -2435,9 +2434,9 @@
     return 0;
   }
 
-  // Calculate recency multiplier for a tab (0.8 to 1.8)
-  // Uses exponential decay: recently accessed tabs get boosted, old tabs get penalized
-  // Formula: multiplier = 0.8 + 1.0 × e^(-ageMinutes / 12)
+  // Recency multiplier for a tab: exponential decay, recently accessed tabs get
+  // boosted, old tabs penalized. floor + range × e^(-ageMinutes / halflife), from the
+  // Advanced > Recency Tuning settings; with the defaults (0.8, 1.0, 12 minutes):
   //
   // | Age        | Multiplier | Effect       |
   // |------------|------------|--------------|
@@ -3050,7 +3049,6 @@
       .replace(/'/g, '&#39;');
   }
 
-
   // ============================================
   // PLUGIN SYSTEM
   // ============================================
@@ -3058,7 +3056,7 @@
   // External plugins live in <profile>/chrome/zenleap-plugins/<id>/{manifest.json,plugin.js}.
   // - plugin.js runs with full chrome privileges (same trust level as chrome/JS), each
   //   plugin in its own system-principal sandbox whose prototype is the browser window,
-  //   so window globals (gBrowser, Services, document, timers) resolve as before.
+  //   so window globals (gBrowser, Services, document, timers) resolve as in any chrome script.
   //   Disabling/uninstalling calls the plugin's destroy hook and nukes the sandbox.
   // - The manifest is validated and the enabled flag checked BEFORE plugin.js is read;
   //   newly discovered plugins start disabled until enabled in the Plugin Manager.
@@ -3128,8 +3126,8 @@
     _lastWorkspaceId: null,
     emit(event, data) {
       if (event === 'workspace:changed') {
-        // More than one part of ZenLeap may listen to Zen's workspace changes; plugins
-        // get one event per actual change, always with workspaceId.
+        // Zen also notifies for the space that is already active (e.g. at startup):
+        // plugins get one event per actual change, always with workspaceId.
         const workspaceId = data?.workspaceId || data?.workspace?.uuid || null;
         if (workspaceId && workspaceId === this._lastWorkspaceId) return;
         this._lastWorkspaceId = workspaceId;
@@ -3283,7 +3281,7 @@
     } catch (e) { reportError('Broadcasting plugin data change failed', e); }
     // Serialize when the write runs, not now: a write queued behind one still in
     // flight then includes what other windows broadcast meanwhile, instead of
-    // landing after their newer write with older data (REV-LCMDS-13).
+    // landing after their newer write with older data.
     _pluginSavePromise = _pluginSavePromise
       .then(() => IOUtils.writeUTF8(_pluginDataPath, JSON.stringify(_pluginData), { tmpPath: `${_pluginDataPath}.tmp` }))
       .catch(e => reportError('Saving plugin data failed', e));
@@ -3306,7 +3304,7 @@
       const localDirty = _pluginDirty.get(id);
       if (remote === null || !_isPlainObject(remote)) {
         // Uninstalled in another window: that wins over this window's unflushed
-        // changes, which would otherwise write the plugin's entry back (REV-LCMDS-13)
+        // changes, which would otherwise write the plugin's entry back
         _pluginDirty.delete(id);
         delete _pluginData[id];
       } else {
@@ -3366,8 +3364,7 @@
 
   // Scoped key/value store for a plugin field ('storage' or 'settings'). In private
   // windows 'storage' writes (plugin data, which may hold URLs) go to a per-window
-  // overlay that is never persisted; 'settings' are configuration and are saved
-  // (REV-LCMDS-06).
+  // overlay that is never persisted; 'settings' are configuration and are saved.
   function pluginStore(pluginId, field) {
     const priv = field === 'storage' && isPrivateWindow();
     const overlay = () => {
@@ -3619,8 +3616,8 @@
             ) || null;
           } catch (e) { reportError(`Plugin "${pluginId}": workspaces.create failed`, e); return null; }
         },
-        // Deletes the workspace AND closes all of its tabs, pinned tabs and folders
-        // (Zen >= 1.19.4b semantics). Resolves true when Zen confirms, false on timeout.
+        // Deletes the workspace AND closes all of its tabs, pinned tabs and folders.
+        // Resolves true when Zen confirms, false on timeout.
         delete: async (wsOrId, { timeoutMs = 5000 } = {}) => {
           const id = workspaceIdOf(wsOrId);
           if (!id || !window.gZenWorkspaces) return false;
@@ -3672,7 +3669,7 @@
         },
         rename: (folder, newName) => {
           if (!folder?.isZenFolder || !newName) return false;
-          folder.name = safePluginText(newName, folder.label, 100); // fires ZenFolderRenamed
+          folder.name = safePluginText(newName, folder.label, 100); // fires TabGroupUpdate (window sync)
           return true;
         },
         getTabs: (folder) => {
@@ -3772,7 +3769,7 @@
         // Programmatic, like workspaces.delete: commands that ask for confirmation in
         // the palette (close other/left/right tabs, ...) run directly; commands that
         // need input (sub-flows) open the palette on that step. Returns false for an
-        // unknown key (REV-LCMDS-10).
+        // unknown key.
         execute: (cmdKey) => {
           // Outside the palette nothing refreshes the cached list: evaluate conditions now
           if (!searchMode) invalidateCommandCache();
@@ -4283,12 +4280,12 @@
 
   // Evaluate an external plugin's script in its own sandbox. freshCompartment:
   // a system-principal sandbox otherwise shares the window's compartment, and
-  // Cu.nukeSandbox() then throws instead of cutting the plugin off (REV-LCMDS-01).
+  // Cu.nukeSandbox() then throws instead of cutting the plugin off.
   async function loadPluginScript(entry, activation) {
     const { manifest } = entry;
     const source = await IOUtils.readUTF8(manifest._scriptPath);
     // Disabled (or re-enabled) while the file was read: never run its code for
-    // a stale activation (REV-LCMDS-03)
+    // a stale activation
     if (entry._activation !== activation || !entry.enabled) return;
     const sandbox = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), {
       sandboxName: `ZenLeap plugin: ${manifest.id}`,
@@ -4361,7 +4358,7 @@
         try {
           entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
         } catch (e) {
-          entry._initFailed = true; // no destroy() for an init() that threw (REV-LCMDS-11)
+          entry._initFailed = true; // no destroy() for an init() that threw
           throw e;
         }
       }
@@ -4701,7 +4698,7 @@
   }
 
   async function confirmAndUninstallPlugin(plugin) {
-    // Deletes files and data: Enter cancels (REV-LCMDS-09)
+    // Deletes files and data: Enter cancels
     const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`, { defaultCancel: true });
     if (!confirmed) return;
     await uninstallExternalPlugin(plugin.id);
@@ -5085,7 +5082,6 @@
     log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) registered`);
   }
 
-
   // ============================================
   // TAB / FOLDER / WORKSPACE HELPERS (commands, sub-flows, sessions)
   // ============================================
@@ -5428,7 +5424,7 @@
         if (!viewData || (viewData.tabs?.length ?? 0) < 2) return;
         const nodes = viewData.tabs.map(t => splitter.getSplitNodeFromTab(t));
         if (!nodes.every(n => n)) return;
-        // 2 tabs: swap; 3+: rotate (last goes to first position, everything shifts right)
+        // 2 tabs: swap; 3+: rotate (each tab moves into the previous tab's slot, the first to the last)
         for (let i = nodes.length - 1; i > 0; i--) splitter.swapNodes(nodes[i], nodes[i - 1]);
         splitter.applyGridLayout(viewData.layoutTree);
       }, condition: () => (activeSplitView()?.tabs?.length ?? 0) >= 2 },
@@ -5440,7 +5436,7 @@
       }, condition: () => !!activeSplitView()?.layoutTree },
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
         const container = currentTab().linkedBrowser?.closest('.browserSidebarContainer');
-        // Zen >= 1.19b: removeTabFromSplit(event, container); a non-Shift event keeps the tab selected
+        // removeTabFromSplit(event, container): a non-Shift event keeps the tab selected
         if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
       }, condition: () => !!activeSplitView()?.tabs?.includes(currentTab()) },
       { key: 'split-resize-gtile', label: 'Split View: Resize (gTile)', icon: '\u25A6', tags: ['split', 'view', 'resize', 'gtile', 'grid', 'tile', 'move', 'layout'], command: () => {
@@ -5635,7 +5631,7 @@
     _commandListCache = null;
   }
 
-  // Filter commands by query using fuzzy match
+  // Score multiplier from how recently the command was used (1.0 if never)
   function calculateCommandRecencyMultiplier(cmdKey) {
     const lastUsed = commandRecency.get(cmdKey);
     if (!lastUsed) return 1.0; // No recency data, neutral
@@ -5644,6 +5640,7 @@
     return S['advanced.cmdRecencyFloor'] + S['advanced.cmdRecencyRange'] * Math.exp(-ageMinutes / S['advanced.cmdRecencyHalflife']);
   }
 
+  // Filter commands by query using fuzzy match
   function filterCommands(query) {
     const all = getAllCommands();
 
@@ -5831,7 +5828,7 @@
   // COMMAND SUB-FLOW SYSTEM
   // ============================================
 
-  // Every sub-flow is one entry in SUBFLOWS (defined at the end of this section):
+  // Every sub-flow is one entry in SUBFLOWS (defined further down in this section):
   //   placeholder       input placeholder text
   //   results(q, data)  result rows for the current query
   //   select(r, data)   Enter on a row
@@ -6170,7 +6167,7 @@
   }
 
   // Tabs currently playing audio, across all workspaces (finding one is the point,
-  // so this ignores the search-scope setting instead of flipping it).
+  // so this ignores the search-scope setting).
   function getPlayingTabs() {
     let allTabs;
     try {
@@ -6267,7 +6264,7 @@
       return [{ key: 'dedup:none', label: 'No duplicate tabs found', icon: '\u2713', sublabel, tags: [] }];
     }
 
-    // Cancel first and preselected; the duplicates below are the preview (REV-LCMDS-09)
+    // Cancel first and preselected; the duplicates below are the preview
     const n = tabsToClose.length;
     const actions = [
       { key: 'dedup:cancel', label: 'Cancel', icon: '↩', sublabel: 'Close nothing', tags: [] },
@@ -7167,7 +7164,7 @@
     if (!targetFolder?.isZenFolder) { log('Folder not found for rename'); return; }
     const oldName = folderName(targetFolder);
     try {
-      // The name setter fires ZenFolderRenamed (Zen syncs/saves the label)
+      // The name setter fires TabGroupUpdate: window sync and SessionStore pick it up
       targetFolder.name = newName;
       log(`Renamed folder: "${oldName}" → "${newName}"`);
     } catch (e) { reportError('Renaming folder failed', e); }
@@ -7202,7 +7199,7 @@
 
   // Session files may be old, hand-edited or damaged: keep what is usable and drop
   // what isn't (null workspaces or layout items, numeric names/comments), so one bad
-  // file can't break the session pickers (REV-LCMDS-05). Returns null if unusable.
+  // file can't break the session pickers. Returns null if unusable.
   function sessionText(value, fallback) {
     if (typeof value === 'string') return value;
     return (typeof value === 'number' || typeof value === 'boolean') ? String(value) : fallback;
@@ -7768,10 +7765,8 @@
     }
   }
 
-  // Poll for a condition to become true, with a timeout fallback.
-  // Replaces fixed setTimeout sleeps in the restore pipeline for robustness:
-  // finishes as soon as the condition holds (fast machines), but never hangs
-  // indefinitely (slow machines).
+  // Poll for a condition to become true, with a timeout fallback: finishes as soon
+  // as the condition holds (fast machines), but never hangs (slow machines).
   function waitFor(condition, { timeout = 2000, interval = 50 } = {}) {
     return new Promise((resolve) => {
       if (condition()) { resolve(true); return; }
@@ -8250,7 +8245,7 @@
     return 0;
   }
 
-  // Cancel first and preselected, like every destructive confirmation (REV-LCMDS-09)
+  // Cancel first and preselected, like every destructive confirmation
   function getDeleteSessionConfirmResults() {
     const sessionId = commandSubFlow?.data?.sessionId;
     return [
@@ -8506,7 +8501,7 @@
         // A failed write never touched the script (the rename is the last step),
         // so only a replaced file is restored, again through a temp file + rename:
         // copying over it would truncate it first, and on a full disk leave it
-        // empty (REV-LCMDS-02).
+        // empty.
         if (replaced && hadOriginal) {
           try { await IOUtils.write(jsPath, await IOUtils.read(backupPath), { tmpPath: partPath }); }
           catch (restoreError) { reportError(`Update: restoring the previous version from ${backupPath} failed`, restoreError); }
@@ -9263,7 +9258,7 @@
   onTeardown(() => Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC));
 
   // ============================================
-  // FOLDER DELETE MODAL (browse mode)
+  // FOLDER DELETE (browse modal, palette), UNDO, CONVERT TO WORKSPACE
   // ============================================
 
   // Undo entries for folder deletions (newest last). Entries expire after 30 s; the
@@ -9319,8 +9314,8 @@
     return true;
   }
 
-  // Port of Zen's private ZenFolders.#convertFolderToSpace (zen-omni ZenFolders.mjs:593,
-  // used by the folder context menu) — keep in sync with upstream. Includes upstream's
+  // Port of Zen's private ZenFolders.#convertFolderToSpace (ZenFolders.mjs, used by the
+  // folder context menu) — keep in sync with upstream. Includes upstream's
   // final pass that re-tags every tab with the new workspace id; without it the tabs
   // return to the old workspace after a restart. Additionally re-tags moved subfolders.
   async function convertFolderToWorkspace(folder) {
@@ -9538,8 +9533,8 @@
     folderUndoStack.pop();
 
     if (entry.type === 'folder-and-contents') {
-      // Entries without a snapshot (pushed by code that deleted the folder itself):
-      // let the native shortcut reopen the closed tab group.
+      // (Defensive: every such entry carries a snapshot; without one, let the native
+      // shortcut reopen the closed tab group.)
       if (!entry.tree) return false;
       restoreDeletedFolder(entry).catch(e => reportError('Undo folder delete failed', e));
       return true;
@@ -9562,6 +9557,10 @@
 
     return false;
   }
+
+  // ============================================
+  // SPLIT PANE FOCUS + QUICK NAVIGATION (Alt+HJKL)
+  // ============================================
 
   // Switch focus to the split pane in the given direction
   function splitFocusInDirection(direction) {
@@ -9732,7 +9731,7 @@
   // Install a new layout tree for the current split view and re-render it.
   // A flat tree is also recorded as Zen's matching gridType (all columns =
   // vsep, all rows = hsep), so Zen's own layout commands see the real state;
-  // nested custom trees keep the previous gridType (LEAP-B-31).
+  // nested custom trees keep the previous gridType.
   function commitSplitTree(viewData, tree) {
     const splitter = window.gZenViewSplitter;
     splitter.removeSplitters();
@@ -10510,7 +10509,6 @@
     // --- Resize mode: press starts a cell selection at the pressed cell. On
     // release, a drag applies the layout; a click (no movement) only sets the
     // anchor (Enter applies) or, on another pane, makes it the resize target.
-    // A plain click used to apply a 1×1-cell layout (LEAP-B-12).
     cellLayer.addEventListener('mousedown', (e) => {
       if (!gtileMode || gtileSubMode !== 'resize' || e.button !== 0) return;
       e.preventDefault();
@@ -10543,7 +10541,7 @@
   }
 
   // Document-level listeners (drags may leave the grid). Attached while gTile
-  // is open and removed again when it closes (LEAP-B-31).
+  // is open and removed again when it closes.
   function attachGtileDocListeners() {
     _gtileDocAbort?.abort();
     _gtileDocAbort = new AbortController();
@@ -10649,7 +10647,7 @@
         gtileDrag = null;
         if (bIdx >= 0) {
           performGtileSwapByIndex(aIdx, bIdx);
-          flashGtileGrid('gtile-rotated'); // green-ish confirmation pulse
+          flashGtileGrid('gtile-rotated'); // accent-coloured confirmation pulse
         }
         updateGtileOverlay();
       }
@@ -10737,12 +10735,9 @@
   }
 
   // --- Split Layout Rotation ---
-  // Cycles through 4 arrangements for 3-tab layouts:
-  //   1. row: [single, col:[a,b]]  — left single, right stacked
-  //   2. row: [col:[a,b], single]  — right single, left stacked
-  //   3. col: [single, row:[a,b]]  — top single, bottom side-by-side
-  //   4. col: [row:[a,b], single]  — bottom single, top side-by-side
-  // For 2 tabs: toggles row ↔ column direction.
+  // 2 tabs: toggles row <-> column. 3 tabs: cycles through the 6 arrangements
+  // listed below. 4 tabs (Zen's maximum): nested -> all columns -> all rows ->
+  // 2x2 grid -> all columns ...
   function rotateSplitLayout() {
     const splitter = window.gZenViewSplitter;
     if (!splitter?.splitViewActive) return false;
@@ -10860,7 +10855,7 @@
       return true;
     }
 
-    // 4+ tabs: cycle through toggle + all-columns + all-rows
+    // 4 tabs: nested -> all columns -> all rows -> 2x2 grid
     // Detect if all children are direct leaves of root
     const classes4 = getNodeClasses();
     if (!classes4) return false;
@@ -10879,8 +10874,7 @@
       newRoot.children = allTabs4.map(t => new classes4.LeafNode(t, size4));
       commitSplitTree(viewData, newRoot);
     } else if (isAllLeaves4 && root.direction === 'column') {
-      // Currently all-rows → next is toggle directions (back to nested layout)
-      // Rebuild as default 2x2 grid (row of two columns)
+      // Currently all-rows → back to a nested layout: a 2x2 grid (row of two columns)
       const half = Math.ceil(allTabs4.length / 2);
       const leftTabs = allTabs4.slice(0, half);
       const rightTabs = allTabs4.slice(half);
@@ -11056,9 +11050,8 @@
   }
 
   // Pick the best way to lay out the other panes around the focused one:
-  // balanced areas, no slivers, and panes staying close to where they were
-  // (the old depth-first search returned the first, often lopsided, tiling:
-  // LEAP-B-11). Returns [{tab, col1, row1, col2, row2}] or null.
+  // balanced areas, no slivers, and panes staying close to where they were.
+  // Returns [{tab, col1, row1, col2, row2}] or null.
   function chooseRemainingLayout(focusedRect, otherTabs, occupied, classes) {
     const splitter = window.gZenViewSplitter;
     const centerOf = (tab) => {
@@ -11173,6 +11166,10 @@
     // No valid cuts — layout is not representable as a split tree
     return null;
   }
+
+  // ============================================
+  // TAB SEARCH + COMMAND PALETTE: RESULT RENDERING
+  // ============================================
 
   function getSearchResultBadgesHtml({ workspaceName = null, isEssential = false } = {}) {
     const badges = [];
@@ -11596,7 +11593,7 @@
   // ============================================
 
   // Help content is generated from the current keybindings each time it opens,
-  // so rebinding a key updates the help (it used to be hard-coded: LEAP-B-18).
+  // so rebinding a key updates the help.
   function helpSections() {
     const k = (id) => formatKeyDisplay(S[id], SETTINGS_SCHEMA[id]);
     const combo = (id) => k(id).split(' + ');
@@ -13607,7 +13604,7 @@
     return row;
   }
 
-  // --- Key binding conflicts (LEAP-B-16 / LEAP-COMPAT-23) ---
+  // --- Key binding conflicts ---
 
   // Single-key settings that are live in the same mode (duplicates there make
   // one of them unreachable). Browse mode also honours the leap-mode keys below.
@@ -13846,7 +13843,7 @@
         }
         // Store the key keyMatches() compares: on a Cyrillic/Greek layout the
         // letter keys record as their Latin letters, so the binding works on
-        // every layout (the raw character matched nothing: REV-LCORE-01).
+        // every layout (the Cyrillic/Greek character itself would never match).
         const key = navKey(event);
         if (OPAQUE_KEY_NAMES.has(key)) {
           // A dead (accent) key reports only 'Dead': it would match every dead key
@@ -14528,7 +14525,7 @@
   }
 
   // Live preview of the theme being edited, at most once per frame (color
-  // inputs fire on every drag step; LEAP-B-34).
+  // inputs fire on every drag step).
   let _themeEditorPreviewRaf = 0;
   function applyThemeEditorPreview() {
     if (!themeEditorActive || _themeEditorPreviewRaf) return;
@@ -14622,6 +14619,10 @@
     }
     renderSettingsContent();
   }
+
+  // ============================================
+  // SEARCH MODE (tab search, command palette, browse command bar)
+  // ============================================
 
   // Enter command bar from browse mode with context
   function enterBrowseCommandMode() {
@@ -14885,7 +14886,7 @@
   }
 
   // Select and open a search result. Guarded: a second Enter while the
-  // workspace switch is awaited must not select again (LEAP-B-37).
+  // workspace switch is awaited must not select again.
   let _selectingSearchResult = false;
   async function selectSearchResult(index) {
     if (_selectingSearchResult) return;
@@ -14928,7 +14929,7 @@
   function updateWsToggleVisibility() {
     const wsBtn = document.getElementById('zenleap-search-ws-toggle');
     if (!wsBtn) return;
-    // Show only in tab search (not command mode) or tab-search/split-tab-picker sub-flows
+    // Show only in tab search (not command mode) or in the tab-listing sub-flows
     const isTabSearchSubFlow = commandSubFlow && (commandSubFlow.type === 'tab-search' || commandSubFlow.type === 'split-tab-picker' || commandSubFlow.type === 'dedup-preview' || commandSubFlow.type === 'playing-tabs');
     const shouldShow = !commandMode || isTabSearchSubFlow;
     wsBtn.style.display = shouldShow ? '' : 'none';
@@ -15203,7 +15204,7 @@
         return true;
       }
 
-      // Tab key — toggle workspace search in tab-search/split-tab-picker sub-flows, else act as Enter (if setting enabled)
+      // Tab key — toggle workspace search in the tab-listing sub-flows, else act as Enter (if setting enabled)
       if (key === 'Tab') {
         event.preventDefault();
         event.stopPropagation();
@@ -15495,15 +15496,15 @@
     try { return gURLBar?.inputField; } catch (e) { return null; }
   }
 
-  // URL-bar vim mode has its own toggle; it also follows the general
-  // "Vim Mode in Search/Command" switch, as it always has.
+  // URL-bar vim mode has its own toggle and also requires the general
+  // "Vim Mode in Search/Command" switch.
   function isUrlbarVimEnabled() {
     return !!S['display.vimModeInBars'] && S['display.urlbarVim'] !== false;
   }
 
   // Did the user edit the URL bar text since it was focused? Firefox's
   // valueIsTyped is not enough: URL autofill (typing "gith" completes to
-  // "github.com/") resets it although the text is the user's (REV-LCORE-02).
+  // "github.com/") resets it although the text is the user's.
   let urlbarEditedSinceFocus = false;
 
   // Text the user typed that Escape should keep (switching to NORMAL): typed
@@ -15557,7 +15558,7 @@
 
     // A new key: a flag left by the previous keydown is stale. A keydown that
     // was preventDefault()ed gets no keypress, so without this reset the
-    // first character typed after i/a/A was swallowed.
+    // first character typed after i/a/A would be swallowed.
     urlbarSuppressKeypress = false;
 
     // ---- NORMAL MODE: intercept ALL keys ----
@@ -15726,7 +15727,7 @@
     const input = getUrlbarInput();
     if (!input) return;
 
-    // Attach keydown/keypress/beforeinput on gURLBar (the moz-urlbar ancestor)
+    // Attach keydown/keypress on gURLBar (the moz-urlbar ancestor)
     // in capture phase. This fires BEFORE the event reaches the input element,
     // and stopPropagation() prevents the input from ever seeing it.
     // This is the ONLY reliable way to prevent moz-urlbar's internal editor
@@ -15859,8 +15860,8 @@
     }
 
     // Result navigation with j/k — use the view's selectBy API.
-    // Set userSelectionBehavior to "arrow" to match Firefox's internal handling,
-    // which prevents re-search and preserves the result list.
+    // Set userSelectionBehavior to "arrow" as Firefox's own arrow keys do; selectBy()
+    // only moves the selection, the query is not re-run.
     if (key === 'j' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       try {
         if (gURLBar.view?.isOpen) {
@@ -16107,6 +16108,9 @@
     lazySetupUrlbarVim();
   }
 
+  // ============================================
+  // SEARCH BAR INPUT (display, typing)
+  // ============================================
 
   // Render the display element with block cursor for normal mode
   function renderSearchDisplay() {
@@ -16171,6 +16175,10 @@
     }, SEARCH_INPUT_DEBOUNCE_MS);
   }
 
+  // ============================================
+  // VISIBLE ITEMS + RELATIVE NUMBERING
+  // ============================================
+
   // Get visible tabs
   function getVisibleTabs() {
     const tabs = Array.from(gBrowser.tabs);
@@ -16200,11 +16208,11 @@
   // getters encode the rules: collapsed (nested) folders hide their content
   // except the active tabs, split-view groups inside folders included, and a
   // collapsed pinned section hides its pinned tabs and folders except the
-  // active ones (LEAP-B-09 / LEAP-COMPAT-09).
+  // active ones.
   function isItemShown(item) {
     // A split view is drawn as one row: all its panes show when one does.
     // (In a collapsed folder Zen keeps the selected split visible, but its
-    // tab getter reports the other pane hidden: REV-LCORE-07.)
+    // tab getter reports the other pane hidden.)
     if (!isFolder(item) && item.group?.hasAttribute?.('split-view-group')) {
       return item.group.tabs.some(isShownByZen);
     }
@@ -16213,7 +16221,7 @@
 
   function isShownByZen(item) {
     if (typeof item.visible === 'boolean') return item.visible;
-    // Fallback for builds without the getters: walk the folder ancestry.
+    // Defensive fallback should the getter ever be missing: walk the folder ancestry.
     if (!isFolder(item) && item.hasAttribute('folder-active')) return true;
     for (let g = item.group; g; g = g.group) {
       if (isFolder(g) && g.collapsed) return false;
@@ -16360,7 +16368,7 @@
 
   // Attribute writes that skip no-op changes: every write restyles the tab and
   // queues mutation records for Zen's observers, so with hundreds of tabs only
-  // the badges whose value changed should be touched (LEAP-B-24).
+  // the badges whose value changed should be touched.
   function setAttrIfChanged(el, name, value) {
     if (el.getAttribute(name) !== value) el.setAttribute(name, value);
   }
@@ -16427,7 +16435,7 @@
     // Clean up marks for closed tabs
     cleanupMarks();
 
-    // Build reverse mark map for O(1) lookup per tab (instead of O(marks) via getMarkForTab)
+    // Build reverse mark map for O(1) lookup per tab
     const tabToMark = new Map();
     for (const [char, markedTab] of marks) {
       tabToMark.set(markedTab, char);
@@ -16477,7 +16485,7 @@
 
   // Coalesce rapid relative-number updates into a single animation frame.
   // Used by event listeners that can fire in quick succession (TabOpen, TabClose,
-  // ZenWorkspaceChanged) to avoid redundant DOM writes.
+  // TabMove, workspace switches) to avoid redundant DOM writes.
   let _relNumRafId = 0;
   function scheduleRelativeNumberUpdate() {
     if (_relNumRafId) return;
@@ -16492,6 +16500,10 @@
   let overlayModeLabel = null;
   let overlayDirectionLabel = null;
   let overlayHintLabel = null;
+
+  // ============================================
+  // LEAP OVERLAY, BROWSE PREVIEW, COMPACT-MODE SIDEBAR
+  // ============================================
 
   // Create leap mode overlay
   function createLeapOverlay() {
@@ -16735,8 +16747,7 @@
 
       // Snapshot the tab's current viewport (rect = null), i.e. what the user
       // was looking at, at the preview's width and the screen's pixel density.
-      // No content script needed (the old scroll-position frame script broke
-      // after process switches and injected code into web pages).
+      // No content script needed, so nothing is injected into web pages.
       const w = browser.clientWidth || 1280;
       const scale = (320 / w) * (window.devicePixelRatio || 1);
       const imageBitmap = await browser.browsingContext.currentWindowGlobal
@@ -16948,6 +16959,10 @@
     }, duration);
   }
 
+  // ============================================
+  // LEAP / BROWSE MODES
+  // ============================================
+
   // Update overlay state
   function updateLeapOverlayState() {
     if (!leapOverlay || !overlayDirectionLabel || !overlayHintLabel) return;
@@ -17036,8 +17051,7 @@
   }
 
   // Steal focus from content area to prevent keyboard events from reaching web pages
-  // (e.g., Space toggling YouTube playback, j/k editing Google Sheets,
-  //  about:newtab search input capturing browse mode keys)
+  // (e.g., Space toggling YouTube playback, j/k editing Google Sheets)
   let _leapFocus = null; // where focus was before ZenLeap took it (see restoreFocusToContent)
   function stealFocusFromContent() {
     if (contentFocusStolen) return;
@@ -17045,7 +17059,7 @@
       _leapFocus = captureFocusTarget();
       const browser = gBrowser.selectedBrowser;
       browser.blur();
-      // Also blur any focused element inside content (especially about:newtab search)
+      // Also blur the focused element of an in-process page (remote pages ignore this)
       try { browser.browsingContext?.window?.document?.activeElement?.blur(); } catch (_) {}
       contentFocusStolen = true;
       log('Stole focus from content');
@@ -17413,8 +17427,8 @@
       log(`Browse: switching workspace ${direction} to "${newWorkspace.name || newWorkspace.uuid}"`);
 
       // Switch workspace — this changes which tabs are visible. The promise
-      // settles once Zen finished the switch; re-highlight right away (a
-      // delayed reset used to overwrite keys pressed in the meantime).
+      // settles once Zen finished the switch; re-highlight right away, so keys
+      // pressed meanwhile aren't overwritten by a later reset.
       const switchId = ++_browseWorkspaceSwitchId;
       _browseWorkspaceSwitching++;
       try {
@@ -17441,7 +17455,7 @@
 
   // Jump directly to the item badged N in the highlight's direction and open it.
   // Counts from the origin the badges use, recomputed from the current list:
-  // after h/l the badges belong to the new space (REV-LCORE-04), and after a
+  // after h/l the badges belong to the new space, and after a
   // paste the current tab may have moved.
   function jumpAndOpenTab(distance) {
     const items = getVisibleItems();
@@ -17521,7 +17535,7 @@
   // Close tabs the way Zen's own close command would: pinned tabs and
   // Essentials follow zen.pinned-tab-manager.close-shortcut-behavior (by
   // default reset + unload rather than close), the rest close as one batch so a
-  // single Ctrl+Shift+T restores them (LEAP-B-23). Returns a promise.
+  // single Ctrl+Shift+T restores them. Returns a promise.
   function closeTabsLikeZen(tabs, event) {
     tabs = liveTabs(tabs);
     const pinned = tabs.filter(t => t.pinned);
@@ -17567,7 +17581,7 @@
       const tabsToClose = itemsToClose.filter(t => !isFolder(t) && !t.closing &&
         !foldersToClose.some(f => f.contains(t)));
       if (foldersToClose.length > 0) {
-        // Deleting folders closes everything inside them: confirm first (LEAP-B-17)
+        // Deleting folders closes everything inside them: confirm first
         showBrowseCloseConfirm(tabsToClose, foldersToClose, event);
         return;
       }
@@ -17758,7 +17772,7 @@
   // if anchor is a tab in a folder, loose tabs join that folder; if anchor is a folder, they stay loose.
   // Every move goes through gBrowser.moveTabBefore/After (which accept zen-folder
   // elements) or gBrowser.zenHandleTabMove, so TabMove/TabGroupMoved fire and the
-  // tab caches, SessionStore and window sync stay consistent (LEAP-B-04).
+  // tab caches, SessionStore and window sync stay consistent.
   function pasteItems(position) {
     if (yankItems.length === 0) {
       log('No items in yank buffer');
@@ -18348,7 +18362,7 @@
   // While a keyboard mode or overlay is open, a click outside ZenLeap's UI, the
   // window losing focus, or focus moving into an editable field (URL bar, find
   // bar, ...) ends it. Otherwise text typed after clicking into a page would
-  // still run ZenLeap commands (typing "fox" closed a tab: LEAP-B-02).
+  // still run ZenLeap commands (typing "fox" would close a tab).
   const _modeGuards = new Map(); // mode name -> AbortController
 
   function isEditableChromeElement(el) {
@@ -18403,7 +18417,7 @@
 
   // Focus to return to when a mode/overlay closes: the element that had it
   // before (URL bar, find bar, ...) unless the selected tab changed meanwhile;
-  // then the new page gets it (LEAP-B-26).
+  // then the new page gets it.
   function captureFocusTarget() {
     let el = null;
     try { el = document.commandDispatcher?.focusedElement || null; } catch (e) { /* ignore */ }
@@ -18430,6 +18444,10 @@
     _overlayFocus = null;
     if (restore && S['display.refocusOnClose']) restoreFocusTarget(saved);
   }
+
+  // ============================================
+  // KEY DISPATCH
+  // ============================================
 
   // Handle keydown events
   function handleKeyDown(event) {
@@ -18661,7 +18679,7 @@
     if (comboId === 'keys.global.undoFolderDelete') {
       // Holding the chord: the repeats belong to the first press. After an
       // undo they are swallowed (they would reopen closed tabs natively);
-      // otherwise the native shortcut keeps them (REV-LCORE-12).
+      // otherwise the native shortcut keeps them.
       if (event.repeat) {
         if (_undoChordHandled) consumeEvent(event);
         return;
@@ -18674,7 +18692,7 @@
 
     // Alt+HJKL: Quick navigation with split-view awareness.
     // - Not in split: J/K switch tabs, H/L switch workspaces
-    // - In split, not at boundary: focus adjacent pane (existing behavior)
+    // - In split, not at boundary: focus adjacent pane
     // - In split, at boundary: J/K navigate to first non-split tab outside
     //   the group; H/L switch workspaces
     if (comboId && comboId.startsWith('keys.global.split')) {
@@ -19143,7 +19161,7 @@
       return;
     }
     if (event.repeat) return;
-    // Case-sensitive bindings first (G before g, M before m, ? before /)
+    // Case-sensitive bindings first (G before g, M before m)
     if (keyMatches(event, 'keys.leap.lastTab')) {
       const items = getVisibleItems();
       goToAbsoluteTab(items.length);
@@ -19246,6 +19264,10 @@
     log(`Unrecognized key in leap mode: ${key}`);
   }
 
+  // ============================================
+  // TAB STRIP LISTENERS + KEY TRACKING
+  // ============================================
+
   // Set up event listeners for tab changes
   function setupTabListeners() {
     const tc = gBrowser.tabContainer;
@@ -19320,7 +19342,7 @@
   // Modifiers held down (code -> element focused when they went down), and
   // those held through a chord ZenLeap consumed. When that chord moved focus
   // (Alt+J lands on another tab or split pane), the modifier's keyup would
-  // reach a page that never saw its keydown (REV-LCORE-03).
+  // reach a page that never saw its keydown.
   const _heldModifiers = new Map();
   const _chordModifiers = new Map();
   const MODIFIER_CODE_RE = /^(?:Alt|Control|Shift|Meta|OS)(?:Left|Right)$/;
@@ -19391,7 +19413,10 @@
     log('Keyboard listener set up');
   }
 
-  // Add CSS for relative number display and highlight
+  // ============================================
+  // THEME APPLICATION (ZenLeap UI, optional browser theme)
+  // ============================================
+
   // Convert hex color (#RRGGBB) to rgba string
   function hexToRgba(hex, alpha) {
     const r = parseInt(hex.slice(1, 3), 16);
@@ -19402,7 +19427,7 @@
 
   // Normalize any CSS color (hex, rgb(), hsl(), named, ...) to #RRGGBB for
   // <input type="color"> and the derived rgba() variables. Invalid values
-  // return `fallback` (the regex parser used to turn red / hsl() black).
+  // return `fallback`.
   function toHex6(val, fallback = '#000000') {
     if (typeof val !== 'string' || !val.trim()) return fallback;
     const v = val.trim();
@@ -19416,9 +19441,9 @@
 
   // The theme to apply: user themes are completed with Meridian's values, so
   // one that sets only a few keys (or has no `extends`) never yields
-  // `undefined` CSS values (LEAP-A-18). Color values that aren't valid CSS
+  // `undefined` CSS values. Color values that aren't valid CSS
   // colors (e.g. half-typed in the theme editor) fall back to Meridian's too:
-  // one bad --zl-accent would break every rule using it (REV-LCORE-11).
+  // one bad --zl-accent would break every rule using it.
   function resolveTheme(themeId) {
     const base = BUILTIN_THEMES.meridian;
     const t = themes[themeId] || themes.meridian || base;
@@ -19452,8 +19477,7 @@
 
   // Apply theme: set all CSS custom properties on :root from the active theme.
   // previewThemeId shows another theme without touching the saved setting, so
-  // an unrelated saveSettings() during a live preview can't persist it
-  // (LEAP-A-36).
+  // an unrelated saveSettings() during a live preview can't persist it.
   function applyTheme(previewThemeId = null) {
     if (_tornDown) return;
     const themeName = previewThemeId || S['appearance.theme'] || 'meridian';
@@ -19477,7 +19501,7 @@
     root.style.setProperty('--zl-accent-mid', t.accentMid);
     root.style.setProperty('--zl-accent-glow', t.accentGlow);
     root.style.setProperty('--zl-accent-border', t.accentBorder);
-    // Derived accent opacities (for browse mode compatibility)
+    // Derived accent opacities
     const accentHex = toHex6(t.accent, base.accent);
     root.style.setProperty('--zl-accent-20', hexToRgba(accentHex, 0.2));
     root.style.setProperty('--zl-accent-15', hexToRgba(accentHex, 0.15));
@@ -19821,7 +19845,7 @@
           // Pass duringAnimation so we don't clobber Zen's cross-fade spring
           try { applyBrowserTheme({ duringAnimation: true }); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
           // Zen repaints every window showing this space from here, bypassing
-          // their own wrappers: let their ZenLeap re-apply too (LEAP-B-34).
+          // their own wrappers: let their ZenLeap re-apply too.
           try { Services.obs.notifyObservers(window, 'zenleap:reapply-browser-theme'); } catch (e) { /* ignore */ }
         }
         return result;
@@ -19840,14 +19864,14 @@
     }
 
     // Fallback: also use the official change listener API. During animated
-    // switches this fires AFTER the rAF (since _animateTabs takes ~200ms),
+    // switches this fires AFTER the rAF (Zen awaits its tab animation first),
     // so the onWorkspaceChange wrapper is the primary defense. This listener
     // covers any future code paths that reset CSS properties without going
     // through onWorkspaceChange.
     try {
       const onChange = () => {
         if (S['appearance.applyToBrowser'] && !_tornDown) {
-          // Change listeners fire after _animateTabs completes, so the animation
+          // Change listeners fire after Zen's tab animation completes, so the animation
           // is done. Call without duringAnimation to sync -old and opacity values.
           try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
         }
@@ -19877,7 +19901,7 @@
     }
 
     // Safety net: re-apply after Zen's workspace initialization fully completes.
-    // The rAF in _updateWorkspaceState likely already fired by the time
+    // The rAF in Zen's workspace-state update likely already fired by the time
     // promiseInitialized resolves, but we double-rAF to handle any edge cases
     // where additional CSS property resets happen near initialization.
     // If the onWorkspaceChange wrapper is working, this is redundant but harmless.
@@ -19891,6 +19915,10 @@
       });
     }
   }
+
+  // ============================================
+  // STYLES
+  // ============================================
 
   // Inject a named stylesheet once. Lazily created UI (help, reorganize,
   // settings, preview, URL bar) adds its styles on first use; teardown removes
@@ -20809,8 +20837,8 @@
   // LIFECYCLE: init, teardown registry, Sine hot-unload
   // ============================================
 
-  // Oldest Zen release this version targets. Older builds still load, but get
-  // one console warning (fallbacks for pre-floor versions were removed).
+  // Oldest Zen release this version supports. Older builds still load but log one
+  // console warning; some features may not work there.
   const MIN_ZEN_VERSION = '1.21.7b';
 
   // Compare "1.22.3b"-style versions numerically (suffix letters are ignored).
@@ -20952,7 +20980,6 @@
     setupUrlbarVimMode();
     setupWorkspaceThemeHook();
     updateRelativeNumbers();
-
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
 
