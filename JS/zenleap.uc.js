@@ -7863,9 +7863,19 @@
   // UPDATE SYSTEM
   // ============================================
 
-  const ZENLEAP_SCRIPT_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/JS/zenleap.uc.js';
-  const ZENLEAP_CSS_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/chrome.css';
-  const ZENLEAP_CHANGELOG_URL = 'https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/CHANGELOG.md';
+  // Self-update (disabled for Sine installs). The latest GitHub *release* is found via
+  // the releases API; the script is downloaded ONCE from that tag, verified against the
+  // tag's CHECKSUMS.sha256 (sha256sum format) and its @version, then written atomically
+  // over the file this script was loaded from, keeping the previous file as .bak.
+  // Releases without a checksum entry are never auto-installed.
+  const ZENLEAP_REPO = 'yashas-salankimatt/ZenLeap';
+  const ZENLEAP_RELEASE_API_URL = `https://api.github.com/repos/${ZENLEAP_REPO}/releases/latest`;
+  const ZENLEAP_RAW_BASE_URL = `https://raw.githubusercontent.com/${ZENLEAP_REPO}`;
+  const ZENLEAP_SCRIPT_REPO_PATH = 'JS/zenleap.uc.js';
+  const UPDATE_MAX_BYTES = 10 * 1024 * 1024;
+  const UPDATE_AVAILABLE_TOPIC = 'zenleap-update-available';
+  // URL this script was loaded from (e.g. chrome://userscripts/content/zenleap.uc.js)
+  const ZENLEAP_LOADED_FROM = (() => { try { return Components.stack.filename || ''; } catch (e) { return ''; } })();
 
   let updateModal = null;
   let updateMode = false;
@@ -7881,7 +7891,7 @@
         PathUtils.profileDir, 'chrome', 'sine-mods', 'zenleap-relative-tab-nav'
       );
       isSineManaged = await IOUtils.exists(sinePath);
-      if (isSineManaged) log('Sine-managed installation detected \u2014 self-update disabled');
+      if (isSineManaged) log('Sine-managed installation detected — self-update disabled');
     } catch (e) {
       log(`Sine detection failed (non-critical): ${e}`);
       isSineManaged = false;
@@ -7894,17 +7904,28 @@
     return match ? match[1] : null;
   }
 
-  // Compare semantic versions: true if v1 >= v2
-  function versionGte(v1, v2) {
-    const a = v1.split('.').map(Number);
-    const b = v2.split('.').map(Number);
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-      const x = a[i] || 0;
-      const y = b[i] || 0;
-      if (x > y) return true;
-      if (x < y) return false;
+  // Compare dotted versions ("3.10.0" > "3.9.1"; a leading "v" is ignored; a
+  // pre-release suffix sorts before its release: "3.5.0-beta" < "3.5.0").
+  // Returns -1, 0, 1, or NaN when either side is unreadable.
+  function compareVersions(v1, v2) {
+    const parse = (v) => {
+      const m = String(v ?? '').trim().match(/^v?(\d+(?:\.\d+)*)(-[0-9A-Za-z.-]+)?$/);
+      return m ? { parts: m[1].split('.').map(Number), pre: !!m[2] } : null;
+    };
+    const a = parse(v1), b = parse(v2);
+    if (!a || !b) return NaN;
+    for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
+      const x = a.parts[i] || 0;
+      const y = b.parts[i] || 0;
+      if (x !== y) return x > y ? 1 : -1;
     }
-    return true; // equal
+    if (a.pre !== b.pre) return a.pre ? -1 : 1;
+    return 0;
+  }
+
+  // true if v1 >= v2 (false when either version is unreadable)
+  function versionGte(v1, v2) {
+    return compareVersions(v1, v2) >= 0;
   }
 
   // Parse changelog for a specific version from CHANGELOG.md content
@@ -7938,52 +7959,95 @@
     return items;
   }
 
-  // HTTP GET via XMLHttpRequest (fetch hangs in Firefox chrome context)
-  function httpGet(url, timeoutMs = 15000) {
+  // HTTP GET via XMLHttpRequest. responseType 'arraybuffer' resolves to a Uint8Array.
+  function httpGet(url, { timeoutMs = 15000, responseType = 'text', headers = {} } = {}) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', url, true);
       xhr.timeout = timeoutMs;
+      xhr.responseType = responseType;
+      for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(xhr.responseText);
+          resolve(responseType === 'arraybuffer' ? new Uint8Array(xhr.response) : xhr.response);
         } else {
-          reject(new Error(`HTTP ${xhr.status}`));
+          const err = new Error(`HTTP ${xhr.status} for ${url}`);
+          err.status = xhr.status;
+          reject(err);
         }
       };
-      xhr.onerror = () => reject(new Error('Network error'));
-      xhr.ontimeout = () => reject(new Error('Request timed out'));
+      xhr.onerror = () => reject(new Error(`Network error for ${url}`));
+      xhr.ontimeout = () => reject(new Error(`Request timed out: ${url}`));
       xhr.send();
     });
   }
 
-  // Check for updates — returns { available, remoteVersion, changelog[] } or null on error
+  // Latest published release: { tag, version }. The tag is validated because it becomes
+  // part of the download URLs.
+  async function fetchLatestRelease() {
+    const text = await httpGet(ZENLEAP_RELEASE_API_URL, { headers: { Accept: 'application/vnd.github+json' } });
+    let data;
+    try { data = JSON.parse(text); } catch (e) { throw new Error('Unreadable response from the GitHub releases API'); }
+    const tag = typeof data?.tag_name === 'string' ? data.tag_name.trim() : '';
+    if (!/^v?\d+(\.\d+){1,3}$/.test(tag)) throw new Error(`Unexpected release tag "${tag}"`);
+    return { tag, version: tag.replace(/^v/i, '') };
+  }
+
+  // Expected SHA-256 for repoPath from a sha256sum-style file ("<hex>  <path>").
+  function findChecksum(checksumsText, repoPath) {
+    for (const line of String(checksumsText || '').split(/\r?\n/)) {
+      const m = line.trim().match(/^([0-9a-fA-F]{64})\s+\*?(?:\.\/)?(\S.*)$/);
+      if (m && m[2].trim() === repoPath) return m[1].toLowerCase();
+    }
+    return null;
+  }
+
+  async function sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // File the running script was loaded from, so an update replaces it (never a second
+  // copy that loads next to it). Falls back to <profile>/chrome/JS/zenleap.uc.js.
+  function resolveRunningScriptPath() {
+    const fallback = PathUtils.join(PathUtils.profileDir, 'chrome', 'JS', 'zenleap.uc.js');
+    try {
+      let uri = Services.io.newURI(ZENLEAP_LOADED_FROM.replace(/[?#].*$/, ''));
+      if (uri.schemeIs('chrome')) {
+        uri = Cc['@mozilla.org/chrome/chrome-registry;1'].getService(Ci.nsIChromeRegistry).convertChromeURL(uri);
+      }
+      if (uri.schemeIs('file')) {
+        const path = uri.QueryInterface(Ci.nsIFileURL).file.path;
+        if (/\.uc\.js$/i.test(path)) return path;
+      }
+    } catch (e) { log(`Could not resolve the running script's path (${ZENLEAP_LOADED_FROM}): ${e}`); }
+    return fallback;
+  }
+
+  // Check for updates — returns { available, remoteVersion, tag, changelog[] } or null on error
   async function checkForZenLeapUpdate() {
     try {
-      const content = await httpGet(ZENLEAP_SCRIPT_URL);
-      const remoteVersion = parseVersionFromContent(content);
-      if (!remoteVersion) throw new Error('Could not parse remote version');
-
-      const available = !versionGte(VERSION, remoteVersion);
+      const { tag, version } = await fetchLatestRelease();
+      const available = compareVersions(version, VERSION) > 0;
 
       // Fetch changelog (best-effort)
       let changelog = [];
       if (available) {
         try {
-          const clContent = await httpGet(ZENLEAP_CHANGELOG_URL);
-          changelog = parseChangelog(clContent, remoteVersion);
+          const clContent = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/CHANGELOG.md`);
+          changelog = parseChangelog(clContent, version);
         } catch (e) { /* changelog fetch failed, non-critical */ }
       }
 
-      return { available, remoteVersion, changelog };
+      return { available, remoteVersion: version, tag, changelog };
     } catch (e) {
-      log(`Update check failed: ${e}`);
+      console.warn('[ZenLeap] Update check failed:', e);
       return null;
     }
   }
 
-  // Download and install the update
-  // Callback: onProgress('downloading' | 'installing-js' | 'installing-css' | 'done' | 'error', detail?)
+  // Download, verify and install the latest release.
+  // Callback: onProgress('downloading' | 'verifying' | 'installing-js' | 'done' | 'error', detail?)
   async function downloadAndInstallUpdate(onProgress) {
     // Hard block: Sine-managed installs must never self-update
     if (isSineManaged) {
@@ -7993,74 +8057,83 @@
       return { success: false, error: msg };
     }
 
+    let partPath = null;
     try {
-      // --- Download JS ---
-      onProgress('downloading', 'Fetching zenleap.uc.js from GitHub');
-      const jsContent = await httpGet(ZENLEAP_SCRIPT_URL);
+      onProgress('downloading', 'Looking up the latest release');
+      const { tag, version } = await fetchLatestRelease();
+      if (compareVersions(version, VERSION) <= 0) throw new Error(`The latest release (${version}) is not newer than ${VERSION}`);
 
-      const newVersion = parseVersionFromContent(jsContent);
-      if (!newVersion) throw new Error('Downloaded JS has no version');
+      // --- Download the script once; these exact bytes are verified and installed ---
+      onProgress('downloading', `Downloading zenleap.uc.js ${tag}`);
+      const bytes = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/${ZENLEAP_SCRIPT_REPO_PATH}`, { responseType: 'arraybuffer', timeoutMs: 60000 });
+      if (bytes.length === 0 || bytes.length > UPDATE_MAX_BYTES) throw new Error(`Unexpected download size (${bytes.length} bytes)`);
 
-      // --- Download CSS ---
-      onProgress('downloading', 'Fetching chrome.css from GitHub');
-      const cssContent = await httpGet(ZENLEAP_CSS_URL);
-
-      // --- Install JS ---
-      onProgress('installing-js', 'Writing zenleap.uc.js to profile');
-      const jsDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'JS');
-      await IOUtils.makeDirectory(jsDir, { createAncestors: true, ignoreExisting: true });
-      const jsPath = PathUtils.join(jsDir, 'zenleap.uc.js');
-      await IOUtils.write(jsPath, new TextEncoder().encode(jsContent));
-      log(`Updated zenleap.uc.js to v${newVersion}`);
-
-      // --- Install CSS ---
-      onProgress('installing-css', 'Updating styles in userChrome.css');
-      const chromeDir = PathUtils.join(PathUtils.profileDir, 'chrome');
-      const userChromePath = PathUtils.join(chromeDir, 'userChrome.css');
-
-      let existingCSS = '';
+      onProgress('verifying', 'Verifying checksum');
+      let checksums = '';
       try {
-        const existingBytes = await IOUtils.read(userChromePath);
-        existingCSS = new TextDecoder().decode(existingBytes);
+        checksums = await httpGet(`${ZENLEAP_RAW_BASE_URL}/${tag}/CHECKSUMS.sha256`);
       } catch (e) {
-        // File doesn't exist yet — that's fine
+        if (e.status !== 404) throw e;
       }
-
-      // Remove old ZenLeap styles (between markers)
-      const markerStart = '/* === ZenLeap Styles === */';
-      const markerEnd = '/* === End ZenLeap Styles === */';
-      const startIdx = existingCSS.indexOf(markerStart);
-      const endIdx = existingCSS.indexOf(markerEnd);
-      if (startIdx !== -1 && (endIdx === -1 || endIdx >= startIdx)) {
-        // Remove from just before the marker (including leading newlines) to end of end-marker
-        let removeStart = startIdx;
-        while (removeStart > 0 && existingCSS[removeStart - 1] === '\n') removeStart--;
-        const removeEnd = endIdx !== -1 ? endIdx + markerEnd.length : existingCSS.length;
-        existingCSS = existingCSS.slice(0, removeStart) + existingCSS.slice(removeEnd);
+      const expected = findChecksum(checksums, ZENLEAP_SCRIPT_REPO_PATH);
+      if (!expected) {
+        throw new Error(`Release ${tag} has no published checksum for ${ZENLEAP_SCRIPT_REPO_PATH}, so it cannot be installed automatically. Update with the installer instead.`);
       }
+      const actual = await sha256Hex(bytes);
+      if (actual !== expected) throw new Error(`Checksum mismatch for ${tag} (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…). Nothing was installed.`);
 
-      // Append new styles
-      const newCSS = existingCSS.trimEnd() + '\n\n' + markerStart + '\n' + cssContent + '\n' + markerEnd + '\n';
-      await IOUtils.write(userChromePath, new TextEncoder().encode(newCSS));
-      log('Updated styles in userChrome.css');
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch (e) { throw new Error('Downloaded script is not valid UTF-8'); }
+      const fileVersion = parseVersionFromContent(text);
+      if (fileVersion !== version) throw new Error(`Downloaded script is version ${fileVersion || '(none)'}, but release ${tag} was expected. Nothing was installed.`);
 
-      onProgress('done', newVersion);
-      return { success: true, version: newVersion };
+      // --- Install over the running script: backup, atomic write, verify, roll back on failure ---
+      const jsPath = resolveRunningScriptPath();
+      const backupPath = `${jsPath}.bak`;
+      partPath = `${jsPath}.part`;
+      onProgress('installing-js', `Writing ${PathUtils.filename(jsPath)}`);
+      await IOUtils.makeDirectory(PathUtils.parent(jsPath), { createAncestors: true, ignoreExisting: true });
+      const hadOriginal = await IOUtils.exists(jsPath);
+      if (hadOriginal) await IOUtils.copy(jsPath, backupPath);
+      try {
+        await IOUtils.write(jsPath, bytes, { tmpPath: partPath });
+        const written = await IOUtils.read(jsPath);
+        if (await sha256Hex(written) !== expected) throw new Error('The installed file does not match the verified download');
+      } catch (e) {
+        if (hadOriginal) {
+          try { await IOUtils.copy(backupPath, jsPath); }
+          catch (restoreError) { reportError(`Update: restoring the previous version from ${backupPath} failed`, restoreError); }
+        }
+        throw new Error(`Writing the update failed (${e.message}); the previous version was kept.`);
+      }
+      log(`Updated ${jsPath} to v${version} (previous version saved as ${PathUtils.filename(backupPath)})`);
+
+      onProgress('done', version);
+      return { success: true, version, path: jsPath, backupPath: hadOriginal ? backupPath : null };
     } catch (e) {
-      log(`Update install failed: ${e}`);
+      reportError('Update install failed', e);
       onProgress('error', e.message);
       return { success: false, error: e.message };
+    } finally {
+      if (partPath) IOUtils.remove(partPath, { ignoreAbsent: true }).catch(() => {});
     }
   }
 
-  // Should we auto-check based on settings?
+  // Should we auto-check based on settings? S mirrors the shared pref, so a check done
+  // by another window moments ago is visible here.
   function shouldAutoCheckForUpdates() {
     if (!S['updates.autoCheck']) return false;
     const freq = S['updates.checkFrequency'];
     const lastCheck = S['updates.lastCheckTime'] || 0;
     const now = Date.now();
 
-    if (freq === 'startup') return true;
+    if (freq === 'startup') {
+      // Once per browser session (not once per window)
+      let processStart = 0;
+      try { processStart = Services.startup.getStartupInfo().process?.getTime() || 0; } catch (e) {}
+      return lastCheck < processStart;
+    }
     if (freq === 'daily') return (now - lastCheck) > 24 * 60 * 60 * 1000;
     if (freq === 'weekly') return (now - lastCheck) > 7 * 24 * 60 * 60 * 1000;
     return false;
@@ -8086,7 +8159,11 @@
     // Header
     const header = document.createElement('div');
     header.className = 'zenleap-update-header';
-    header.innerHTML = `<div><h2 id="zenleap-update-title">Checking for Updates</h2><span class="zenleap-update-subtitle" id="zenleap-update-subtitle">Contacting GitHub...</span></div>`;
+    const title = updateEl('h2', null, 'Checking for Updates');
+    title.id = 'zenleap-update-title';
+    const subtitle = updateEl('span', 'zenleap-update-subtitle', 'Contacting GitHub...');
+    subtitle.id = 'zenleap-update-subtitle';
+    header.appendChild(updateEl('div', null, title, subtitle));
     const closeBtn = document.createElement('button');
     closeBtn.className = 'zenleap-update-close-btn';
     closeBtn.title = 'Close';
@@ -8176,9 +8253,7 @@
         padding: 16px 24px; border-bottom: 1px solid var(--zl-border-subtle);
         max-height: 180px; overflow-y: auto;
       }
-      .zenleap-update-changelog::-webkit-scrollbar { width: 6px; }
-      .zenleap-update-changelog::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-update-changelog::-webkit-scrollbar-thumb { background: var(--zl-border-strong); border-radius: 3px; }
+      .zenleap-update-changelog { scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-update-changelog h3 {
         font-size: 11px; font-weight: 600; text-transform: uppercase;
         letter-spacing: 0.8px; color: var(--zl-accent); margin: 0 0 10px;
@@ -8317,6 +8392,18 @@
     document.head.appendChild(style);
   }
 
+  // Build an element with class and children (strings become text nodes). The chrome
+  // document is XHTML, where innerHTML with HTML-only markup such as <br> throws.
+  function updateEl(tag, className, ...children) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    for (const child of children) {
+      if (child == null) continue;
+      el.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+    }
+    return el;
+  }
+
   function setUpdateHeader(title, subtitle) {
     const titleEl = document.getElementById('zenleap-update-title');
     const subtitleEl = document.getElementById('zenleap-update-subtitle');
@@ -8326,7 +8413,7 @@
 
   function setUpdateBody() {
     const body = document.getElementById('zenleap-update-body');
-    if (body) body.innerHTML = '';
+    if (body) body.replaceChildren();
     return body;
   }
 
@@ -8337,26 +8424,23 @@
     if (!body) return;
 
     // Version comparison
-    const versions = document.createElement('div');
-    versions.className = 'zenleap-update-versions';
-    versions.innerHTML = `
-      <div class="zenleap-version-pill">
-        <span class="zenleap-version-pill-label">Installed</span>
-        <span class="zenleap-version-pill-number">${VERSION}</span>
-      </div>
-      <span class="zenleap-version-arrow">\u2192</span>
-      <div class="zenleap-version-pill new">
-        <span class="zenleap-version-pill-label">Available</span>
-        <span class="zenleap-version-pill-number">${remoteVersion}</span>
-      </div>
-    `;
+    const versions = updateEl('div', 'zenleap-update-versions',
+      updateEl('div', 'zenleap-version-pill',
+        updateEl('span', 'zenleap-version-pill-label', 'Installed'),
+        updateEl('span', 'zenleap-version-pill-number', VERSION)),
+      updateEl('span', 'zenleap-version-arrow', '\u2192'),
+      updateEl('div', 'zenleap-version-pill new',
+        updateEl('span', 'zenleap-version-pill-label', 'Available'),
+        updateEl('span', 'zenleap-version-pill-number', String(remoteVersion))));
     body.appendChild(versions);
 
     // Sine notice — shown prominently between version pills and changelog
     if (isSineManaged) {
       const sineBar = document.createElement('div');
       sineBar.style.cssText = 'padding:10px 24px;border-bottom:1px solid var(--zl-border-subtle);display:flex;align-items:center;justify-content:center;gap:8px;background:var(--zl-accent-dim);';
-      sineBar.innerHTML = '<span style="font-size:13px;color:var(--zl-accent);font-weight:600;">Update through the Sine mod settings page</span>';
+      const sineText = updateEl('span', null, 'Update through the Sine mod settings page');
+      sineText.style.cssText = 'font-size:13px;color:var(--zl-accent);font-weight:600;';
+      sineBar.appendChild(sineText);
       body.appendChild(sineBar);
     }
 
@@ -8372,7 +8456,7 @@
         row.className = 'zenleap-update-changelog-item';
         if (item.tag) {
           const tagClass = { new: 'new', fix: 'fix', improved: 'improved', changed: 'changed' }[item.tag] || 'improved';
-          row.innerHTML = `<span class="zenleap-changelog-tag ${tagClass}">${item.tag}</span>`;
+          row.appendChild(updateEl('span', `zenleap-changelog-tag ${tagClass}`, item.tag));
         }
         const desc = document.createElement('span');
         desc.textContent = item.desc;
@@ -8394,7 +8478,9 @@
 
       const sineNotice = document.createElement('div');
       sineNotice.style.cssText = 'font-size:12px;color:var(--zl-text-secondary);text-align:center;line-height:1.5;';
-      sineNotice.innerHTML = 'This installation is managed by <strong style="color:var(--zl-accent)">Sine</strong>.<br>Update through the Sine mod settings page.';
+      const sineName = updateEl('strong', null, 'Sine');
+      sineName.style.color = 'var(--zl-accent)';
+      sineNotice.append('This installation is managed by ', sineName, '.', document.createElement('br'), 'Update through the Sine mod settings page.');
       actions.appendChild(sineNotice);
 
       const closeBtn = document.createElement('button');
@@ -8434,7 +8520,8 @@
 
   function renderUpdateProgress(status, detail) {
     updateModalState = 'progress';
-    setUpdateHeader('Updating ZenLeap', status === 'downloading' ? 'Downloading from GitHub' : 'Installing to profile');
+    const headerText = { downloading: 'Downloading from GitHub', verifying: 'Verifying the download' }[status] || 'Installing to profile';
+    setUpdateHeader('Updating ZenLeap', headerText);
     const body = setUpdateBody();
     if (!body) return;
 
@@ -8443,7 +8530,7 @@
 
     const statusText = document.createElement('span');
     statusText.className = 'zenleap-update-progress-status';
-    statusText.textContent = status === 'downloading' ? 'Downloading update...' : 'Installing update...';
+    statusText.textContent = { downloading: 'Downloading update...', verifying: 'Verifying update...' }[status] || 'Installing update...';
 
     const track = document.createElement('div');
     track.className = 'zenleap-update-progress-bar-track';
@@ -8452,7 +8539,7 @@
     if (status === 'downloading') {
       fill.classList.add('indeterminate');
     } else {
-      fill.style.width = '75%';
+      fill.style.width = status === 'verifying' ? '55%' : '80%';
     }
     track.appendChild(fill);
 
@@ -8472,13 +8559,13 @@
     const body = setUpdateBody();
     if (!body) return;
 
-    const result = document.createElement('div');
-    result.className = 'zenleap-update-result';
-    result.innerHTML = `
-      <div class="zenleap-update-result-icon success">\u2713</div>
-      <div class="zenleap-update-result-title success">Updated to v${newVersion}</div>
-      <div class="zenleap-update-result-detail">ZenLeap has been updated. Restart Zen Browser<br>to activate the new version.</div>
-    `;
+    const result = updateEl('div', 'zenleap-update-result',
+      updateEl('div', 'zenleap-update-result-icon success', '\u2713'),
+      updateEl('div', 'zenleap-update-result-title success', `Updated to v${newVersion}`),
+      updateEl('div', 'zenleap-update-result-detail',
+        'ZenLeap has been updated (the previous version was kept as a .bak file).',
+        document.createElement('br'),
+        'Restart Zen Browser to activate the new version.'));
     body.appendChild(result);
 
     const actions = document.createElement('div');
@@ -8495,7 +8582,7 @@
       try {
         Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart);
       } catch (e) {
-        log(`Restart failed: ${e}`);
+        reportError('Restarting the browser failed', e);
       }
     });
 
@@ -8567,13 +8654,10 @@
     const body = setUpdateBody();
     if (!body) return;
 
-    const result = document.createElement('div');
-    result.className = 'zenleap-update-result';
-    result.innerHTML = `
-      <div class="zenleap-update-result-icon uptodate">\u2713</div>
-      <div class="zenleap-update-result-title uptodate">You're up to date</div>
-      <div class="zenleap-update-result-detail">ZenLeap v${VERSION} is the latest version</div>
-    `;
+    const result = updateEl('div', 'zenleap-update-result',
+      updateEl('div', 'zenleap-update-result-icon uptodate', '\u2713'),
+      updateEl('div', 'zenleap-update-result-title uptodate', "You're up to date"),
+      updateEl('div', 'zenleap-update-result-detail', `ZenLeap v${VERSION} is the latest version`));
     body.appendChild(result);
 
     const actions = document.createElement('div');
@@ -8624,7 +8708,7 @@
     renderUpdateProgress('downloading', 'Fetching files from GitHub');
     const result = await downloadAndInstallUpdate((status, detail) => {
       if (!updateMode) return;
-      if (status === 'downloading' || status.startsWith('installing')) {
+      if (status === 'downloading' || status === 'verifying' || status.startsWith('installing')) {
         renderUpdateProgress(status, detail);
       }
     });
@@ -8681,17 +8765,12 @@
     const toast = document.createElement('div');
     toast.id = 'zenleap-update-toast';
 
-    const text = document.createElement('span');
-    text.className = 'zenleap-toast-text';
-    text.innerHTML = isSineManaged
-      ? `ZenLeap <strong>v${remoteVersion}</strong> available \u2014 update via <strong>Sine</strong>`
-      : `ZenLeap <strong>v${remoteVersion}</strong> available`;
+    const text = updateEl('span', 'zenleap-toast-text', 'ZenLeap ', updateEl('strong', null, `v${remoteVersion}`), ' available');
+    if (isSineManaged) text.append(' \u2014 update via ', updateEl('strong', null, 'Sine'));
 
-    const keys = document.createElement('span');
-    keys.className = 'zenleap-toast-keys';
-    keys.innerHTML = isSineManaged
-      ? `<kbd>\u21B5</kbd> info <kbd>Esc</kbd> dismiss`
-      : `<kbd>\u21B5</kbd> update <kbd>Esc</kbd> dismiss`;
+    const keys = updateEl('span', 'zenleap-toast-keys',
+      updateEl('kbd', null, '\u21B5'), isSineManaged ? ' info ' : ' update ',
+      updateEl('kbd', null, 'Esc'), ' dismiss');
 
     toast.appendChild(text);
     toast.appendChild(keys);
@@ -8715,10 +8794,11 @@
     }
   }
 
-  // Auto-check for updates (called from init)
+  // Auto-check for updates (called from init in every window). The persisted check time
+  // doubles as a cross-window lock: it is claimed synchronously before the request, and
+  // other windows see it through the settings observer, so only one window checks.
   async function autoCheckForUpdates() {
     if (!shouldAutoCheckForUpdates()) return;
-
 
     // Record check time (only auto-checks count for cooldown, not manual checks)
     S['updates.lastCheckTime'] = Date.now();
@@ -8732,20 +8812,152 @@
         S['updates.dismissedVersion'] = '';
         saveSettings();
       }
-      showUpdateToast(result.remoteVersion);
+      // Show the toast once, in the window the user is looking at
+      Services.obs.notifyObservers(null, UPDATE_AVAILABLE_TOPIC, result.remoteVersion);
     }
   }
+
+  function _onUpdateAvailableBroadcast(subject, topic, version) {
+    if (!/^\d+(\.\d+)*$/.test(version || '')) return;
+    try {
+      const top = BrowserWindowTracker.getTopWindow();
+      if (top && top !== window) return;
+    } catch (e) { /* no tracker: show it here */ }
+    showUpdateToast(version);
+  }
+  Services.obs.addObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
+  window.addEventListener('unload', () => {
+    Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
+  }, { once: true });
 
   // ============================================
   // FOLDER DELETE MODAL (browse mode)
   // ============================================
 
+  // Undo entries for folder deletions (newest last). Entries expire after 30 s; the
+  // undo shortcut falls through to the native "reopen closed tab" when none applies.
+  const FOLDER_UNDO_WINDOW_MS = 30000;
+  const FOLDER_UNDO_MAX_ENTRIES = 10;
+
+  function pushFolderUndo(entry) {
+    folderUndoStack.push({ ...entry, timestamp: Date.now() });
+    if (folderUndoStack.length > FOLDER_UNDO_MAX_ENTRIES) {
+      folderUndoStack.splice(0, folderUndoStack.length - FOLDER_UNDO_MAX_ENTRIES);
+    }
+  }
+
+  // Everything needed to rebuild a folder later: its tree (tabs by URL, subfolders),
+  // label, collapsed state, workspace and position.
+  function snapshotFolder(folder) {
+    return {
+      folderLabel: folderName(folder),
+      folderId: folder.id,
+      workspaceId: folder.getAttribute('zen-workspace-id'),
+      tree: collectFolderTree(folder, null),
+      anchor: folder.previousElementSibling,
+      parentFolder: folder.group?.isZenFolder ? folder.group : null,
+    };
+  }
+
+  // Delete a folder and close its tabs (undoable via the undo-folder-delete shortcut).
+  async function deleteFolderWithTabs(folder) {
+    const target = folder?.isConnected ? folder : document.getElementById(folder?.id);
+    if (!target?.isZenFolder) return false;
+    const snapshot = snapshotFolder(target);
+    pushFolderUndo({ type: 'folder-and-contents', tabCount: folderTabCount(target), ...snapshot });
+    await target.delete();
+    log(`Deleted folder and contents: ${snapshot.folderLabel}`);
+    return true;
+  }
+
+  // Delete a folder but keep its tabs (undo re-creates the folder around them).
+  async function dissolveFolder(folder) {
+    const target = folder?.isConnected ? folder : document.getElementById(folder?.id);
+    if (!target?.isZenFolder) return false;
+    const tabs = target.tabs.filter(t => !t.hasAttribute('zen-empty-tab'));
+    pushFolderUndo({
+      type: 'folder-only',
+      folderLabel: folderName(target),
+      folderId: target.id,
+      collapsed: !!target.collapsed,
+      tabRefs: tabs,
+    });
+    await target.unpackTabs();
+    log(`Deleted folder (kept tabs): ${folderName(target)} (${tabs.length} tabs freed)`);
+    return true;
+  }
+
+  // Port of Zen's private ZenFolders.#convertFolderToSpace (zen-omni ZenFolders.mjs:593,
+  // used by the folder context menu) — keep in sync with upstream. Includes upstream's
+  // final pass that re-tags every tab with the new workspace id; without it the tabs
+  // return to the old workspace after a restart. Additionally re-tags moved subfolders.
+  async function convertFolderToWorkspace(folder) {
+    if (!folder?.isZenFolder || !folder.isConnected || !window.gZenWorkspaces) return null;
+    const currentWorkspace = gZenWorkspaces.getActiveWorkspaceFromCache();
+    const selectedTab = folder.tabs.find(tab => tab.selected);
+    const icon = folder.icon?.querySelector('svg .icon image');
+    const label = folderName(folder);
+    const movedFolders = [];
+
+    const newSpace = await gZenWorkspaces.createAndSaveWorkspace(
+      label,
+      icon?.getAttribute('href'),
+      /* dontChange */ false,
+      currentWorkspace?.containerTabId || 0,
+      {
+        beforeChangeCallback: async (newWorkspace) => {
+          await new Promise((resolve) => {
+            requestAnimationFrame(async () => {
+              try {
+                const workspacePinnedContainer = gZenWorkspaces.workspaceElement(newWorkspace.uuid).pinnedTabsContainer;
+                const items = folder.allItems.filter(tab => !tab.hasAttribute('zen-empty-tab'));
+                for (const item of items) {
+                  if (item.isZenFolder) movedFolders.push(item, ...item.querySelectorAll('zen-folder'));
+                }
+                workspacePinnedContainer.append(...items);
+                await folder.delete();
+                gBrowser.tabContainer._invalidateCachedTabs();
+                if (selectedTab) {
+                  selectedTab.setAttribute('zen-workspace-id', newWorkspace.uuid);
+                  selectedTab.removeAttribute('folder-active');
+                  gZenWorkspaces.lastSelectedWorkspaceTabs[newWorkspace.uuid] = selectedTab;
+                }
+              } catch (e) {
+                reportError('Convert folder to workspace: moving the folder contents failed', e);
+              } finally {
+                resolve();
+              }
+            });
+          });
+        },
+      }
+    );
+    if (!newSpace) return null;
+
+    // Change the ID for all tabs (the new workspace is active now)
+    for (const tab of gBrowser.tabs) {
+      if (!tab.hasAttribute('zen-essential')) {
+        tab.setAttribute('zen-workspace-id', newSpace.uuid);
+        tab.style.opacity = '';
+        tab.style.height = '';
+      }
+      gBrowser.TabStateFlusher.flush(tab.linkedBrowser);
+      if (gZenWorkspaces.lastSelectedWorkspaceTabs[currentWorkspace?.uuid] === tab) {
+        // No longer the last selected tab of the previous workspace
+        delete gZenWorkspaces.lastSelectedWorkspaceTabs[currentWorkspace.uuid];
+      }
+    }
+    for (const sub of movedFolders) sub.setAttribute('zen-workspace-id', newSpace.uuid);
+    log(`Converted folder "${label}" to workspace`);
+    return newSpace;
+  }
+
   function showFolderDeleteModal(folder) {
     folderDeleteMode = true;
     folderDeleteTarget = folder;
 
-    const folderName = folder.label || folder.getAttribute('zen-folder-name') || 'Unnamed Folder';
-    const tabCount = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+    const name = folderName(folder);
+    const tabCount = folderTabCount(folder);
 
     if (!folderDeleteModal) {
       folderDeleteModal = document.createElement('div');
