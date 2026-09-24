@@ -13131,7 +13131,6 @@
   function zenShortcutsUsing(combo) {
     const list = window.gZenKeyboardShortcutsManager?._currentShortcutList;
     if (!Array.isArray(list) || !combo?.key) return [];
-    const isMac = AppConstants.platform === 'macosx';
     const want = String(combo.key).toLowerCase();
     const out = [];
     for (const sc of list) {
@@ -13144,8 +13143,8 @@
         if (k === 'space') k = ' ';
         if (k !== want) continue;
         const m = sc.getModifiers();
-        const ctrl = isMac ? !!m.control : !!(m.control || m.accel);
-        const meta = isMac ? !!(m.meta || m.accel) : !!m.meta;
+        const ctrl = IS_MACOS ? !!m.control : !!(m.control || m.accel);
+        const meta = IS_MACOS ? !!(m.meta || m.accel) : !!m.meta;
         if (ctrl === !!combo.ctrl && meta === !!combo.meta && !!m.alt === !!combo.alt && !!m.shift === !!combo.shift) {
           out.push(sc);
         }
@@ -14053,7 +14052,7 @@
     // since highlightedTabIndex indexes into the items list (tabs + folders)
     let collectedTabs;
     if (selectedItems.size > 0) {
-      collectedTabs = sortTabsBySidebarPosition([...selectedItems].filter(t => t && !t.closing && t.parentNode && !isFolder(t)));
+      collectedTabs = sortTabsBySidebarPosition(liveTabs([...selectedItems].filter(t => !isFolder(t))));
     } else if (highlightedTabIndex >= 0 && highlightedTabIndex < items.length) {
       const highlightedItem = items[highlightedTabIndex];
       // Only operate on tabs, not folders
@@ -16848,14 +16847,11 @@
   // default reset + unload rather than close), the rest close as one batch so a
   // single Ctrl+Shift+T restores them (LEAP-B-23). Returns a promise.
   function closeTabsLikeZen(tabs, event) {
-    tabs = tabs.filter(t => t && t.isConnected && !t.closing);
+    tabs = liveTabs(tabs);
     const pinned = tabs.filter(t => t.pinned);
     const normal = tabs.filter(t => !t.pinned);
-    if (normal.length > 1 &&
-        !gBrowser.warnAboutClosingTabs(normal.length, gBrowser.closingTabsEnum.MULTI_SELECTED)) {
-      return Promise.resolve(false);
-    }
-    if (normal.length) gBrowser.removeTabs(normal);
+    const warn = normal.length > 1 ? gBrowser.closingTabsEnum.MULTI_SELECTED : undefined;
+    if (normal.length && !TabOps.close(normal, { warn })) return Promise.resolve(false);
     if (!pinned.length) return Promise.resolve(true);
     if (typeof window.gZenPinnedTabManager?.onCloseTabShortcut === 'function') {
       const evt = event || new KeyboardEvent('keydown');
@@ -17630,10 +17626,7 @@
 
   // gTile needs an active split view with at least two panes.
   function gtileCanOpen() {
-    const splitter = window.gZenViewSplitter;
-    if (!splitter?.splitViewActive) return false;
-    const viewData = splitter._data?.[splitter.currentView];
-    return !!viewData?.tabs && viewData.tabs.length >= 2;
+    return (activeSplitView()?.tabs?.length ?? 0) >= 2;
   }
 
   // Escape that closes a <select> dropdown (Firefox's #ContentSelectDropdown,
@@ -17763,8 +17756,7 @@
     // Handle plugin manager mode - Escape to close
     if (_pluginManagerMode) {
       if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
+        consumeEvent(event);
         if (_pluginManagerView === 'detail') {
           _pluginManagerView = 'list';
           _pluginManagerDetailId = null;
@@ -17780,8 +17772,7 @@
     if (settingsMode) {
       // Escape that just closed a <select> dropdown was the dropdown's
       if (event.key === 'Escape' && !settingsRecordingId && !_selectPopupJustClosed) {
-        event.preventDefault();
-        event.stopPropagation();
+        consumeEvent(event);
         // Dismiss import confirmation first if open, otherwise close settings
         if (document.getElementById('zenleap-import-overlay')) {
           dismissImportConfirmation();
@@ -17789,8 +17780,7 @@
           exitSettingsMode();
         }
       } else if (event.key === 'Enter' && settingsActiveTab === 'About' && aboutUpdateState === 'available' && !isSineManaged) {
-        event.preventDefault();
-        event.stopPropagation();
+        consumeEvent(event);
         exitSettingsMode();
         enterUpdateMode();
       }
@@ -17799,8 +17789,7 @@
 
     // Handle update mode - Escape to close, Enter for primary action
     if (updateMode) {
-      event.preventDefault();
-      event.stopPropagation();
+      consumeEvent(event);
       if (event.key === 'Escape') {
         exitUpdateMode();
       } else if (event.key === 'Enter') {
@@ -17843,8 +17832,7 @@
 
     // Handle help mode - j/k scroll, Escape or help key to close
     if (helpMode) {
-      event.preventDefault();
-      event.stopPropagation();
+      consumeEvent(event);
       if (event.key === 'Escape' || keyMatches(event, 'keys.leap.help')) {
         exitHelpMode();
         return;
@@ -18602,11 +18590,11 @@
     // Workspace switches (Zen has no ZenWorkspaceChanged DOM event; this is its
     // documented hook). Zen awaits these callbacks, so keep it cheap.
     try {
-      const onWorkspaceChanged = ({ workspace } = {}) => {
+      // (Plugins get workspace:changed from the plugin system's own listener.)
+      const onWorkspaceChanged = () => {
         if (_tornDown) return;
         _visibleItemsCache = null;
         scheduleRelativeNumberUpdate();
-        _pluginEventBus.emit('workspace:changed', { workspace });
       };
       gZenWorkspaces.addChangeListeners(onWorkspaceChanged);
       onTeardown(() => gZenWorkspaces.removeChangeListeners?.(onWorkspaceChanged));
@@ -20213,9 +20201,9 @@
       () => { if (searchMode) exitSearchMode(); },
       () => { if (folderDeleteMode) closeFolderDeleteModal(); },
       () => { if (leapMode || browseMode) exitLeapMode(false); },
-      () => { if (typeof updateMode !== 'undefined' && updateMode) exitUpdateMode(); },
-      () => { if (typeof _pluginManagerMode !== 'undefined' && _pluginManagerMode) exitPluginManagerMode(); },
-      () => { if (typeof updateToast !== 'undefined' && updateToast) dismissUpdateToast(false); },
+      () => { if (updateMode) exitUpdateMode(); },
+      () => { if (_pluginManagerMode) exitPluginManagerMode(); },
+      () => { if (updateToast) dismissUpdateToast(false); },
       () => { if (quickNavPeeking || sidebarWasExpanded) { hideFloatingSidebar(); quickNavPeeking = false; } },
     ];
     for (const step of steps) {
