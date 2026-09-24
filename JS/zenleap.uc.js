@@ -136,6 +136,43 @@
   };
 
   // ============================================
+  // SHARED HELPERS
+  // ============================================
+
+  // Always-on error reporting. log() is debug-only, which hides Zen API drift
+  // from users and bug reports; use this for failures that should be visible.
+  function reportError(context, error) {
+    console.error(`[ZenLeap] ${context}:`, error);
+  }
+
+  // Zen space icons can be emoji text or chrome:// SVG URLs (selectable icon set).
+  function isImageIcon(icon) {
+    return typeof icon === 'string' &&
+      (/^(chrome|resource|moz-src):\/\/\S+\.svg$/i.test(icon) || /^data:image\//i.test(icon));
+  }
+
+  // DOM node for an icon (preferred over HTML strings).
+  function createIconNode(icon, fallback = '') {
+    if (isImageIcon(icon)) {
+      const img = document.createElement('img');
+      img.className = 'zenleap-icon-img';
+      img.src = icon;
+      img.alt = '';
+      return img;
+    }
+    const span = document.createElement('span');
+    span.className = 'zenleap-icon-text';
+    span.textContent = icon || fallback;
+    return span;
+  }
+
+  // Escaped HTML string for an icon, for renderers that build innerHTML templates.
+  function iconHtml(icon, fallback = '') {
+    if (isImageIcon(icon)) return `<img class="zenleap-icon-img" src="${escapeHtml(icon)}" alt=""/>`;
+    return escapeHtml(icon || fallback);
+  }
+
+  // ============================================
   // THEME ENGINE
   // ============================================
 
@@ -2604,6 +2641,11 @@
         border-radius: var(--zl-r-sm);
         background: var(--zl-bg-elevated);
         border: 1px solid var(--zl-border-subtle);
+      }
+      .zenleap-icon-img {
+        width: 16px; height: 16px; object-fit: contain;
+        -moz-context-properties: fill, fill-opacity;
+        fill: currentColor;
       }
 
       .zenleap-command-info { flex: 1; min-width: 0; overflow: hidden; }
