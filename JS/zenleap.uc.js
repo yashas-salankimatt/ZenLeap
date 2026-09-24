@@ -17011,13 +17011,11 @@
 
     // Deduplicate: remove individual tabs whose parent folder is also selected
     // (they will move with their folder automatically)
-    const selectedFolders = new Set([...selectedItems].filter(isFolder));
+    // (tabs and subfolders anywhere inside a selected folder, split groups included)
+    const selectedFolders = [...selectedItems].filter(isFolder);
     for (const item of [...selectedItems]) {
-      if (!isFolder(item)) {
-        const parentFolder = item.group?.isZenFolder ? item.group : null;
-        if (parentFolder && selectedFolders.has(parentFolder)) {
-          selectedItems.delete(item);
-        }
+      if (selectedFolders.some(f => f !== item && f.contains(item))) {
+        selectedItems.delete(item);
       }
     }
 
@@ -17038,6 +17036,9 @@
   // Handles cross-pinned/unpinned, cross-folder, and cross-workspace moves
   // Folders nest into the anchor's folder when anchor is a tab inside a folder (with depth/circular guards);
   // if anchor is a tab in a folder, loose tabs join that folder; if anchor is a folder, they stay loose.
+  // Every move goes through gBrowser.moveTabBefore/After (which accept zen-folder
+  // elements) or gBrowser.zenHandleTabMove, so TabMove/TabGroupMoved fire and the
+  // tab caches, SessionStore and window sync stay consistent (LEAP-B-04).
   function pasteItems(position) {
     if (yankItems.length === 0) {
       log('No items in yank buffer');
@@ -17051,8 +17052,8 @@
 
     // Filter out closed/removed items
     yankItems = yankItems.filter(item => {
-      if (isFolder(item)) return item.parentNode;
-      return item && !item.closing && item.parentNode;
+      if (isFolder(item)) return item.isConnected;
+      return item && !item.closing && item.isConnected;
     });
     if (yankItems.length === 0) {
       log('All yanked items have been closed');
@@ -17062,7 +17063,7 @@
     // Determine anchor context
     const anchorIsFolder = isFolder(anchorItem);
     const anchorTab = anchorIsFolder ? null : anchorItem;
-    const anchorFolder = anchorIsFolder ? null : (anchorItem.group?.isZenFolder ? anchorItem.group : null);
+    const anchorFolder = anchorIsFolder ? null : parentFolderOf(anchorItem);
     const anchorPinned = anchorIsFolder ? false : anchorItem.pinned;
     const anchorWorkspaceId = anchorItem.getAttribute('zen-workspace-id') || window.gZenWorkspaces?.activeWorkspace;
 
@@ -17071,6 +17072,15 @@
     const yankLooseTabs = yankItems.filter(item => !isFolder(item));
 
     log(`Paste: position=${position}, anchor="${anchorItem.label}", folders=${yankFolders.length}, tabs=${yankLooseTabs.length}`);
+
+    // Chain moves so multiple items keep their order: the first goes
+    // before/after the anchor, each next one after the previously placed item.
+    const placeChain = (elements, anchor) => {
+      if (!elements.length) return;
+      if (position === 'after') gBrowser.moveTabAfter(elements[0], anchor);
+      else gBrowser.moveTabBefore(elements[0], anchor);
+      for (let i = 1; i < elements.length; i++) gBrowser.moveTabAfter(elements[i], elements[i - 1]);
+    };
 
     // --- Phase 1: Move loose tabs ---
     for (const tab of yankLooseTabs) {
@@ -17084,9 +17094,9 @@
       }
 
       // 1b. Remove from old folder if needed
-      const tabFolder = tab.group?.isZenFolder ? tab.group : null;
+      const tabFolder = parentFolderOf(tab);
       if (tabFolder && tabFolder !== anchorFolder) {
-        try { gBrowser.ungroupTab(tab); } catch(e) { log(`  Ungroup failed: ${e}`); }
+        try { gBrowser.ungroupTab(tab); } catch(e) { reportError('Removing tab from folder failed', e); }
       }
 
       // 1c. Match pinned state (only when anchor is a tab)
@@ -17101,66 +17111,28 @@
 
     // Position loose tabs
     if (yankLooseTabs.length > 0) {
-      if (anchorIsFolder) {
-        // gBrowser.moveTabAfter/Before expect tab elements, not folders.
-        // Use the folder's tabs as a reference point, or DOM positioning for empty folders.
-        const folderTabs = anchorItem.tabs;
-        if (position === 'after') {
-          if (folderTabs && folderTabs.length > 0) {
-            let afterTarget = folderTabs[folderTabs.length - 1];
-            for (const tab of yankLooseTabs) {
-              gBrowser.moveTabAfter(tab, afterTarget);
-              afterTarget = tab;
-            }
-          } else {
-            // Empty folder — use DOM positioning for first tab, chain the rest
-            anchorItem.after(yankLooseTabs[0]);
-            for (let i = 1; i < yankLooseTabs.length; i++) {
-              gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
-            }
-          }
-        } else {
-          if (folderTabs && folderTabs.length > 0) {
-            gBrowser.moveTabBefore(yankLooseTabs[0], folderTabs[0]);
-          } else {
-            anchorItem.before(yankLooseTabs[0]);
-          }
-          for (let i = 1; i < yankLooseTabs.length; i++) {
-            gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
-          }
-        }
-      } else {
-        if (position === 'after') {
-          let afterTarget = anchorItem;
-          for (const tab of yankLooseTabs) {
-            gBrowser.moveTabAfter(tab, afterTarget);
-            afterTarget = tab;
-          }
-        } else {
-          gBrowser.moveTabBefore(yankLooseTabs[0], anchorItem);
-          for (let i = 1; i < yankLooseTabs.length; i++) {
-            gBrowser.moveTabAfter(yankLooseTabs[i], yankLooseTabs[i - 1]);
-          }
-        }
+      try {
+        // Relative to a folder they stay loose siblings of the folder (Zen moves
+        // unpinned tabs to the top of the unpinned section instead).
+        placeChain(yankLooseTabs, anchorItem);
 
         // Add loose tabs to anchor's folder if anchor is a tab inside a folder
-        if (anchorFolder) {
-          const tabsToAdd = yankLooseTabs.filter(t => t.group !== anchorFolder);
+        if (!anchorIsFolder && anchorFolder) {
+          const tabsToAdd = yankLooseTabs.filter(t => parentFolderOf(t) !== anchorFolder);
           if (tabsToAdd.length > 0) {
             for (const t of tabsToAdd) { if (!t.pinned) gBrowser.pinTab(t); }
             anchorFolder.addTabs(tabsToAdd);
             log(`  Added ${tabsToAdd.length} tabs to folder "${anchorFolder.label}"`);
           }
         }
+      } catch (e) {
+        reportError('Pasting tabs failed', e);
       }
     }
 
     // --- Phase 2: Move folders ---
-    // Track insertion reference for 'after' positioning to preserve folder order.
-    // Without this, each .after(anchor) would insert right after the same anchor,
-    // reversing the order of multiple folders (e.g. [A,B,C] after X → X,C,B,A).
-    // Starts null — each branch uses its own reference for the first folder,
-    // then subsequent folders chain from the previously placed one.
+    // Folders live in the pinned section (or inside another folder), which
+    // gBrowser.moveTabBefore/After enforce for zen-folder elements.
     let folderAfterRef = null;
     for (const folder of yankFolders) {
       // 2a. Cross-workspace: update workspace IDs on folder and all its tabs
@@ -17170,92 +17142,61 @@
           // hasDndSwitch: true means only update IDs, don't auto-reposition or switch workspace
           gZenFolders.changeFolderToSpace(folder, anchorWorkspaceId, { hasDndSwitch: true });
           log(`  Moved folder "${folder.label}" to workspace ${anchorWorkspaceId}`);
-        } catch(e) { log(`  changeFolderToSpace failed: ${e}`); }
+        } catch(e) { reportError('Moving folder to workspace failed', e); }
       }
 
       // 2b. Position folder based on anchor type:
       //   - Anchor is a folder: place as sibling before/after it
       //   - Anchor is a tab inside a folder: nest into that folder (before/after the tab)
       //   - Anchor is a pinned loose tab: place as sibling
-      //   - Anchor is an unpinned loose tab: place into pinnedTabsContainer
-      // Folders must always live in the pinnedTabsContainer (or inside another folder's container).
+      //   - Anchor is an unpinned loose tab: end of the pinned section
+      let ref;
       if (anchorIsFolder) {
-        if (position === 'after') {
-          (folderAfterRef || anchorItem).after(folder);
-          folderAfterRef = folder;
-        } else {
-          anchorItem.before(folder);
-        }
+        ref = anchorItem;
       } else if (anchorFolder) {
-        // Anchor is a tab inside a folder — nest the yanked folder into anchorFolder
-        // by positioning relative to the anchor tab (which lives in anchorFolder's container).
-        // Check constraints first.
-        let canNest = true;
-
         // Guard: circular nesting — don't nest a folder inside itself or its own descendants
-        let ancestor = anchorFolder;
-        while (ancestor) {
-          if (ancestor === folder) { canNest = false; break; }
-          ancestor = ancestor.group?.isZenFolder ? ancestor.group : null;
-        }
+        let canNest = !(folder === anchorFolder || folder.contains(anchorFolder));
         if (!canNest) {
           log(`  Cannot nest folder "${folder.label}" inside its own descendant — placing as sibling`);
         }
-
-        // Guard: max nesting depth — use Zen's canDropElement if available
-        if (canNest && window.gZenFolders?.canDropElement) {
-          try {
-            if (!gZenFolders.canDropElement(folder, anchorTab)) {
-              canNest = false;
-              log(`  Cannot nest folder "${folder.label}" — max nesting depth reached — placing as sibling`);
-            }
-          } catch(e) { /* proceed with nesting if check fails */ }
+        // Guard: max nesting depth. Check it here: moveTabBefore/After would
+        // otherwise move the folder's *parent* when the drop is not allowed.
+        if (canNest && window.gZenFolders?.canDropElement && !gZenFolders.canDropElement(folder, anchorTab)) {
+          canNest = false;
+          log(`  Cannot nest folder "${folder.label}" — max nesting depth reached — placing as sibling`);
         }
-
-        if (canNest) {
-          if (position === 'after') {
-            (folderAfterRef || anchorTab).after(folder);
-            folderAfterRef = folder;
-          } else {
-            anchorTab.before(folder);
-          }
-          log(`  Nested folder "${folder.label}" inside "${anchorFolder.label}"`);
-        } else {
-          // Fall back to sibling placement next to the parent folder
-          if (position === 'after') {
-            (folderAfterRef || anchorFolder).after(folder);
-            folderAfterRef = folder;
-          } else {
-            anchorFolder.before(folder);
-          }
-        }
+        ref = canNest ? anchorTab : anchorFolder;
+        if (canNest) log(`  Nesting folder "${folder.label}" inside "${anchorFolder.label}"`);
       } else if (anchorTab && anchorTab.pinned) {
-        // Anchor is a pinned tab (no folder) — safe to position relative to it
-        if (position === 'after') {
-          (folderAfterRef || anchorTab).after(folder);
-          folderAfterRef = folder;
-        } else {
-          anchorTab.before(folder);
-        }
+        ref = anchorTab;
       } else {
-        // Anchor is an unpinned tab — folder must go into the pinnedTabsContainer
-        const wsEl = window.gZenWorkspaces?.workspaceElement(anchorWorkspaceId);
-        const pinnedContainer = wsEl?.pinnedTabsContainer;
-        if (pinnedContainer) {
-          const separator = pinnedContainer.querySelector('.pinned-tabs-container-separator');
-          if (separator) {
-            separator.before(folder);
-          } else {
-            pinnedContainer.appendChild(folder);
-          }
-        } else {
+        ref = null;
+      }
+
+      try {
+        if (ref) {
           if (position === 'after') {
-            (folderAfterRef || anchorTab).after(folder);
+            gBrowser.moveTabAfter(folder, folderAfterRef || ref);
             folderAfterRef = folder;
           } else {
-            anchorTab.before(folder);
+            gBrowser.moveTabBefore(folder, ref);
           }
+        } else {
+          // Anchor is an unpinned tab: put the folder at the end of the pinned
+          // section, just above the separator (moveTabBefore would re-target a
+          // folder dropped next to an unpinned tab onto the last pinned tab,
+          // which may be inside another folder).
+          const wsEl = window.gZenWorkspaces?.workspaceElement(anchorWorkspaceId);
+          const pinnedContainer = wsEl?.pinnedTabsContainer;
+          const separator = pinnedContainer?.querySelector(':scope > .pinned-tabs-container-separator');
+          if (!pinnedContainer) throw new Error('pinned section not found');
+          gBrowser.zenHandleTabMove(folder, () => {
+            if (separator) separator.before(folder);
+            else pinnedContainer.appendChild(folder);
+          });
         }
+      } catch (e) {
+        reportError(`Pasting folder "${folder.label}" failed`, e);
       }
     }
 
