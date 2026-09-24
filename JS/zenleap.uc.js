@@ -10621,7 +10621,7 @@
           lastGroupId = groupId;
           const group = COMMAND_GROUPS.find(g => g.id === groupId);
           if (group) {
-            html += `<div class="zenleap-command-group-header"><span class="zenleap-command-group-icon">${group.icon}</span>${escapeHtml(group.label)}</div>`;
+            html += `<div class="zenleap-command-group-header"><span class="zenleap-command-group-icon">${iconHtml(group.icon)}</span>${escapeHtml(group.label)}</div>`;
           }
         }
       }
@@ -10658,7 +10658,7 @@
 
         html += `
           <div class="zenleap-command-result ${isSelected ? 'selected' : ''}${headerClass}" data-index="${idx}">
-            <div class="zenleap-command-icon">${cmd.icon || '⚡'}</div>
+            <div class="zenleap-command-icon">${iconHtml(cmd.icon, '⚡')}</div>
             <div class="zenleap-command-info">
               <div class="zenleap-command-label">${highlightedLabel}${hasArrow}</div>
               ${cmd.sublabel ? `<div class="zenleap-command-sublabel">${escapeHtml(cmd.sublabel)}</div>` : ''}
@@ -11336,7 +11336,9 @@
 
       .zenleap-reorg-icon {
         font-size: 18px; flex-shrink: 0; width: 24px; text-align: center;
+        display: inline-flex; align-items: center; justify-content: center;
       }
+      .zenleap-reorg-icon .zenleap-icon-img { width: 18px; height: 18px; }
 
       .zenleap-reorg-name {
         flex: 1; min-width: 0; font-size: 14px; font-weight: 500;
@@ -11408,10 +11410,10 @@
       pos.className = 'zenleap-reorg-pos';
       pos.textContent = String(i + 1);
 
-      // Icon
+      // Icon (emoji or one of Zen's chrome:// SVG space icons)
       const icon = document.createElement('span');
       icon.className = 'zenleap-reorg-icon';
-      icon.textContent = ws.icon || '\uD83D\uDDC2';
+      icon.appendChild(createIconNode(ws.icon, '\uD83D\uDDC2'));
 
       // Name
       const name = document.createElement('span');
@@ -11613,20 +11615,22 @@
       return;
     }
 
-    // Apply the new order using reorderWorkspace API
-    // Iterate from first to last, placing each workspace at its target index
+    // Apply the new order using reorderWorkspace API. The space list may have
+    // changed while the modal was open (Spaces sync, another window): work
+    // from the current list by uuid, keep spaces added meanwhile at the end.
     try {
-      for (let targetIdx = 0; targetIdx < targetOrder.length; targetIdx++) {
-        const ws = targetOrder[targetIdx];
-        const currentWorkspaces = gZenWorkspaces.getWorkspaces();
-        const currentIdx = currentWorkspaces.findIndex(w => w.uuid === ws.uuid);
-        if (currentIdx !== targetIdx) {
-          await gZenWorkspaces.reorderWorkspace(ws.uuid, targetIdx);
+      const currentIds = gZenWorkspaces.getWorkspaces().map(w => w.uuid);
+      const wanted = targetOrder.map(w => w.uuid).filter(id => currentIds.includes(id));
+      for (const id of currentIds) if (!wanted.includes(id)) wanted.push(id);
+      for (let targetIdx = 0; targetIdx < wanted.length; targetIdx++) {
+        const currentIdx = gZenWorkspaces.getWorkspaces().findIndex(w => w.uuid === wanted[targetIdx]);
+        if (currentIdx >= 0 && currentIdx !== targetIdx) {
+          await gZenWorkspaces.reorderWorkspace(wanted[targetIdx], targetIdx);
         }
       }
-      log(`Reorganized ${targetOrder.length} workspaces`);
+      log(`Reorganized ${wanted.length} workspaces`);
     } catch (e) {
-      log(`Reorganize workspaces failed: ${e}`);
+      reportError('Reorganizing workspaces failed', e);
     }
   }
 
@@ -11639,6 +11643,8 @@
 
     // Load workspaces
     if (!window.gZenWorkspaces) { log('gZenWorkspaces not available'); return; }
+    // Zen ignores reordering in private / non-synced windows
+    if (gZenWorkspaces.privateWindowOrDisabled) { log('Workspaces cannot be reordered in this window'); return; }
     const workspaces = gZenWorkspaces.getWorkspaces();
     if (!workspaces || workspaces.length < 2) { log('Not enough workspaces to reorganize'); return; }
 
@@ -18898,8 +18904,12 @@
         background: var(--zl-border-strong);
         border-radius: 3px;
       }
-      .zenleap-themed-scroll::-webkit-scrollbar-thumb:hover {
-        background: var(--zl-accent-mid);
+
+      /* ═══ Icons: emoji text or Zen's chrome:// SVG space icons ═══ */
+      .zenleap-icon-img {
+        width: 16px; height: 16px; object-fit: contain;
+        -moz-context-properties: fill, fill-opacity;
+        fill: currentColor;
       }
 
       /* ═══ Shared modal animation ═══ */
