@@ -60,7 +60,10 @@ var ZenLeapPlugin = {
       backdrop.addEventListener('click', close);
       saveBtn.addEventListener('click', function() {
         var val = textarea.value.trim();
-        if (val) { api.storage.set(key, val); api.ui.showToast('Note saved'); }
+        if (val) {
+          api.storage.set(key, val);
+          api.ui.showToast(api.browser.isPrivate() ? 'Note kept for this private window only (not saved)' : 'Note saved');
+        }
         else { api.storage.remove(key); api.ui.showToast('Note cleared'); }
         close();
       });

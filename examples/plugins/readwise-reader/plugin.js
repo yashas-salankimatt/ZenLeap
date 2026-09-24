@@ -56,7 +56,7 @@ var ZenLeapPlugin = {
           var masked = existing ? existing.slice(0, 6) + '...' + existing.slice(-4) : '';
           var placeholder = existing ? 'Current: ' + masked : 'Paste your Readwise access token';
 
-          var token = await api.ui.showPrompt('Readwise Reader', placeholder, '');
+          var token = await api.ui.showPrompt('Readwise Reader', placeholder, '', { password: true });
           if (token === null) return;
 
           token = token.trim();
@@ -110,7 +110,8 @@ var ZenLeapPlugin = {
             api.ui.showToast('Set up Readwise first (run Configure Readwise Reader)');
             return;
           }
-          var selection = api.browser.getSelectedText();
+          // Async: the page lives in a content process
+          var selection = await api.browser.getSelectedText();
           if (!selection || !selection.trim()) {
             api.ui.showToast('No text selected — select text on the page first');
             return;

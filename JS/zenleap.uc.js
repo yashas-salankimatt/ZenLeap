@@ -1042,7 +1042,10 @@
     { id: 'folders', label: 'Folders', icon: '\u{1F4C1}', keys: ['create-folder','delete-folder','add-to-folder','rename-folder','change-folder-icon','unload-folder-tabs','create-subfolder','convert-folder-to-workspace','unpack-folder','move-folder-to-workspace'] },
     { id: 'zenleap', label: 'ZenLeap', icon: '\u26A1', keys: ['toggle-browse-preview','toggle-debug','open-help','open-settings','check-update','switch-theme','reload-themes','open-themes-file'] },
     { id: 'sessions', label: 'Sessions', icon: '\u{1F4BE}', keys: ['save-session','restore-session','list-sessions'] },
+    { id: 'plugins', label: 'Plugins', icon: '\u{1F9E9}', keys: ['plugin-manager'] },
+    // One group per enabled plugin is appended at runtime by syncPluginCommandGroups()
   ];
+  const STATIC_COMMAND_GROUP_COUNT = COMMAND_GROUPS.length;
 
   // Build reverse lookup: command key → group id
   const _commandGroupMap = new Map();
@@ -3020,19 +3023,47 @@
   // ============================================
   // PLUGIN SYSTEM
   // ============================================
+  //
+  // External plugins live in <profile>/chrome/zenleap-plugins/<id>/{manifest.json,plugin.js}.
+  // - plugin.js runs with full chrome privileges (same trust level as chrome/JS), each
+  //   plugin in its own system-principal sandbox whose prototype is the browser window,
+  //   so window globals (gBrowser, Services, document, timers) resolve as before.
+  //   Disabling/uninstalling calls the plugin's destroy hook and nukes the sandbox.
+  // - The manifest is validated and the enabled flag checked BEFORE plugin.js is read;
+  //   newly discovered plugins start disabled until enabled in the Plugin Manager.
+  // - Plugins run once per browser window. Their data (enabled flag, storage, settings)
+  //   is shared by all windows: every window keeps the merged state in memory, changes
+  //   are broadcast to the other windows and written atomically to
+  //   zenleap-plugin-data.json. In private windows storage/settings writes stay in
+  //   memory for that window only (never persisted).
+  // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
+  //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
+  //   asynchronously; browser.getSelectedText() returns a Promise; tabs.getAll()/findBy*
+  //   cover the active workspace unless called with { allWorkspaces: true }.
 
   // ── Plugin State ──
-  let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, instance }
-  let _pluginData = {};                  // Persisted state (enabled/disabled, settings, storage)
+  let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, loaded, instance, exports, sandbox, error, _dynamicCommands }
+  let _pluginData = {};                  // pluginId -> { enabled, isNew?, storage, settings } — shared (persisted) state
   let _pluginManagerMode = false;
   let _pluginManagerModal = null;
   let _pluginManagerView = 'list';       // 'list' | 'detail'
   let _pluginManagerDetailId = null;
+  let _pluginManagerFocus = 0;           // keyboard-focused card in the list view
+
+  const PLUGIN_ID_RE = /^[a-zA-Z0-9_-]+$/;
+  const PLUGIN_COMMAND_KEY_RE = /^[\w.:-]+$/;
+
+  function safePluginText(value, fallback = '', maxLength = 200) {
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : fallback;
+  }
 
   // ── Plugin Event Bus ──
+  // Handlers are called asynchronously (next task) so a slow plugin can never delay
+  // tab switching or other ZenLeap work.
   const _pluginEventBus = {
     _listeners: new Map(),
     on(event, callback, pluginId) {
+      if (typeof callback !== 'function') return;
       if (!this._listeners.has(event)) this._listeners.set(event, new Set());
       this._listeners.get(event).add({ callback, pluginId });
     },
@@ -3056,102 +3087,217 @@
     emit(event, data) {
       const set = this._listeners.get(event);
       if (!set || set.size === 0) return;
-      for (const { callback } of [...set]) {
-        try { callback(data); }
-        catch (e) { console.error(`[ZenLeap] Plugin event handler error (${event}):`, e); }
-      }
+      const entries = [...set];
+      setTimeout(() => {
+        for (const entry of entries) {
+          if (!set.has(entry)) continue; // removed meanwhile
+          try { entry.callback(data); }
+          catch (e) { console.error(`[ZenLeap] Plugin "${entry.pluginId}" event handler error (${event}):`, e); }
+        }
+      }, 0);
     },
     removeAllForPlugin(pluginId) {
       for (const [, set] of this._listeners) {
-        const toRemove = [];
-        for (const entry of set) {
-          if (entry.pluginId === pluginId) toRemove.push(entry);
+        for (const entry of [...set]) {
+          if (entry.pluginId === pluginId) set.delete(entry);
         }
-        for (const entry of toRemove) set.delete(entry);
       }
     },
   };
 
   // ── Plugin Data Persistence ──
   const _pluginDataPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugin-data.json');
+  const PLUGIN_DATA_TOPIC = 'zenleap-plugin-data-changed';
+  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+  const _windowUid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let _pluginSaveTimer = null;
   let _pluginSavePromise = Promise.resolve();
-  let _pluginDataLoaded = false;
-  const PLUGIN_STORAGE_QUOTA = 512 * 1024; // 512KB per plugin
+  let _pluginDataLoaded = false;          // true once the file was read (or found missing/quarantined)
+  const _pluginDirty = new Map();         // pluginId -> Set of changed paths (see pluginPath())
+  const _pendingRemotePluginChanges = []; // broadcasts received before our own load finished
+  const _pluginPrivateOverlay = new Map(); // private windows: pluginId -> { storage: Map, settings: Map }
 
   function _isPlainObject(v) {
     return v != null && typeof v === 'object' && !Array.isArray(v);
   }
 
-  async function loadPluginData() {
-    // Try loading from file first
-    try {
-      const loaded = await IOUtils.readJSON(_pluginDataPath);
-      if (_isPlainObject(loaded)) {
-        Object.assign(_pluginData, loaded);
-        _pluginDataLoaded = true;
-        return;
-      }
-      console.warn('[ZenLeap] Plugin data file contained invalid data, ignoring');
-    } catch (e) {
-      if (e?.name !== 'NotFoundError') {
-        console.warn('[ZenLeap] Plugin data file corrupt or unreadable, checking for pref migration:', e);
-      }
-    }
-
-    // Migrate from old pref-based storage
-    try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
-        const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
-        if (_isPlainObject(parsed)) {
-          Object.assign(_pluginData, parsed);
-          await IOUtils.writeJSON(_pluginDataPath, _pluginData);
-          Services.prefs.clearUserPref('uc.zenleap.plugins');
-          log('Migrated plugin data from prefs to file');
-        }
-      }
-    } catch (e) {
-      console.warn('[ZenLeap] Pref migration failed:', e);
-    }
-
-    _pluginDataLoaded = true;
+  function clonePluginValue(value) {
+    return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   }
 
-  function _doWritePluginData() {
-    _pluginSavePromise = _pluginSavePromise.then(
-      () => IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
-        console.error('[ZenLeap] Failed to save plugin data:', e);
-      })
-    );
+  // Dirty paths: '*' (whole entry), 'enabled', 'isNew', 'storage'/'settings' (whole object),
+  // or 'storage\0<key>' / 'settings\0<key>' (storage keys may contain dots).
+  function pluginPath(field, key) {
+    return key === undefined ? field : `${field}\0${key}`;
+  }
+
+  function markPluginDataDirty(pluginId, path) {
+    if (!_pluginDirty.has(pluginId)) _pluginDirty.set(pluginId, new Set());
+    _pluginDirty.get(pluginId).add(path);
+    savePluginData();
+  }
+
+  function copyPluginDataPath(src, dst, path) {
+    if (path === '*') {
+      for (const k of Object.keys(dst)) delete dst[k];
+      Object.assign(dst, clonePluginValue(src) || {});
+      return;
+    }
+    const [field, key] = path.split('\0');
+    if (key === undefined) {
+      if (src && src[field] !== undefined) dst[field] = clonePluginValue(src[field]);
+      else delete dst[field];
+      return;
+    }
+    if (!_isPlainObject(dst[field])) dst[field] = {};
+    if (src && _isPlainObject(src[field]) && Object.prototype.hasOwnProperty.call(src[field], key)) {
+      dst[field][key] = clonePluginValue(src[field][key]);
+    } else {
+      delete dst[field][key];
+    }
+  }
+
+  // Move an unparseable data file aside (instead of silently overwriting it later).
+  async function quarantineCorruptPluginData(error) {
+    const aside = _pluginDataPath.replace(/\.json$/, `.corrupt-${Date.now()}.json`);
+    try {
+      await IOUtils.move(_pluginDataPath, aside);
+      console.error(`[ZenLeap] Plugin data file was corrupt and has been moved to ${aside}; starting with empty plugin data.`, error);
+      return true;
+    } catch (e) {
+      reportError('Plugin data file is corrupt and could not be moved aside; plugin data will not be saved this session', e);
+      return false;
+    }
+  }
+
+  async function loadPluginData() {
+    let loaded = null;
+    let usable = true;
+    try {
+      const text = await IOUtils.readUTF8(_pluginDataPath);
+      try {
+        loaded = JSON.parse(text);
+        if (!_isPlainObject(loaded)) throw new Error('top level is not an object');
+      } catch (parseError) {
+        loaded = null;
+        usable = await quarantineCorruptPluginData(parseError);
+      }
+    } catch (e) {
+      if (e?.name !== 'NotFoundError') {
+        usable = false;
+        reportError('Reading plugin data failed; plugin data will not be saved this session', e);
+      }
+    }
+
+    if (loaded) {
+      for (const [id, entry] of Object.entries(loaded)) {
+        if (PLUGIN_ID_RE.test(id) && _isPlainObject(entry)) _pluginData[id] = entry;
+      }
+    } else if (usable) {
+      // Migrate from old pref-based storage
+      try {
+        if (Services.prefs.getPrefType('uc.zenleap.plugins') === Services.prefs.PREF_STRING) {
+          const parsed = JSON.parse(Services.prefs.getStringPref('uc.zenleap.plugins'));
+          if (_isPlainObject(parsed)) {
+            for (const [id, entry] of Object.entries(parsed)) {
+              if (PLUGIN_ID_RE.test(id) && _isPlainObject(entry)) {
+                _pluginData[id] = entry;
+                markPluginDataDirty(id, '*');
+              }
+            }
+            Services.prefs.clearUserPref('uc.zenleap.plugins');
+            log('Migrated plugin data from prefs to file');
+          }
+        }
+      } catch (e) {
+        console.warn('[ZenLeap] Plugin pref migration failed:', e);
+      }
+    }
+
+    _pluginDataLoaded = usable;
+    // Changes other windows broadcast while we were reading are newer than the file
+    for (const changed of _pendingRemotePluginChanges.splice(0)) applyRemotePluginChanges(changed);
+  }
+
+  // Write the shared plugin state now: broadcast the changed entries to the other
+  // windows (synchronously, so any later write from any window includes them), then
+  // write the whole file atomically. IOUtils runs writes in order on one queue.
+  function flushPluginData() {
+    if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
+    if (!_pluginDataLoaded || _pluginDirty.size === 0) return _pluginSavePromise;
+    const changed = {};
+    for (const id of _pluginDirty.keys()) changed[id] = _pluginData[id] ? clonePluginValue(_pluginData[id]) : null;
+    _pluginDirty.clear();
+    const json = JSON.stringify(_pluginData);
+    try {
+      Services.obs.notifyObservers(null, PLUGIN_DATA_TOPIC, JSON.stringify({ sender: _windowUid, changed }));
+    } catch (e) { reportError('Broadcasting plugin data change failed', e); }
+    _pluginSavePromise = _pluginSavePromise
+      .then(() => IOUtils.writeUTF8(_pluginDataPath, json, { tmpPath: `${_pluginDataPath}.tmp` }))
+      .catch(e => reportError('Saving plugin data failed', e));
+    return _pluginSavePromise;
   }
 
   function savePluginData() {
     if (_pluginSaveTimer) return;
     _pluginSaveTimer = setTimeout(() => {
       _pluginSaveTimer = null;
-      _doWritePluginData();
+      flushPluginData();
     }, 500);
   }
 
-  function savePluginDataImmediate() {
-    if (_pluginSaveTimer) { clearTimeout(_pluginSaveTimer); _pluginSaveTimer = null; }
-    _doWritePluginData();
+  // Another window changed plugin data: adopt its entries, but keep the keys this
+  // window changed and has not flushed yet (they are newer).
+  function applyRemotePluginChanges(changed) {
+    for (const [id, remote] of Object.entries(changed || {})) {
+      if (!PLUGIN_ID_RE.test(id)) continue;
+      const localDirty = _pluginDirty.get(id);
+      if (remote === null || !_isPlainObject(remote)) {
+        if (!localDirty) delete _pluginData[id];
+      } else {
+        const merged = clonePluginValue(remote);
+        if (localDirty && _pluginData[id]) {
+          for (const path of localDirty) copyPluginDataPath(_pluginData[id], merged, path);
+        }
+        _pluginData[id] = merged;
+      }
+      reconcilePluginWithData(id);
+    }
   }
 
-  // Plugin data is saved eagerly during normal operation (debounced 500ms writes).
-  // We previously used a profileBeforeChange blocker for a final flush, but both
-  // setTimeout and IOUtils.writeJSON hang during that shutdown phase, causing the
-  // browser to freeze on quit (issue #48).  Removing the blocker entirely — the
-  // worst case is losing <500ms of unsaved plugin data on quit, which is acceptable.
-  //
-  // Flush synchronously in the window unload handler instead (see destroy()), which
-  // fires earlier in the shutdown sequence when I/O is still alive.
+  function _onPluginDataBroadcast(subject, topic, data) {
+    let msg;
+    try { msg = JSON.parse(data); } catch (e) { return; }
+    if (!msg || msg.sender === _windowUid) return;
+    if (!_pluginDataLoaded) { _pendingRemotePluginChanges.push(msg.changed); return; }
+    applyRemotePluginChanges(msg.changed);
+  }
 
-  function checkStorageQuota(pluginId) {
-    const data = _pluginData[pluginId]?.storage;
-    if (!data) return true;
+  // Keep this window's plugin registry in line with the shared enabled flags
+  // (another window enabled/disabled/uninstalled a plugin).
+  function reconcilePluginWithData(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry) return;
+    const data = _pluginData[pluginId];
+    if (!data) {
+      if (!entry.manifest.builtIn) unregisterPlugin(pluginId, { persist: false });
+      return;
+    }
+    const wantEnabled = isPluginEnabledInData(entry.manifest);
+    if (wantEnabled && !entry.enabled) enablePlugin(pluginId, { persist: false });
+    else if (!wantEnabled && entry.enabled) disablePlugin(pluginId, { persist: false });
+    else if (_pluginManagerMode) renderPluginManagerContent();
+  }
+
+  function isPluginEnabledInData(manifest) {
+    const data = _pluginData[manifest.id];
+    // Built-in plugins are on unless disabled; external ones only when explicitly enabled
+    return manifest.builtIn ? data?.enabled !== false : data?.enabled === true;
+  }
+
+  function checkStorageQuota(storage, pluginId) {
     try {
-      const size = JSON.stringify(data).length;
+      const size = JSON.stringify(storage).length;
       if (size > PLUGIN_STORAGE_QUOTA) {
         console.warn(`[ZenLeap] Plugin "${pluginId}" storage exceeds quota (${Math.round(size / 1024)}KB / ${PLUGIN_STORAGE_QUOTA / 1024}KB)`);
         return false;
@@ -3163,60 +3309,133 @@
     return true;
   }
 
+  // Scoped key/value store for a plugin field ('storage' or 'settings'). In private
+  // windows writes go to a per-window overlay that is never persisted.
+  function pluginStore(pluginId, field) {
+    const priv = isPrivateWindow();
+    const overlay = () => {
+      if (!_pluginPrivateOverlay.has(pluginId)) _pluginPrivateOverlay.set(pluginId, { storage: new Map(), settings: new Map() });
+      return _pluginPrivateOverlay.get(pluginId)[field];
+    };
+    const DELETED = Symbol.for('zenleap.plugin.deleted');
+    const persisted = () => _pluginData[pluginId]?.[field] || {};
+    const getAll = () => {
+      const all = { ...persisted() };
+      if (priv) {
+        for (const [k, v] of overlay()) {
+          if (v === DELETED) delete all[k]; else all[k] = v;
+        }
+      }
+      return all;
+    };
+    return {
+      has(key) { return Object.prototype.hasOwnProperty.call(getAll(), key); },
+      get(key) { return getAll()[key]; },
+      getAll,
+      set(key, value) {
+        const stored = clonePluginValue(value);
+        if (field === 'storage' && !checkStorageQuota({ ...getAll(), [key]: stored }, pluginId)) return false;
+        if (priv) { overlay().set(key, stored); return true; }
+        if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
+        if (!_isPlainObject(_pluginData[pluginId][field])) _pluginData[pluginId][field] = {};
+        _pluginData[pluginId][field][key] = stored;
+        markPluginDataDirty(pluginId, pluginPath(field, key));
+        return true;
+      },
+      remove(key) {
+        if (priv) { overlay().set(key, DELETED); return; }
+        if (_pluginData[pluginId]?.[field] && key in _pluginData[pluginId][field]) {
+          delete _pluginData[pluginId][field][key];
+          markPluginDataDirty(pluginId, pluginPath(field, key));
+        }
+      },
+      clear() {
+        if (priv) {
+          for (const k of Object.keys(getAll())) overlay().set(k, DELETED);
+          return;
+        }
+        if (!_pluginData[pluginId]) return;
+        _pluginData[pluginId][field] = {};
+        markPluginDataDirty(pluginId, field);
+      },
+    };
+  }
+
   // ── Scoped Plugin API Factory ──
   // Each plugin gets its own API instance with storage/events scoped to its ID
   function createScopedPluginAPI(pluginId) {
+    const liveTab = (tab) => (tab && !tab.closing && tab.isConnected) ? tab : null;
+    const allTabs = ({ allWorkspaces = false } = {}) => {
+      let tabs = null;
+      if (allWorkspaces) { try { tabs = window.gZenWorkspaces?.allStoredTabs; } catch (e) { tabs = null; } }
+      if (!tabs?.length) tabs = gBrowser.tabs;
+      return Array.from(tabs).filter(t => !t.hidden && !t.closing && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab'));
+    };
+    // Bulk close like Firefox's own "close other/left/right tabs": one undo batch, and the
+    // standard warning dialog when that many tabs could not all be restored.
+    const closeTabsWithWarning = (tabs, closingEnum) => {
+      const valid = tabs.filter(t => liveTab(t));
+      if (valid.length === 0) return 0;
+      if (!gBrowser.warnAboutClosingTabs(valid.length, closingEnum)) return 0;
+      gBrowser.removeTabs(valid);
+      return valid.length;
+    };
+    const workspaceIdOf = (wsOrId) => typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
+    const resolveTheme = () => themes[S['appearance.theme']] || themes.meridian;
+    const storage = pluginStore(pluginId, 'storage');
+    const ownSettings = pluginStore(pluginId, 'settings');
+
     return {
       // ─── Tab Operations ───
       tabs: {
         getCurrent: () => gBrowser.selectedTab,
-        getAll: () => Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing),
+        // Active workspace (+ essentials) by default; { allWorkspaces: true } for every workspace
+        getAll: (opts) => allTabs(opts),
         getVisible: () => getVisibleTabs(),
         getByIndex: (i) => {
           const tabs = getVisibleTabs();
           return (i >= 0 && i < tabs.length) ? tabs[i] : null;
         },
-        findByUrl: (pattern) => {
-          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+        findByUrl: (pattern, opts) => {
+          const tabs = allTabs(opts);
           if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.linkedBrowser?.currentURI?.spec || ''));
           return tabs.filter(t => (t.linkedBrowser?.currentURI?.spec || '').includes(pattern));
         },
-        findByTitle: (pattern) => {
-          const tabs = Array.from(gBrowser.tabs).filter(t => !t.hidden && !t.closing);
+        findByTitle: (pattern, opts) => {
+          const tabs = allTabs(opts);
           if (pattern instanceof RegExp) return tabs.filter(t => pattern.test(t.label || ''));
-          return tabs.filter(t => (t.label || '').toLowerCase().includes(pattern.toLowerCase()));
+          return tabs.filter(t => (t.label || '').toLowerCase().includes(String(pattern).toLowerCase()));
         },
-        select: (tab) => { if (tab) gBrowser.selectedTab = tab; },
-        close: (tab) => { if (tab) gBrowser.removeTab(tab); },
-        closeTabs: (tabs) => {
-          if (!tabs?.length) return;
-          try { gBrowser.removeTabs(tabs, { animate: true, suppressTabbedBrowserSessionStoreUpdate: false }); }
-          catch (e) { for (const t of tabs) { try { gBrowser.removeTab(t); } catch (_) {} } }
-        },
+        select: (tab) => { if (liveTab(tab)) return switchToTabAcrossWorkspaces(tab); return Promise.resolve(false); },
+        close: (tab) => { if (liveTab(tab)) gBrowser.removeTab(tab); },
+        closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), gBrowser.closingTabsEnum.MULTI_SELECTED),
         closeOthers: (keepTab) => {
           const keep = keepTab || gBrowser.selectedTab;
-          const tabs = getVisibleTabs().filter(t => t !== keep && !t.pinned);
-          for (const t of tabs) gBrowser.removeTab(t);
+          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned), gBrowser.closingTabsEnum.OTHER);
         },
         closeToRight: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
-          if (idx >= 0) for (let i = tabs.length - 1; i > idx; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_END);
         },
         closeToLeft: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || gBrowser.selectedTab);
-          if (idx >= 0) for (let i = idx - 1; i >= 0; i--) if (!tabs[i].pinned) gBrowser.removeTab(tabs[i]);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned), gBrowser.closingTabsEnum.TO_START);
         },
-        create: (url) => gBrowser.addTab(url || 'about:newtab', {
+        // User-intent tab creation: Zen's Space Routing rules apply unless { skipRoute: true }
+        create: (url, opts = {}) => gBrowser.addTab(url || 'about:newtab', {
           triggeringPrincipal: Services.scriptSecurityManager.createNullPrincipal({}),
+          skipRoute: !!opts.skipRoute,
         }),
-        duplicate: (tab) => gBrowser.duplicateTab(tab || gBrowser.selectedTab),
+        duplicate: (tab) => {
+          const t = tab || gBrowser.selectedTab;
+          return gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
+        },
         move: (tab, toIndex) => {
           const tabs = getVisibleTabs();
-          if (toIndex >= 0 && toIndex < tabs.length) {
-            const target = tabs[toIndex];
-            if (target) gBrowser.moveTabBefore(tab, target);
+          if (liveTab(tab) && toIndex >= 0 && toIndex < tabs.length && tabs[toIndex] !== tab) {
+            gBrowser.moveTabBefore(tab, tabs[toIndex]);
           }
         },
         pin: (tab) => gBrowser.pinTab(tab || gBrowser.selectedTab),
@@ -3227,14 +3446,8 @@
         toggleMute: (tab) => (tab || gBrowser.selectedTab).toggleMuteAudio(),
         isMuted: (tab) => (tab || gBrowser.selectedTab).hasAttribute('muted'),
         reload: (tab) => gBrowser.reloadTab(tab || gBrowser.selectedTab),
-        unload: (tab) => {
-          const t = tab || gBrowser.selectedTab;
-          if (t !== gBrowser.selectedTab) { gBrowser.discardBrowser(t); return; }
-          const others = Array.from(gBrowser.tabs).filter(x => x !== t && !x.hidden && !x.hasAttribute('pending'));
-          others.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
-          if (others[0]) gBrowser.selectedTab = others[0];
-          setTimeout(() => gBrowser.discardBrowser(t), 500);
-        },
+        // Firefox picks another tab to select first when unloading the selected one
+        unload: (tab) => gBrowser.explicitUnloadTabs([tab || gBrowser.selectedTab]),
         getUrl: (tab) => (tab || gBrowser.selectedTab).linkedBrowser?.currentURI?.spec || '',
         getTitle: (tab) => (tab || gBrowser.selectedTab).label || '',
         getLastAccessed: (tab) => getTabLastAccessed(tab || gBrowser.selectedTab),
@@ -3242,16 +3455,24 @@
         isLoading: (tab) => (tab || gBrowser.selectedTab).hasAttribute('busy'),
         isPending: (tab) => (tab || gBrowser.selectedTab).hasAttribute('pending'),
         isEssential: (tab) => (tab || gBrowser.selectedTab).hasAttribute('zen-essential'),
+        // Returns false when Zen refuses (essentials limit, container-specific essentials)
         addToEssentials: (tab) => {
-          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.addToEssentials(tab || gBrowser.selectedTab); }
-          catch (e) {}
+          const t = tab || gBrowser.selectedTab;
+          try {
+            if (!window.gZenPinnedTabManager?.canEssentialBeAdded(t)) return false;
+            return gZenPinnedTabManager.addToEssentials(t) !== false;
+          } catch (e) { reportError(`Plugin "${pluginId}": addToEssentials failed`, e); return false; }
         },
         removeFromEssentials: (tab) => {
-          try { if (window.gZenPinnedTabManager) gZenPinnedTabManager.removeEssentials(tab || gBrowser.selectedTab); }
-          catch (e) {}
+          try { window.gZenPinnedTabManager?.removeEssentials(tab || gBrowser.selectedTab); }
+          catch (e) { reportError(`Plugin "${pluginId}": removeFromEssentials failed`, e); }
         },
         bookmark: (tab) => {
-          try { PlacesCommandHook.bookmarkPage(); } catch (e) {}
+          try {
+            const t = tab || gBrowser.selectedTab;
+            if (t === gBrowser.selectedTab) PlacesCommandHook.bookmarkPage();
+            else PlacesCommandHook.bookmarkTabs([t]);
+          } catch (e) { reportError(`Plugin "${pluginId}": bookmark failed`, e); }
         },
       },
 
@@ -3272,86 +3493,82 @@
         getByName: (name) => {
           try {
             const all = window.gZenWorkspaces?.getWorkspaces() || [];
-            return all.find(ws => ws.name?.toLowerCase() === name.toLowerCase()) || null;
+            return all.find(ws => ws.name?.toLowerCase() === String(name).toLowerCase()) || null;
           } catch (e) { return null; }
         },
-        switchTo: (wsOrId) => {
-          try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id) window.gZenWorkspaces.changeWorkspaceWithID(id);
-          } catch (e) {}
+        switchTo: async (wsOrId) => {
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
+          await gZenWorkspaces.changeWorkspaceWithID(id);
+          return gZenWorkspaces.activeWorkspace === id;
         },
-        create: async (name) => {
+        // Returns the new workspace's data ({ uuid, name, ... }) or null.
+        // options: { icon, switchTo = false }
+        create: async (name, options = {}) => {
           try {
             if (!window.gZenWorkspaces) return null;
-            const ws = { name: name || 'New Workspace' };
-            await gZenWorkspaces.createAndSaveWorkspace(ws);
-            return ws;
-          } catch (e) { return null; }
+            return await gZenWorkspaces.createAndSaveWorkspace(
+              safePluginText(name, 'New Workspace', 100),
+              typeof options.icon === 'string' ? options.icon : undefined,
+              /* dontChange */ !options.switchTo,
+            ) || null;
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.create failed`, e); return null; }
         },
-        delete: async (wsOrId) => {
+        // Deletes the workspace AND closes all of its tabs, pinned tabs and folders
+        // (Zen >= 1.19.4b semantics). Resolves true when Zen confirms, false on timeout.
+        delete: async (wsOrId, { timeoutMs = 5000 } = {}) => {
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
           try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id && window.gZenWorkspaces) {
-              if (typeof gZenWorkspaces.removeWorkspace === 'function') await gZenWorkspaces.removeWorkspace(id);
-              else if (typeof gZenWorkspaces.deleteWorkspace === 'function') await gZenWorkspaces.deleteWorkspace(id);
-            }
-          } catch (e) {}
+            return await removeWorkspaceWithTimeout(id, timeoutMs);
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.delete failed`, e); return false; }
         },
         rename: async (wsOrId, newName) => {
           try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            const all = window.gZenWorkspaces?.getWorkspaces() || [];
-            const ws = all.find(w => w.uuid === id);
-            if (ws) { ws.name = newName; await gZenWorkspaces.saveWorkspace(ws); }
-          } catch (e) {}
+            const id = workspaceIdOf(wsOrId);
+            const ws = (window.gZenWorkspaces?.getWorkspaces() || []).find(w => w.uuid === id);
+            if (!ws) return false;
+            ws.name = safePluginText(newName, ws.name, 100);
+            await gZenWorkspaces.saveWorkspace(ws);
+            return true;
+          } catch (e) { reportError(`Plugin "${pluginId}": workspaces.rename failed`, e); return false; }
         },
         moveTabTo: (tab, wsOrId) => {
-          try {
-            const id = typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
-            if (id && window.gZenWorkspaces) gZenWorkspaces.moveTabToWorkspace(tab || gBrowser.selectedTab, id);
-          } catch (e) {}
+          const id = workspaceIdOf(wsOrId);
+          if (!id || !window.gZenWorkspaces) return false;
+          return moveTabsToWorkspaceOrdered([tab || gBrowser.selectedTab], id) > 0;
         },
       },
 
       // ─── Folder Operations ───
       folders: {
         getAll: () => {
-          try {
-            return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder'));
-          } catch (e) { return []; }
+          try { return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')); } catch (e) { return []; }
         },
         getByName: (name) => {
           try {
-            const folders = gBrowser.tabContainer.querySelectorAll('zen-folder');
-            for (const f of folders) {
-              if ((f.label || f.getAttribute('zen-folder-name') || '').toLowerCase() === name.toLowerCase()) return f;
-            }
-          } catch (e) {}
-          return null;
+            const wanted = String(name).toLowerCase();
+            return Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).find(f => (f.label || '').toLowerCase() === wanted) || null;
+          } catch (e) { return null; }
         },
         create: (tabs, name) => {
           try {
             if (!window.gZenFolders) return null;
-            const validTabs = (tabs || [gBrowser.selectedTab]).filter(t => t && !t.closing && t.parentNode);
+            const validTabs = (tabs || [gBrowser.selectedTab]).filter(t => liveTab(t));
             if (validTabs.length === 0) return null;
-            gZenFolders.createFolder(validTabs, { label: name || 'New Folder', renameFolder: !name });
-            return true;
-          } catch (e) { return null; }
+            return gZenFolders.createFolder(validTabs, { label: safePluginText(name, 'New Folder', 100), renameFolder: !name });
+          } catch (e) { reportError(`Plugin "${pluginId}": folders.create failed`, e); return null; }
         },
-        delete: (folder) => {
-          try {
-            if (typeof folder.delete === 'function') folder.delete();
-            else if (typeof gBrowser.removeTabGroup === 'function') gBrowser.removeTabGroup(folder, { isUserTriggered: true });
-          } catch (e) {}
+        // Deletes the folder and closes its tabs (restorable from recently closed)
+        delete: async (folder) => {
+          try { if (folder?.isZenFolder) { await folder.delete(); return true; } }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.delete failed`, e); }
+          return false;
         },
         rename: (folder, newName) => {
-          try {
-            if (folder && newName) {
-              folder.label = newName;
-              folder.setAttribute('zen-folder-name', newName);
-            }
-          } catch (e) {}
+          if (!folder?.isZenFolder || !newName) return false;
+          folder.name = safePluginText(newName, folder.label, 100); // fires ZenFolderRenamed
+          return true;
         },
         getTabs: (folder) => {
           try { return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || []; }
@@ -3359,26 +3576,23 @@
         },
         addTab: (folder, tab) => {
           try {
-            if (folder && tab && window.gZenFolders) {
-              if (gZenFolders.canDropElement && !gZenFolders.canDropElement(folder, tab)) return false;
-              gBrowser.moveTabAfter(tab, folder.tabs?.[folder.tabs.length - 1] || tab);
-              return true;
-            }
-          } catch (e) {}
-          return false;
+            if (!folder?.isZenFolder || !liveTab(tab)) return false;
+            if (!window.gZenFolders?.canDropElement(folder, tab)) return false;
+            folder.addTabs([tab]);
+            return true;
+          } catch (e) { reportError(`Plugin "${pluginId}": folders.addTab failed`, e); return false; }
         },
         removeTab: (tab) => {
-          try {
-            if (tab && window.gZenFolders) gZenFolders.ungroupTabsFromActiveGroups([tab]);
-          } catch (e) {}
+          try { if (liveTab(tab) && tab.group) gBrowser.ungroupTab(tab); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.removeTab failed`, e); }
         },
         setIcon: (folder) => {
-          try { if (folder && window.gZenFolders) gZenFolders.changeFolderUserIcon(folder); }
-          catch (e) {}
+          try { if (folder?.isZenFolder) gZenFolders.changeFolderUserIcon(folder); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.setIcon failed`, e); }
         },
         createSubfolder: (folder) => {
-          try { if (folder && window.gZenFolders) gZenFolders.createSubfolder(folder); }
-          catch (e) {}
+          try { if (folder?.isZenFolder) folder.createSubfolder(); }
+          catch (e) { reportError(`Plugin "${pluginId}": folders.createSubfolder failed`, e); }
         },
       },
 
@@ -3393,12 +3607,12 @@
               gZenViewSplitter.splitTabs(tabs.slice(0, 4));
               return true;
             }
-          } catch (e) {}
+          } catch (e) { reportError(`Plugin "${pluginId}": splitView.split failed`, e); }
           return false;
         },
         unsplit: () => {
           try { if (window.gZenViewSplitter?.splitViewActive) gZenViewSplitter.unsplitCurrentView(); }
-          catch (e) {}
+          catch (e) { reportError(`Plugin "${pluginId}": splitView.unsplit failed`, e); }
         },
         getLayout: () => {
           try {
@@ -3408,7 +3622,7 @@
           } catch (e) { return null; }
         },
         rotate: () => {
-          try { rotateSplitLayout(); } catch (e) {}
+          try { rotateSplitLayout(); } catch (e) { reportError(`Plugin "${pluginId}": splitView.rotate failed`, e); }
         },
       },
 
@@ -3438,22 +3652,18 @@
           // Register dynamic commands for this plugin
           const entry = _pluginRegistry.get(pluginId);
           if (!entry) return;
-          if (!entry._dynamicCommands) entry._dynamicCommands = [];
-          const toAdd = Array.isArray(cmds) ? cmds : [cmds];
-          for (const cmd of toAdd) {
-            entry._dynamicCommands.push(cmd);
-          }
+          const toAdd = (Array.isArray(cmds) ? cmds : [cmds]).map(c => sanitizePluginCommand(c, pluginId)).filter(Boolean);
+          entry._dynamicCommands.push(...toAdd);
           invalidateCommandCache();
         },
         unregister: (cmdKey) => {
           const entry = _pluginRegistry.get(pluginId);
-          if (!entry?._dynamicCommands) return;
+          if (!entry) return;
           entry._dynamicCommands = entry._dynamicCommands.filter(c => c.key !== cmdKey);
           invalidateCommandCache();
         },
         execute: (cmdKey) => {
-          const all = getAllCommands();
-          const cmd = all.find(c => c.key === cmdKey);
+          const cmd = getAllCommands().find(c => c.key === cmdKey);
           if (cmd) executeCommand(cmd);
         },
         getAll: () => getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon })),
@@ -3461,14 +3671,17 @@
 
       // ─── Browser ───
       browser: {
-        openUrl: (url, options) => {
+        // User-intent navigation: Zen's Space Routing applies unless { skipRoute: true }
+        openUrl: (url, options = {}) => {
           const principal = Services.scriptSecurityManager.createNullPrincipal({});
-          if (options?.newTab !== false) {
-            return gBrowser.addTab(url, { triggeringPrincipal: principal });
+          if (options.newTab !== false) {
+            return gBrowser.addTab(url, { triggeringPrincipal: principal, skipRoute: !!options.skipRoute });
           }
           gBrowser.selectedBrowser.loadURI(Services.io.newURI(url), { triggeringPrincipal: principal });
+          return gBrowser.selectedTab;
         },
         getCurrentUrl: () => gBrowser.selectedBrowser?.currentURI?.spec || '',
+        isPrivate: () => isPrivateWindow(),
         goBack: () => { try { gBrowser.selectedBrowser.goBack(); } catch (e) {} },
         goForward: () => { try { gBrowser.selectedBrowser.goForward(); } catch (e) {} },
         reload: () => { try { gBrowser.reloadTab(gBrowser.selectedTab); } catch (e) {} },
@@ -3480,15 +3693,20 @@
         copyToClipboard: (text) => {
           try {
             const cb = Cc['@mozilla.org/widget/clipboardhelper;1'].getService(Ci.nsIClipboardHelper);
-            cb.copyString(text);
-          } catch (e) {}
+            cb.copyString(String(text));
+          } catch (e) { reportError(`Plugin "${pluginId}": copyToClipboard failed`, e); }
         },
         toggleFullscreen: () => { try { BrowserCommands.fullScreen(); } catch (e) {} },
-        getSelectedText: () => {
+        // Async (content lives in another process). Returns the selection in the focused
+        // chrome input (e.g. the URL bar) if any, otherwise the page selection.
+        getSelectedText: async () => {
           try {
-            const focusedWindow = document.commandDispatcher.focusedWindow;
-            const sel = focusedWindow?.getSelection();
-            return sel ? sel.toString() : '';
+            const focused = document.commandDispatcher.focusedElement;
+            if (focused && typeof focused.selectionStart === 'number' && focused.selectionEnd > focused.selectionStart) {
+              return focused.value.slice(focused.selectionStart, focused.selectionEnd);
+            }
+            const result = await gBrowser.selectedBrowser.finder.getInitialSelection();
+            return result?.selectedText || '';
           } catch (e) { return ''; }
         },
         getPageTitle: () => {
@@ -3517,52 +3735,34 @@
 
       // ─── UI ───
       ui: {
-        showToast: (message, duration) => _pluginShowToast(message, duration),
+        showToast: (message, duration) => showZenLeapToast(message, duration),
         showModal: (title, content) => _pluginShowStatsModal(title, content),
         showConfirm: (title, message) => _pluginShowConfirm(title, message),
-        showPrompt: (title, placeholder, defaultValue) => _pluginShowPrompt(title, placeholder, defaultValue),
+        showPrompt: (title, placeholder, defaultValue, options) => _pluginShowPrompt(title, placeholder, defaultValue, options),
         log: (msg) => { if (CONFIG.debug) console.log(`[ZenLeap:${pluginId}] ${msg}`); },
-        getAccentColor: () => S['appearance.accentColor'],
-        getThemeColors: () => ({
-          accent: S['appearance.accentColor'],
-          currentTabBg: S['appearance.currentTabBg'],
-          currentTabColor: S['appearance.currentTabColor'],
-          badgeBg: S['appearance.badgeBg'],
-          badgeColor: S['appearance.badgeColor'],
-          markColor: S['appearance.markColor'],
-          highlightBorder: S['appearance.highlightBorder'],
-          selectedBorder: S['appearance.selectedBorder'],
-        }),
+        getAccentColor: () => resolveTheme().accent,
+        getThemeColors: () => {
+          const t = resolveTheme();
+          return {
+            accent: t.accent, accentBright: t.accentBright,
+            currentTabBg: t.currentBadgeBg, currentTabColor: t.currentBadgeColor,
+            badgeBg: t.badgeBg, badgeColor: t.badgeColor,
+            markColor: t.mark, highlightBorder: t.highlight, selectedBorder: t.selected,
+            background: t.bgBase, surface: t.bgSurface, text: t.textPrimary, textSecondary: t.textSecondary,
+            border: t.borderDefault, success: t.green, error: t.red, warning: t.gold,
+          };
+        },
       },
 
       // ─── Scoped Storage ───
       storage: {
-        get: (key, defaultValue) => {
-          const pd = _pluginData[pluginId];
-          return pd?.storage?.[key] ?? defaultValue;
-        },
+        get: (key, defaultValue) => storage.get(key) ?? defaultValue,
         set: (key, value) => {
-          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
-          if (!_pluginData[pluginId].storage) _pluginData[pluginId].storage = {};
-          _pluginData[pluginId].storage[key] = value;
-          if (!checkStorageQuota(pluginId)) {
-            delete _pluginData[pluginId].storage[key];
-            log(`Plugin "${pluginId}" storage.set rejected: quota exceeded`);
-            return;
-          }
-          savePluginData();
+          if (!storage.set(key, value)) log(`Plugin "${pluginId}" storage.set rejected: quota exceeded`);
         },
-        remove: (key) => {
-          if (_pluginData[pluginId]?.storage) {
-            delete _pluginData[pluginId].storage[key];
-            savePluginData();
-          }
-        },
-        getAll: () => _pluginData[pluginId]?.storage ? { ..._pluginData[pluginId].storage } : {},
-        clear: () => {
-          if (_pluginData[pluginId]) _pluginData[pluginId].storage = {};
-          savePluginData();
-        },
+        remove: (key) => storage.remove(key),
+        getAll: () => storage.getAll(),
+        clear: () => storage.clear(),
       },
 
       // ─── Scoped Events ───
@@ -3574,39 +3774,25 @@
 
       // ─── Plugin Settings (plugin's own settings from manifest) ───
       settings: {
-        get: (key) => S[key], // Read ZenLeap settings (read-only)
+        get: (key) => cloneSettingValue(S[key]), // Read ZenLeap settings (read-only)
         getOwn: (key, defaultValue) => {
-          const pd = _pluginData[pluginId];
-          if (pd?.settings?.[key] !== undefined) return pd.settings[key];
+          if (ownSettings.has(key)) return ownSettings.get(key);
           // Fall back to manifest default
-          const entry = _pluginRegistry.get(pluginId);
-          const schema = entry?.manifest?.settings?.[key];
+          const schema = _pluginRegistry.get(pluginId)?.manifest?.settings?.[key];
           return schema?.default ?? defaultValue;
         },
         setOwn: (key, value) => {
-          if (!_pluginData[pluginId]) _pluginData[pluginId] = {};
-          if (!_pluginData[pluginId].settings) _pluginData[pluginId].settings = {};
-          _pluginData[pluginId].settings[key] = value;
-          savePluginData();
+          ownSettings.set(key, value);
           _pluginEventBus.emit('plugin:settingChanged', { pluginId, key, value });
         },
-        getOwnSchema: () => {
-          const entry = _pluginRegistry.get(pluginId);
-          return entry?.manifest?.settings || {};
-        },
+        getOwnSchema: () => _pluginRegistry.get(pluginId)?.manifest?.settings || {},
       },
 
-      // ─── File I/O (sandboxed to plugin data directory) ───
+      // ─── File I/O (convenience helpers rooted at the plugin's data directory) ───
+      // Not a security boundary: plugins run with full chrome privileges anyway.
       fs: (() => {
         const pluginDataDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins', pluginId, 'data');
-        const resolvePath = (rel) => {
-          const resolved = PathUtils.join(pluginDataDir, rel);
-          // Prevent path traversal: resolved path must start with pluginDataDir
-          if (!resolved.startsWith(pluginDataDir)) {
-            throw new Error('Path traversal not allowed');
-          }
-          return resolved;
-        };
+        const resolvePath = (rel) => PathUtils.join(pluginDataDir, ...(rel ? [rel] : [])); // PathUtils rejects '..' and absolute segments
         return {
           readText: async (rel) => {
             try { return await IOUtils.readUTF8(resolvePath(rel)); } catch (e) { return null; }
@@ -3615,7 +3801,7 @@
             try {
               const p = resolvePath(rel);
               await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
-              await IOUtils.writeUTF8(p, content);
+              await IOUtils.writeUTF8(p, content, { tmpPath: `${p}.tmp` });
               return true;
             } catch (e) { return false; }
           },
@@ -3626,7 +3812,7 @@
             try {
               const p = resolvePath(rel);
               await IOUtils.makeDirectory(PathUtils.parent(p), { ignoreExisting: true });
-              await IOUtils.writeUTF8(p, JSON.stringify(data));
+              await IOUtils.writeUTF8(p, JSON.stringify(data), { tmpPath: `${p}.tmp` });
               return true;
             } catch (e) { return false; }
           },
@@ -3638,8 +3824,8 @@
           },
           listDir: async (rel) => {
             try {
-              const abs = await IOUtils.getChildren(resolvePath(rel || '.'));
-              return abs.map(p => p.split('/').pop().split('\\').pop());
+              const abs = await IOUtils.getChildren(resolvePath(rel));
+              return abs.map(p => PathUtils.filename(p));
             } catch (e) { return []; }
           },
           remove: async (rel) => {
@@ -3655,347 +3841,477 @@
     };
   }
 
-  // ── Plugin Toast ──
-  let _pluginToastTimer = null;
-  function _pluginShowToast(message, duration = 3000) {
-    let toast = document.getElementById('zenleap-plugin-toast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'zenleap-plugin-toast';
-      document.documentElement.appendChild(toast);
-    }
-    toast.textContent = message;
-    toast.style.cssText = `
-      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-      background: rgba(30, 30, 35, 0.95); color: #e0e0e0; padding: 10px 20px;
-      border-radius: 8px; font-size: 13px; z-index: 100010;
-      border: 1px solid rgba(97, 175, 239, 0.3);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-      animation: zenleap-toast-in 0.2s ease-out;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-    toast.style.display = 'block';
-    clearTimeout(_pluginToastTimer);
-    _pluginToastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+  // ── Dialog stack (plugin dialogs, settings import) ──
+  // Keys for ZenLeap's small modal dialogs are routed here BEFORE the main keydown
+  // handler: this listener is registered at script load, i.e. before init() registers
+  // handleKeyDown, and consumes the keys it handles, so Escape/Enter act on the top
+  // dialog only (not also on the view underneath). It also gives the Plugin Manager
+  // keyboard navigation.
+  const _dialogStack = []; // [{ el, onKey(event) -> handled }]
+
+  function pushDialog(el, onKey) {
+    const dialog = { el, onKey };
+    _dialogStack.push(dialog);
+    return () => {
+      const i = _dialogStack.indexOf(dialog);
+      if (i >= 0) _dialogStack.splice(i, 1);
+    };
   }
 
-  // ── Confirm Dialog ──
+  function _routeDialogKeys(event) {
+    while (_dialogStack.length && !_dialogStack[_dialogStack.length - 1].el.isConnected) _dialogStack.pop();
+    // A ZenLeap view opened on top of a dialog (palette, settings, ...) gets the keys
+    if (searchMode || settingsMode || helpMode || reorgMode || gtileMode || updateMode || leapMode || folderDeleteMode) return;
+    const top = _dialogStack[_dialogStack.length - 1];
+    let handled = false;
+    try {
+      if (top) handled = !!top.onKey(event);
+      else if (_pluginManagerMode) handled = handlePluginManagerKey(event);
+    } catch (e) { reportError('Dialog key handling failed', e); }
+    if (handled) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }
+
+  window.addEventListener('keydown', _routeDialogKeys, true);
+  window.addEventListener('unload', () => window.removeEventListener('keydown', _routeDialogKeys, true), { once: true });
+
+  // ── Plugin dialog styles (themed; injected once) ──
+  function ensurePluginUiStyles() {
+    if (document.getElementById('zenleap-plugin-ui-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'zenleap-plugin-ui-styles';
+    style.textContent = `
+      @keyframes zenleap-pm-appear {
+        from { opacity: 0; transform: scale(0.97) translateY(-6px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+      .zenleap-plugin-dialog {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        z-index: 100010; display: flex; justify-content: center; align-items: center; padding: 20px;
+        box-sizing: border-box;
+      }
+      .zenleap-plugin-dialog-backdrop {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        background: var(--zl-backdrop); backdrop-filter: var(--zl-blur);
+      }
+      .zenleap-plugin-dialog-card {
+        position: relative; width: 90%; max-width: 420px; max-height: 70vh;
+        background: var(--zl-bg-surface); border-radius: var(--zl-r-lg);
+        box-shadow: var(--zl-shadow-modal); display: flex; flex-direction: column; overflow: hidden;
+        font-family: var(--zl-font-ui); animation: zenleap-pm-appear 0.2s ease-out;
+      }
+      .zenleap-plugin-dialog-card.wide { max-width: 520px; }
+      .zenleap-plugin-dialog-header {
+        padding: 18px 22px 12px; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      }
+      .zenleap-plugin-dialog-card.wide .zenleap-plugin-dialog-header { border-bottom: 1px solid var(--zl-border-subtle); }
+      .zenleap-plugin-dialog-title { margin: 0; font-size: 16px; font-weight: 700; color: var(--zl-accent); }
+      .zenleap-plugin-dialog-message { margin: 0 22px 18px; font-size: 13px; color: var(--zl-text-secondary); line-height: 1.5; white-space: pre-wrap; }
+      .zenleap-plugin-dialog-body {
+        padding: 16px 22px; overflow-y: auto; flex: 1; font-size: 13px; color: var(--zl-text-secondary);
+        white-space: pre-wrap; font-family: var(--zl-font-mono); line-height: 1.6;
+        scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent;
+      }
+      .zenleap-plugin-dialog-input {
+        margin: 0 22px 18px; padding: 10px 14px; box-sizing: border-box; width: calc(100% - 44px);
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong);
+        border-radius: var(--zl-r-sm); color: var(--zl-text-primary); font-size: 14px; outline: none; font-family: inherit;
+      }
+      .zenleap-plugin-dialog-input:focus { border-color: var(--zl-accent); }
+      .zenleap-plugin-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 22px 18px; }
+      .zenleap-plugin-dialog-footer {
+        padding: 10px 22px; border-top: 1px solid var(--zl-border-subtle); text-align: center;
+        font-size: 11px; color: var(--zl-text-muted);
+      }
+      .zenleap-plugin-btn {
+        padding: 6px 16px; border-radius: var(--zl-r-sm); cursor: pointer; font-size: 13px; font-family: inherit;
+        background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong); color: var(--zl-text-secondary);
+      }
+      .zenleap-plugin-btn:hover, .zenleap-plugin-btn:focus-visible { border-color: var(--zl-accent-border); color: var(--zl-text-primary); }
+      .zenleap-plugin-btn.primary { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); color: var(--zl-accent-bright); font-weight: 600; }
+      .zenleap-plugin-btn.icon { background: none; border: none; color: var(--zl-text-muted); font-size: 16px; padding: 4px 8px; }
+      .zenleap-plugin-btn.icon:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function buildPluginDialog({ title, wide = false }) {
+    ensurePluginUiStyles();
+    const modal = document.createElement('div');
+    modal.className = 'zenleap-plugin-dialog';
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zenleap-plugin-dialog-backdrop';
+    const card = document.createElement('div');
+    card.className = `zenleap-plugin-dialog-card${wide ? ' wide' : ''}`;
+    const header = document.createElement('div');
+    header.className = 'zenleap-plugin-dialog-header';
+    const h = document.createElement('h3');
+    h.className = 'zenleap-plugin-dialog-title';
+    h.textContent = String(title ?? '');
+    header.appendChild(h);
+    card.appendChild(header);
+    modal.appendChild(backdrop);
+    modal.appendChild(card);
+    return { modal, backdrop, card, header };
+  }
+
+  function makePluginButton(label, className = '') {
+    const btn = document.createElement('button');
+    btn.className = `zenleap-plugin-btn ${className}`.trim();
+    btn.textContent = label;
+    return btn;
+  }
+
+  // ── Confirm Dialog ── (Enter = confirm, Escape = cancel)
   function _pluginShowConfirm(title, message) {
     return new Promise((resolve) => {
-      const modal = document.createElement('div');
-      modal.style.cssText = `
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        z-index: 100010; display: flex; justify-content: center; align-items: center;
-      `;
-      const backdrop = document.createElement('div');
-      backdrop.style.cssText = `
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
-      `;
-      const card = document.createElement('div');
-      card.style.cssText = `
-        position: relative; width: 90%; max-width: 400px;
-        background: rgba(25,25,30,0.98); border-radius: 14px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      const h = document.createElement('h3');
-      h.textContent = title;
-      h.style.cssText = 'margin: 0 0 12px; font-size: 16px; color: #61afef;';
+      const { modal, backdrop, card } = buildPluginDialog({ title });
       const p = document.createElement('p');
-      p.textContent = message;
-      p.style.cssText = 'margin: 0 0 20px; font-size: 13px; color: #ccc; line-height: 1.5;';
+      p.className = 'zenleap-plugin-dialog-message';
+      p.textContent = String(message ?? '');
       const btns = document.createElement('div');
-      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
-      const cancel = document.createElement('button');
-      cancel.textContent = 'Cancel';
-      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
-      const confirm = document.createElement('button');
-      confirm.textContent = 'Confirm';
-      confirm.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
-      const close = (result) => { modal.remove(); window.removeEventListener('keydown', esc, true); resolve(result); };
-      const esc = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); } };
-      window.addEventListener('keydown', esc, true);
+      btns.className = 'zenleap-plugin-dialog-actions';
+      const cancel = makePluginButton('Cancel');
+      const confirm = makePluginButton('Confirm', 'primary');
+      let popDialog = null;
+      const close = (result) => { popDialog?.(); modal.remove(); resolve(result); };
       backdrop.addEventListener('click', () => close(false));
       cancel.addEventListener('click', () => close(false));
       confirm.addEventListener('click', () => close(true));
       btns.appendChild(cancel);
       btns.appendChild(confirm);
-      card.appendChild(h);
       card.appendChild(p);
       card.appendChild(btns);
-      modal.appendChild(backdrop);
-      modal.appendChild(card);
       document.documentElement.appendChild(modal);
+      popDialog = pushDialog(modal, (e) => {
+        if (e.key === 'Escape') { close(false); return true; }
+        if (e.key === 'Enter') { close(document.activeElement !== cancel); return true; }
+        return false;
+      });
     });
   }
 
-  // ── Prompt Dialog ──
-  function _pluginShowPrompt(title, placeholder, defaultValue) {
+  // ── Prompt Dialog ── (Enter = OK, Escape = cancel; options.password masks the input)
+  function _pluginShowPrompt(title, placeholder, defaultValue, options = {}) {
     return new Promise((resolve) => {
-      const modal = document.createElement('div');
-      modal.style.cssText = `
-        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-        z-index: 100010; display: flex; justify-content: center; align-items: center;
-      `;
-      const backdrop = document.createElement('div');
-      backdrop.style.cssText = `
-        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
-      `;
-      const card = document.createElement('div');
-      card.style.cssText = `
-        position: relative; width: 90%; max-width: 420px;
-        background: rgba(25,25,30,0.98); border-radius: 14px;
-        box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-        padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
-      const h = document.createElement('h3');
-      h.textContent = title;
-      h.style.cssText = 'margin: 0 0 16px; font-size: 16px; color: #61afef;';
+      const { modal, backdrop, card } = buildPluginDialog({ title });
       const input = document.createElement('input');
-      input.type = 'text';
+      input.type = options?.password ? 'password' : 'text';
+      input.className = 'zenleap-plugin-dialog-input';
       input.value = defaultValue || '';
       input.placeholder = placeholder || '';
-      input.style.cssText = `
-        width: 100%; box-sizing: border-box; padding: 10px 14px; margin-bottom: 20px;
-        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
-        border-radius: 8px; color: #e0e0e0; font-size: 14px; outline: none;
-        font-family: inherit;
-      `;
-      input.addEventListener('focus', () => { input.style.borderColor = '#61afef'; });
-      input.addEventListener('blur', () => { input.style.borderColor = 'rgba(255,255,255,0.12)'; });
       const btns = document.createElement('div');
-      btns.style.cssText = 'display: flex; justify-content: flex-end; gap: 8px;';
-      const cancel = document.createElement('button');
-      cancel.textContent = 'Cancel';
-      cancel.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #aaa; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-family: inherit;';
-      const ok = document.createElement('button');
-      ok.textContent = 'OK';
-      ok.style.cssText = 'background: rgba(97,175,239,0.2); border: 1px solid rgba(97,175,239,0.4); color: #61afef; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; font-family: inherit;';
-      const close = (val) => { modal.remove(); window.removeEventListener('keydown', keyHandler, true); resolve(val); };
-      const keyHandler = (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
-        if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); close(input.value); }
-      };
-      window.addEventListener('keydown', keyHandler, true);
+      btns.className = 'zenleap-plugin-dialog-actions';
+      const cancel = makePluginButton('Cancel');
+      const ok = makePluginButton('OK', 'primary');
+      let popDialog = null;
+      const close = (val) => { popDialog?.(); modal.remove(); resolve(val); };
       backdrop.addEventListener('click', () => close(null));
       cancel.addEventListener('click', () => close(null));
       ok.addEventListener('click', () => close(input.value));
       btns.appendChild(cancel);
       btns.appendChild(ok);
-      card.appendChild(h);
       card.appendChild(input);
       card.appendChild(btns);
-      modal.appendChild(backdrop);
-      modal.appendChild(card);
       document.documentElement.appendChild(modal);
+      popDialog = pushDialog(modal, (e) => {
+        if (e.key === 'Escape') { close(null); return true; }
+        if (e.key === 'Enter') { close(document.activeElement === cancel ? null : input.value); return true; }
+        return false;
+      });
       setTimeout(() => input.focus(), 50);
     });
   }
 
   // ── Stats/Content Modal (shared) ──
   function _pluginShowStatsModal(title, content) {
-    const existing = document.getElementById('zenleap-plugin-stats-modal');
-    if (existing) existing.remove();
+    document.getElementById('zenleap-plugin-stats-modal')?.remove(); // its dialog-stack entry is dropped once disconnected
 
-    const modal = document.createElement('div');
+    const { modal, backdrop, card, header } = buildPluginDialog({ title, wide: true });
     modal.id = 'zenleap-plugin-stats-modal';
-    modal.style.cssText = `
-      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-      z-index: 100010; display: flex; justify-content: center; align-items: center; padding: 20px;
-    `;
-    const handler = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); } };
-    const closeModal = () => { modal.remove(); window.removeEventListener('keydown', handler, true); };
-
-    const backdrop = document.createElement('div');
-    backdrop.style.cssText = `position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);`;
+    let popDialog = null;
+    const closeModal = () => { popDialog?.(); modal.remove(); };
     backdrop.addEventListener('click', closeModal);
-
-    const card = document.createElement('div');
-    card.style.cssText = `
-      position: relative; width: 90%; max-width: 520px; max-height: 70vh;
-      background: rgba(25,25,30,0.98); border-radius: 14px;
-      box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1);
-      overflow: hidden; display: flex; flex-direction: column;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    `;
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'padding: 18px 22px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center;';
-    const h2 = document.createElement('h2');
-    h2.textContent = title;
-    h2.style.cssText = 'margin: 0; font-size: 18px; font-weight: 700; color: #61afef;';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '\u2715';
-    closeBtn.style.cssText = 'background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 4px 8px; border-radius: 4px;';
+    const closeBtn = makePluginButton('✕', 'icon');
     closeBtn.addEventListener('click', closeModal);
-    hdr.appendChild(h2);
-    hdr.appendChild(closeBtn);
+    header.appendChild(closeBtn);
     const body = document.createElement('div');
-    body.style.cssText = `padding: 18px 22px; overflow-y: auto; flex: 1; font-size: 13px; color: #ccc; white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; line-height: 1.6;`;
-    body.textContent = content;
+    body.className = 'zenleap-plugin-dialog-body';
+    body.textContent = String(content ?? '');
     const ftr = document.createElement('div');
-    ftr.style.cssText = 'padding: 12px 22px; border-top: 1px solid rgba(255,255,255,0.08); text-align: center; font-size: 11px; color: #555;';
-    ftr.textContent = 'Press Escape or click outside to close';
-    card.appendChild(hdr);
+    ftr.className = 'zenleap-plugin-dialog-footer';
+    ftr.textContent = 'Press Escape or click outside to close · j/k to scroll';
     card.appendChild(body);
     card.appendChild(ftr);
-    modal.appendChild(backdrop);
-    modal.appendChild(card);
-    window.addEventListener('keydown', handler, true);
     document.documentElement.appendChild(modal);
+    popDialog = pushDialog(modal, (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') { closeModal(); return true; }
+      if (e.key === 'j' || e.key === 'ArrowDown') { body.scrollBy({ top: 60 }); return true; }
+      if (e.key === 'k' || e.key === 'ArrowUp') { body.scrollBy({ top: -60 }); return true; }
+      return false;
+    });
   }
 
   // ── Plugin Lifecycle ──
-  function registerPlugin(manifest) {
-    if (!manifest?.id || !manifest?.name) { log('Plugin registration failed: missing id or name'); return false; }
-    if (!/^[a-zA-Z0-9_-]+$/.test(manifest.id)) { log(`Plugin registration failed: invalid id "${manifest.id}"`); return false; }
-    if (_pluginRegistry.has(manifest.id)) { log(`Plugin "${manifest.id}" already registered`); return false; }
 
-    // Validate commands array if present
-    if (manifest.commands && Array.isArray(manifest.commands)) {
-      manifest.commands = manifest.commands.filter(cmd => {
-        if (!cmd.key || typeof cmd.key !== 'string') { log(`Plugin "${manifest.id}": skipping command with missing key`); return false; }
-        if (cmd.tags && !Array.isArray(cmd.tags)) cmd.tags = [];
-        return true;
-      });
-    } else if (manifest.commands) {
-      manifest.commands = [];
+  // Validate one command from a manifest or api.commands.register(); returns null if unusable.
+  function sanitizePluginCommand(cmd, pluginId) {
+    if (!_isPlainObject(cmd) || typeof cmd.key !== 'string' || !PLUGIN_COMMAND_KEY_RE.test(cmd.key)) {
+      console.warn(`[ZenLeap] Plugin "${pluginId}": skipping command with a missing/invalid key`, cmd?.key);
+      return null;
+    }
+    return {
+      ...cmd,
+      label: safePluginText(cmd.label, cmd.key, 120),
+      icon: cmd.icon === undefined ? undefined : safeIconText(cmd.icon, '🧩'),
+      tags: Array.isArray(cmd.tags) ? cmd.tags.filter(t => typeof t === 'string').map(t => t.slice(0, 40)) : [],
+      condition: typeof cmd.condition === 'function' ? cmd.condition : undefined,
+      command: typeof cmd.command === 'function' ? cmd.command : undefined,
+      subFlow: typeof cmd.subFlow === 'string' ? cmd.subFlow : undefined,
+    };
+  }
+
+  // Validate a manifest before any plugin code runs; returns a normalized copy or null.
+  function validatePluginManifest(raw, source) {
+    if (!_isPlainObject(raw)) { console.warn(`[ZenLeap] Skipping plugin at ${source}: manifest is not an object`); return null; }
+    if (typeof raw.id !== 'string' || !PLUGIN_ID_RE.test(raw.id)) { console.warn(`[ZenLeap] Skipping plugin at ${source}: invalid id`, raw.id); return null; }
+    if (typeof raw.name !== 'string' || !raw.name.trim()) { console.warn(`[ZenLeap] Skipping plugin "${raw.id}": missing name`); return null; }
+    if (raw.minZenLeapVersion !== undefined) {
+      const cmp = compareVersions(VERSION, raw.minZenLeapVersion);
+      if (Number.isNaN(cmp)) { console.warn(`[ZenLeap] Skipping plugin "${raw.id}": unreadable minZenLeapVersion`, raw.minZenLeapVersion); return null; }
+      if (cmp < 0) { console.warn(`[ZenLeap] Skipping plugin "${raw.name}": requires ZenLeap v${raw.minZenLeapVersion}+`); return null; }
+    }
+    const settings = {};
+    if (_isPlainObject(raw.settings)) {
+      for (const [key, schema] of Object.entries(raw.settings)) {
+        if (!_isPlainObject(schema) || !['toggle', 'number', 'text'].includes(schema.type)) continue;
+        settings[key] = {
+          ...schema,
+          label: safePluginText(schema.label, key, 100),
+          description: safePluginText(schema.description, '', 300),
+        };
+      }
+    }
+    return {
+      ...raw,
+      name: safePluginText(raw.name, raw.id, 100),
+      version: safePluginText(String(raw.version ?? ''), '1.0.0', 30),
+      description: safePluginText(raw.description, '', 500),
+      author: safePluginText(raw.author, 'Unknown', 100),
+      icon: safeIconText(raw.icon, '🧩'),
+      settings,
+      commands: (Array.isArray(raw.commands) ? raw.commands : []).map(c => sanitizePluginCommand(c, raw.id)).filter(Boolean),
+    };
+  }
+
+  // Register a plugin manifest. Built-in manifests carry init/destroy directly; external
+  // ones carry _scriptPath and their plugin.js is only evaluated when enabled.
+  function registerPlugin(rawManifest) {
+    const manifest = validatePluginManifest(rawManifest, rawManifest?._path || 'built-in');
+    if (!manifest) return false;
+    if (_pluginRegistry.has(manifest.id)) {
+      console.warn(`[ZenLeap] Plugin id "${manifest.id}" is already registered; skipping ${manifest._path || 'built-in plugin'}`);
+      return false;
     }
 
-    if (!_pluginData[manifest.id]) {
-      _pluginData[manifest.id] = { enabled: true, storage: {}, settings: {} };
-      savePluginData();
+    if (!_isPlainObject(_pluginData[manifest.id])) {
+      // First time we see this plugin: external plugins stay disabled until the user enables them
+      _pluginData[manifest.id] = manifest.builtIn
+        ? { enabled: true, storage: {}, settings: {} }
+        : { enabled: false, isNew: true, storage: {}, settings: {} };
+      markPluginDataDirty(manifest.id, '*');
+      if (!manifest.builtIn) {
+        console.info(`[ZenLeap] New plugin found: "${manifest.name}" (${manifest.id}). Enable it in Manage Plugins to run it.`);
+        showZenLeapToast(`New ZenLeap plugin found: ${manifest.name} — enable it in Manage Plugins`, 6000);
+      }
     }
 
     const entry = {
       manifest,
-      enabled: _pluginData[manifest.id].enabled !== false,
+      enabled: false,
+      loaded: !!manifest.builtIn,
+      exports: manifest.builtIn ? manifest : null,
+      sandbox: null,
       instance: null,
+      error: null,
       _dynamicCommands: [],
     };
-
     _pluginRegistry.set(manifest.id, entry);
 
-    if (entry.enabled && manifest.init) {
-      try {
-        const api = createScopedPluginAPI(manifest.id);
-        entry.instance = manifest.init(api) || {};
-        log(`Plugin "${manifest.name}" initialized`);
-      } catch (e) {
-        console.error(`[ZenLeap] Plugin "${manifest.name}" init failed:`, e);
-        entry.instance = null;
-      }
-    }
-
+    if (isPluginEnabledInData(manifest)) activatePlugin(entry);
     invalidateCommandCache();
     _pluginEventBus.emit('plugin:registered', { pluginId: manifest.id, name: manifest.name });
     return true;
   }
 
-  function unregisterPlugin(pluginId) {
+  // Evaluate an external plugin's script in its own sandbox.
+  async function loadPluginScript(entry) {
+    const { manifest } = entry;
+    const source = await IOUtils.readUTF8(manifest._scriptPath);
+    const sandbox = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), {
+      sandboxName: `ZenLeap plugin: ${manifest.id}`,
+      sandboxPrototype: window,
+      wantXrays: false,
+    });
+    try {
+      Cu.evalInSandbox(source, sandbox, 'latest', PathUtils.toFileURI(manifest._scriptPath), 1);
+      const exported = sandbox.ZenLeapPlugin;
+      if (!exported || typeof exported !== 'object') throw new Error('plugin.js must define a ZenLeapPlugin object');
+      entry.sandbox = sandbox;
+      entry.exports = exported;
+      entry.loaded = true;
+    } catch (e) {
+      Cu.nukeSandbox(sandbox);
+      throw e;
+    }
+  }
+
+  // Load (if needed) and init a plugin in this window.
+  async function activatePlugin(entry) {
+    const { manifest } = entry;
+    entry.enabled = true;
+    entry.error = null;
+    try {
+      if (!entry.loaded) await loadPluginScript(entry);
+      if (!entry.enabled || _pluginRegistry.get(manifest.id) !== entry) return; // disabled/removed while loading
+      if (typeof entry.exports.init === 'function') {
+        entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
+      }
+      log(`Plugin "${manifest.name}" initialized`);
+    } catch (e) {
+      entry.error = e?.message || String(e);
+      entry.instance = null;
+      console.error(`[ZenLeap] Plugin "${manifest.name}" failed to load:`, e);
+    }
+    invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
+  }
+
+  // Run the plugin's destroy hook (exactly one) and release its sandbox.
+  function deactivatePlugin(entry) {
+    const { manifest, instance, exports } = entry;
+    try {
+      if (instance && instance !== exports && typeof instance.destroy === 'function') instance.destroy();
+      else if (typeof exports?.destroy === 'function') exports.destroy(createScopedPluginAPI(manifest.id));
+    } catch (e) { console.error(`[ZenLeap] Plugin "${manifest.name}" destroy failed:`, e); }
+    _pluginEventBus.removeAllForPlugin(manifest.id);
+    entry.instance = null;
+    entry._dynamicCommands = [];
+    if (entry.sandbox) {
+      try { Cu.nukeSandbox(entry.sandbox); } catch (e) {}
+      entry.sandbox = null;
+      entry.exports = null;
+      entry.loaded = false;
+    }
+  }
+
+  function unregisterPlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry) return false;
 
-    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
-    if (entry.manifest.destroy) {
-      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
-    }
-
+    if (entry.enabled) deactivatePlugin(entry);
     _pluginEventBus.emit('plugin:unregistered', { pluginId });
-    _pluginEventBus.removeAllForPlugin(pluginId);
     _pluginRegistry.delete(pluginId);
-    delete _pluginData[pluginId];
-    savePluginDataImmediate();
+    _pluginPrivateOverlay.delete(pluginId);
+    if (persist) {
+      delete _pluginData[pluginId];
+      markPluginDataDirty(pluginId, '*');
+      flushPluginData();
+    }
     invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
     return true;
   }
 
-  function enablePlugin(pluginId) {
+  function enablePlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || entry.enabled) return;
 
-    entry.enabled = true;
-    _pluginData[pluginId] = _pluginData[pluginId] || {};
-    _pluginData[pluginId].enabled = true;
-    savePluginData();
-
-    if (entry.manifest.init) {
-      try {
-        const api = createScopedPluginAPI(pluginId);
-        entry.instance = entry.manifest.init(api) || {};
-      } catch (e) {
-        console.error(`[ZenLeap] Plugin "${entry.manifest.name}" init failed:`, e);
-        entry.instance = null;
-      }
+    if (persist) {
+      _pluginData[pluginId] = _pluginData[pluginId] || {};
+      _pluginData[pluginId].enabled = true;
+      delete _pluginData[pluginId].isNew;
+      markPluginDataDirty(pluginId, 'enabled');
+      markPluginDataDirty(pluginId, 'isNew');
+      flushPluginData();
     }
-
-    invalidateCommandCache();
+    activatePlugin(entry);
     _pluginEventBus.emit('plugin:enabled', { pluginId });
     log(`Plugin "${entry.manifest.name}" enabled`);
   }
 
-  function disablePlugin(pluginId) {
+  function disablePlugin(pluginId, { persist = true } = {}) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || !entry.enabled) return;
 
-    if (entry.instance?.destroy) { try { entry.instance.destroy(); } catch (e) {} }
-    if (entry.manifest.destroy) {
-      try { entry.manifest.destroy(createScopedPluginAPI(pluginId)); } catch (e) {}
+    _pluginEventBus.emit('plugin:disabled', { pluginId });
+    deactivatePlugin(entry);
+    entry.enabled = false;
+    entry.error = null;
+    if (persist) {
+      _pluginData[pluginId] = _pluginData[pluginId] || {};
+      _pluginData[pluginId].enabled = false;
+      markPluginDataDirty(pluginId, 'enabled');
+      flushPluginData();
     }
 
-    _pluginEventBus.emit('plugin:disabled', { pluginId });
-    _pluginEventBus.removeAllForPlugin(pluginId);
-    entry.enabled = false;
-    entry.instance = null;
-    entry._dynamicCommands = [];
-    _pluginData[pluginId] = _pluginData[pluginId] || {};
-    _pluginData[pluginId].enabled = false;
-    savePluginDataImmediate();
-
     invalidateCommandCache();
+    if (_pluginManagerMode) renderPluginManagerContent();
     log(`Plugin "${entry.manifest.name}" disabled`);
   }
 
   // ── Get Plugin Commands ──
+  // Plugin commands are grouped per plugin in the palette (after the built-in groups).
   function getPluginCommands() {
     const commands = [];
+    const groups = [];
     for (const [pluginId, entry] of _pluginRegistry) {
-      if (!entry.enabled) continue;
+      if (!entry.enabled || !entry.loaded) continue;
+      const groupId = `plugin:${pluginId}`;
+      groups.push({ id: groupId, label: entry.manifest.name, icon: entry.manifest.icon, keys: [] });
+      const tags = ['plugin', pluginId, entry.manifest.name.toLowerCase()];
 
-      // Commands from manifest
-      if (entry.manifest.commands) {
-        for (const cmd of entry.manifest.commands) {
-          const cmdImpl = entry.instance?.commands?.[cmd.key];
-          commands.push({
-            key: `plugin:${pluginId}:${cmd.key}`,
-            label: cmd.label,
-            icon: cmd.icon || entry.manifest.icon || '🧩',
-            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
-            group: entry.manifest.name,
-            condition: cmd.condition,
-            command: cmdImpl || cmd.command,
-            subFlow: cmd.subFlow,
-          });
-        }
+      // Commands from manifest (implementations from init()'s return value or the exports)
+      for (const cmd of entry.manifest.commands) {
+        const impl = entry.instance?.commands?.[cmd.key] || entry.exports?.commands?.[cmd.key] || cmd.command;
+        commands.push({
+          key: `plugin:${pluginId}:${cmd.key}`,
+          label: cmd.label,
+          icon: cmd.icon || entry.manifest.icon,
+          tags: [...cmd.tags, ...tags],
+          group: groupId,
+          condition: cmd.condition,
+          command: typeof impl === 'function' ? impl : undefined,
+          subFlow: cmd.subFlow,
+        });
       }
 
       // Dynamic commands registered at runtime
-      if (entry._dynamicCommands) {
-        for (const cmd of entry._dynamicCommands) {
-          commands.push({
-            key: `plugin:${pluginId}:dyn:${cmd.key}`,
-            label: cmd.label,
-            icon: cmd.icon || entry.manifest.icon || '🧩',
-            tags: [...(cmd.tags || []), 'plugin', pluginId, entry.manifest.name.toLowerCase()],
-            group: entry.manifest.name,
-            condition: cmd.condition,
-            command: cmd.command,
-          });
-        }
+      for (const cmd of entry._dynamicCommands) {
+        commands.push({
+          key: `plugin:${pluginId}:dyn:${cmd.key}`,
+          label: cmd.label,
+          icon: cmd.icon || entry.manifest.icon,
+          tags: [...cmd.tags, ...tags],
+          group: groupId,
+          condition: cmd.condition,
+          command: cmd.command,
+        });
       }
     }
+    syncPluginCommandGroups(groups, commands);
     return commands;
+  }
+
+  // Give each plugin its own palette section (after the built-in groups).
+  function syncPluginCommandGroups(groups, commands) {
+    COMMAND_GROUPS.splice(STATIC_COMMAND_GROUP_COUNT, COMMAND_GROUPS.length, ...groups);
+    for (const key of [..._commandGroupMap.keys()]) {
+      if (key.startsWith('plugin:')) _commandGroupMap.delete(key);
+    }
+    for (const cmd of commands) _commandGroupMap.set(cmd.key, cmd.group);
   }
 
   function getRegisteredPlugins() {
@@ -4004,14 +4320,16 @@
       plugins.push({
         id,
         name: entry.manifest.name,
-        version: entry.manifest.version || '1.0.0',
-        description: entry.manifest.description || '',
-        author: entry.manifest.author || 'Unknown',
-        icon: entry.manifest.icon || '🧩',
+        version: entry.manifest.version,
+        description: entry.manifest.description,
+        author: entry.manifest.author,
+        icon: entry.manifest.icon,
         enabled: entry.enabled,
-        commandCount: (entry.manifest.commands?.length || 0) + (entry._dynamicCommands?.length || 0),
+        isNew: !entry.enabled && !!_pluginData[id]?.isNew,
+        error: entry.error,
+        commandCount: entry.manifest.commands.length + entry._dynamicCommands.length,
         builtIn: !!entry.manifest.builtIn,
-        hasSettings: !!(entry.manifest.settings && Object.keys(entry.manifest.settings).length > 0),
+        hasSettings: Object.keys(entry.manifest.settings).length > 0,
       });
     }
     return plugins;
@@ -4021,7 +4339,7 @@
   async function getPluginsDirectory() {
     const dir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins');
     try { await IOUtils.makeDirectory(dir, { ignoreExisting: true }); }
-    catch (e) { log(`Failed to create plugins directory: ${e}`); }
+    catch (e) { reportError('Failed to create the plugins directory', e); }
     return dir;
   }
 
@@ -4029,69 +4347,38 @@
     const dir = await getPluginsDirectory();
     let children;
     try { children = await IOUtils.getChildren(dir); }
-    catch (e) { log(`Failed to list plugins directory: ${e}`); return; }
+    catch (e) { reportError('Failed to list the plugins directory', e); return; }
 
-    for (const childPath of children) {
+    for (const childPath of children.sort()) {
       try {
         const stat = await IOUtils.stat(childPath);
         if (stat.type !== 'directory') continue;
 
-        const manifestPath = PathUtils.join(childPath, 'manifest.json');
         let manifestText;
-        try { manifestText = await IOUtils.readUTF8(manifestPath); }
+        try { manifestText = await IOUtils.readUTF8(PathUtils.join(childPath, 'manifest.json')); }
         catch (e) { continue; } // No manifest, skip
 
-        const manifest = JSON.parse(manifestText);
-        if (!manifest.id || !manifest.name) { log(`Skipping plugin at ${childPath}: missing id or name`); continue; }
+        let manifest;
+        try { manifest = JSON.parse(manifestText); }
+        catch (e) { console.warn(`[ZenLeap] Skipping plugin at ${childPath}: manifest.json is not valid JSON`, e); continue; }
 
-        // Check version compatibility
-        if (manifest.minZenLeapVersion && !versionGte(VERSION, manifest.minZenLeapVersion)) {
-          log(`Skipping plugin "${manifest.name}": requires ZenLeap v${manifest.minZenLeapVersion}+`);
+        const scriptPath = PathUtils.join(childPath, 'plugin.js');
+        if (!(await IOUtils.exists(scriptPath))) {
+          console.warn(`[ZenLeap] Skipping plugin at ${childPath}: no plugin.js found`);
           continue;
         }
 
-        // Verify plugin script exists
-        const pluginPath = PathUtils.join(childPath, 'plugin.js');
-        try { await IOUtils.stat(pluginPath); }
-        catch (e) { log(`Skipping plugin "${manifest.name}": no plugin.js found`); continue; }
-
-        // Execute plugin in a controlled scope
-        const scope = {};
-        try {
-          const fileUri = PathUtils.toFileURI(pluginPath);
-          Services.scriptloader.loadSubScript(fileUri, scope);
-        } catch (e) {
-          console.error(`[ZenLeap] Failed to load plugin "${manifest.name}":`, e);
-          continue;
+        // registerPlugin validates the manifest and only evaluates plugin.js when enabled
+        if (registerPlugin({ ...manifest, builtIn: false, _path: childPath, _scriptPath: scriptPath })) {
+          log(`Registered external plugin: ${manifest.name} v${manifest.version || '1.0.0'}`);
         }
-
-        // Merge the manifest with plugin exports
-        const pluginExport = scope.ZenLeapPlugin || {};
-        const fullManifest = {
-          ...manifest,
-          init: pluginExport.init ? pluginExport.init.bind(pluginExport) : null,
-          destroy: pluginExport.destroy ? pluginExport.destroy.bind(pluginExport) : null,
-          _path: childPath,
-        };
-
-        // Commands from manifest get their implementations from plugin exports
-        if (fullManifest.commands && pluginExport.commands) {
-          for (const cmd of fullManifest.commands) {
-            if (pluginExport.commands[cmd.key]) {
-              cmd.command = pluginExport.commands[cmd.key];
-            }
-          }
-        }
-
-        registerPlugin(fullManifest);
-        log(`Loaded external plugin: ${manifest.name} v${manifest.version || '1.0.0'}`);
       } catch (e) {
         console.error(`[ZenLeap] Error loading plugin from ${childPath}:`, e);
       }
     }
   }
 
-  // Uninstall an external plugin (remove files)
+  // Uninstall an external plugin (remove files and data)
   async function uninstallExternalPlugin(pluginId) {
     const entry = _pluginRegistry.get(pluginId);
     if (!entry || entry.manifest.builtIn) return false;
@@ -4103,44 +4390,9 @@
       try {
         await IOUtils.remove(pluginPath, { recursive: true });
         log(`Removed plugin files: ${pluginPath}`);
-      } catch (e) { log(`Failed to remove plugin files: ${e}`); }
+      } catch (e) { reportError(`Failed to remove the files of plugin "${pluginId}"`, e); }
     }
     return true;
-  }
-
-  // Install a plugin from a directory path (copy to plugins dir)
-  async function installPluginFromPath(sourcePath) {
-    try {
-      const manifestText = await IOUtils.readUTF8(PathUtils.join(sourcePath, 'manifest.json'));
-      const manifest = JSON.parse(manifestText);
-      if (!manifest.id || !manifest.name) return { success: false, error: 'Invalid manifest' };
-
-      const destDir = PathUtils.join(await getPluginsDirectory(), manifest.id);
-      await IOUtils.makeDirectory(destDir, { ignoreExisting: true });
-
-      // Copy all files recursively
-      async function copyDir(src, dest) {
-        await IOUtils.makeDirectory(dest, { ignoreExisting: true });
-        const children = await IOUtils.getChildren(src);
-        for (const child of children) {
-          const stat = await IOUtils.stat(child);
-          const name = child.split('/').pop().split('\\').pop();
-          if (stat.type === 'directory') {
-            await copyDir(child, PathUtils.join(dest, name));
-          } else {
-            const content = await IOUtils.read(child);
-            await IOUtils.write(PathUtils.join(dest, name), content);
-          }
-        }
-      }
-      await copyDir(sourcePath, destDir);
-
-      // Load the plugin
-      await loadExternalPlugins();
-      return { success: true, pluginId: manifest.id, name: manifest.name };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
   }
 
   // ============================================
@@ -4149,6 +4401,7 @@
 
   function createPluginManagerModal() {
     if (_pluginManagerModal) return;
+    ensurePluginUiStyles();
 
     const modal = document.createElement('div');
     modal.id = 'zenleap-plugin-manager-modal';
@@ -4163,62 +4416,74 @@
     const style = document.createElement('style');
     style.id = 'zenleap-plugin-manager-styles';
     style.textContent = `
-      #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; }
+      #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; box-sizing: border-box; }
       #zenleap-plugin-manager-modal.active { display: flex; }
-      #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); }
-      #zenleap-plugin-manager-container { position: relative; width: 95%; max-width: 680px; max-height: 80vh; background: rgba(25,25,30,0.98); border-radius: 16px; box-shadow: 0 12px 48px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.1); overflow: hidden; display: flex; flex-direction: column; animation: zenleap-settings-appear 0.2s ease-out; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-      .zenleap-pm-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }
-      .zenleap-pm-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: #61afef; }
-      .zenleap-pm-subtitle { display: block; margin-top: 3px; font-size: 11px; color: #666; }
-      .zenleap-pm-close { background: none; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; transition: all 0.15s; }
-      .zenleap-pm-close:hover { color: #e0e0e0; background: rgba(255,255,255,0.1); }
-      .zenleap-pm-body { flex: 1; overflow-y: auto; padding: 8px 0; }
-      .zenleap-pm-body::-webkit-scrollbar { width: 8px; }
-      .zenleap-pm-body::-webkit-scrollbar-track { background: transparent; }
-      .zenleap-pm-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
-      .zenleap-pm-plugin-card { display: flex; align-items: center; gap: 14px; padding: 14px 24px; transition: background 0.12s; cursor: pointer; }
-      .zenleap-pm-plugin-card:hover { background: rgba(255,255,255,0.04); }
-      .zenleap-pm-plugin-icon { font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 10px; flex-shrink: 0; }
+      #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--zl-backdrop); backdrop-filter: var(--zl-blur); }
+      #zenleap-plugin-manager-container { position: relative; width: 95%; max-width: 680px; max-height: 80vh; background: var(--zl-bg-surface); border-radius: var(--zl-r-xl); box-shadow: var(--zl-shadow-modal); overflow: hidden; display: flex; flex-direction: column; animation: zenleap-pm-appear 0.2s ease-out; font-family: var(--zl-font-ui); color: var(--zl-text-primary); }
+      .zenleap-pm-header { padding: 20px 24px 16px; border-bottom: 1px solid var(--zl-border-subtle); display: flex; justify-content: space-between; align-items: center; }
+      .zenleap-pm-header h1 { margin: 0; font-size: 20px; font-weight: 700; color: var(--zl-accent); }
+      .zenleap-pm-subtitle { display: block; margin-top: 3px; font-size: 11px; color: var(--zl-text-tertiary); }
+      .zenleap-pm-close { background: none; border: none; color: var(--zl-text-muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: var(--zl-r-sm); transition: all 0.15s; }
+      .zenleap-pm-close:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
+      .zenleap-pm-body { flex: 1; overflow-y: auto; padding: 8px 0; scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
+      .zenleap-pm-plugin-card { display: flex; align-items: center; gap: 14px; padding: 14px 24px; transition: background 0.12s; cursor: pointer; border-left: 2px solid transparent; }
+      .zenleap-pm-plugin-card:hover { background: var(--zl-bg-raised); }
+      .zenleap-pm-plugin-card.focused { background: var(--zl-accent-dim); border-left-color: var(--zl-accent); }
+      .zenleap-pm-plugin-icon { font-size: 28px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: var(--zl-accent-dim); border-radius: var(--zl-r-md); flex-shrink: 0; }
+      .zenleap-pm-plugin-icon .zenleap-icon-img { width: 24px; height: 24px; }
       .zenleap-pm-plugin-info { flex: 1; min-width: 0; }
-      .zenleap-pm-plugin-name { font-size: 14px; font-weight: 600; color: #e0e0e0; display: flex; align-items: center; gap: 8px; }
+      .zenleap-pm-plugin-name { font-size: 14px; font-weight: 600; color: var(--zl-text-primary); display: flex; align-items: center; gap: 8px; }
       .zenleap-pm-badge { font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-      .zenleap-pm-badge-builtin { background: rgba(97,175,239,0.15); color: #61afef; }
-      .zenleap-pm-badge-version { background: rgba(255,255,255,0.06); color: #888; }
-      .zenleap-pm-badge-external { background: rgba(152,195,121,0.15); color: #98c379; }
-      .zenleap-pm-plugin-desc { font-size: 12px; color: #888; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .zenleap-pm-plugin-meta { font-size: 11px; color: #555; margin-top: 3px; }
+      .zenleap-pm-badge-builtin { background: var(--zl-accent-dim); color: var(--zl-accent); }
+      .zenleap-pm-badge-version { background: var(--zl-bg-raised); color: var(--zl-text-tertiary); }
+      .zenleap-pm-badge-external { background: color-mix(in srgb, var(--zl-green) 15%, transparent); color: var(--zl-green); }
+      .zenleap-pm-badge-new { background: color-mix(in srgb, var(--zl-gold) 18%, transparent); color: var(--zl-gold); }
+      .zenleap-pm-badge-error { background: color-mix(in srgb, var(--zl-red) 18%, transparent); color: var(--zl-red); }
+      .zenleap-pm-plugin-desc { font-size: 12px; color: var(--zl-text-secondary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-pm-plugin-meta { font-size: 11px; color: var(--zl-text-tertiary); margin-top: 3px; }
+      .zenleap-pm-plugin-meta.error { color: var(--zl-red); }
       .zenleap-pm-plugin-actions { display: flex; gap: 6px; flex-shrink: 0; }
-      .zenleap-pm-toggle-btn { padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid; font-family: inherit; }
-      .zenleap-pm-toggle-btn.enabled { background: rgba(97,175,239,0.15); border-color: rgba(97,175,239,0.3); color: #61afef; }
-      .zenleap-pm-toggle-btn.enabled:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.3); color: #e06c75; }
-      .zenleap-pm-toggle-btn.disabled { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); color: #888; }
-      .zenleap-pm-toggle-btn.disabled:hover { background: rgba(152,195,121,0.15); border-color: rgba(152,195,121,0.3); color: #98c379; }
-      .zenleap-pm-uninstall-btn { background: none; border: 1px solid rgba(224,108,117,0.2); color: #e06c75; padding: 6px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
-      .zenleap-pm-uninstall-btn:hover { background: rgba(224,108,117,0.15); border-color: rgba(224,108,117,0.4); }
-      .zenleap-pm-empty { padding: 40px 20px; text-align: center; color: #555; font-size: 14px; }
-      .zenleap-pm-footer { padding: 12px 24px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #555; }
-      .zenleap-pm-footer-hint { font-style: italic; }
-      .zenleap-pm-detail-header { padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-      .zenleap-pm-detail-back { background: none; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 8px; display: flex; align-items: center; gap: 4px; font-family: inherit; }
-      .zenleap-pm-detail-back:hover { color: #61afef; }
+      .zenleap-pm-toggle-btn { padding: 6px 14px; border-radius: var(--zl-r-sm); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: 1px solid; font-family: inherit; }
+      .zenleap-pm-toggle-btn.enabled { background: var(--zl-accent-dim); border-color: var(--zl-accent-border); color: var(--zl-accent); }
+      .zenleap-pm-toggle-btn.enabled:hover { background: color-mix(in srgb, var(--zl-red) 15%, transparent); border-color: color-mix(in srgb, var(--zl-red) 30%, transparent); color: var(--zl-red); }
+      .zenleap-pm-toggle-btn.disabled { background: var(--zl-bg-raised); border-color: var(--zl-border-strong); color: var(--zl-text-secondary); }
+      .zenleap-pm-toggle-btn.disabled:hover { background: color-mix(in srgb, var(--zl-green) 15%, transparent); border-color: color-mix(in srgb, var(--zl-green) 30%, transparent); color: var(--zl-green); }
+      .zenleap-pm-uninstall-btn { background: none; border: 1px solid color-mix(in srgb, var(--zl-red) 25%, transparent); color: var(--zl-red); padding: 6px 10px; border-radius: var(--zl-r-sm); font-size: 12px; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+      .zenleap-pm-uninstall-btn:hover { background: color-mix(in srgb, var(--zl-red) 15%, transparent); }
+      .zenleap-pm-empty { padding: 40px 20px; text-align: center; color: var(--zl-text-muted); font-size: 14px; }
+      .zenleap-pm-footer { padding: 12px 24px; border-top: 1px solid var(--zl-border-subtle); display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 11px; color: var(--zl-text-muted); }
+      .zenleap-pm-footer-keys { white-space: nowrap; flex-shrink: 0; }
+      .zenleap-pm-footer-hint { font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .zenleap-pm-detail-header { padding: 20px 24px 16px; border-bottom: 1px solid var(--zl-border-subtle); }
+      .zenleap-pm-detail-back { background: none; border: none; color: var(--zl-text-secondary); font-size: 13px; cursor: pointer; padding: 4px 0; margin-bottom: 8px; display: flex; align-items: center; gap: 4px; font-family: inherit; }
+      .zenleap-pm-detail-back:hover { color: var(--zl-accent); }
       .zenleap-pm-detail-title { display: flex; align-items: center; gap: 12px; }
-      .zenleap-pm-detail-icon { font-size: 32px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: rgba(97,175,239,0.08); border-radius: 12px; }
-      .zenleap-pm-detail-name { font-size: 20px; font-weight: 700; color: #e0e0e0; margin: 0; }
-      .zenleap-pm-detail-author { font-size: 12px; color: #888; margin-top: 2px; }
-      .zenleap-pm-detail-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+      .zenleap-pm-detail-icon { font-size: 32px; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; background: var(--zl-accent-dim); border-radius: var(--zl-r-lg); }
+      .zenleap-pm-detail-name { font-size: 20px; font-weight: 700; color: var(--zl-text-primary); margin: 0; }
+      .zenleap-pm-detail-author { font-size: 12px; color: var(--zl-text-secondary); margin-top: 2px; }
+      .zenleap-pm-detail-body { padding: 20px 24px; overflow-y: auto; flex: 1; scrollbar-width: thin; scrollbar-color: var(--zl-border-strong) transparent; }
       .zenleap-pm-detail-section { margin-bottom: 20px; }
-      .zenleap-pm-detail-section h3 { font-size: 11px; font-weight: 600; color: #61afef; text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 10px; }
-      .zenleap-pm-detail-desc { font-size: 13px; color: #ccc; line-height: 1.5; }
-      .zenleap-pm-cmd-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(255,255,255,0.02); margin-bottom: 4px; }
+      .zenleap-pm-detail-section h3 { font-size: 11px; font-weight: 600; color: var(--zl-accent); text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 10px; }
+      .zenleap-pm-detail-desc { font-size: 13px; color: var(--zl-text-secondary); line-height: 1.5; margin: 0; }
+      .zenleap-pm-detail-error { font-size: 12px; color: var(--zl-red); font-family: var(--zl-font-mono); white-space: pre-wrap; }
+      .zenleap-pm-cmd-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--zl-r-md); background: var(--zl-bg-raised); margin-bottom: 4px; }
       .zenleap-pm-cmd-icon { font-size: 16px; width: 24px; text-align: center; }
-      .zenleap-pm-cmd-label { font-size: 13px; color: #e0e0e0; }
-      .zenleap-pm-cmd-tags { font-size: 11px; color: #555; margin-left: auto; }
-      .zenleap-pm-setting-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; }
-      .zenleap-pm-setting-row:hover { background: rgba(255,255,255,0.03); }
+      .zenleap-pm-cmd-label { font-size: 13px; color: var(--zl-text-primary); }
+      .zenleap-pm-cmd-tags { font-size: 11px; color: var(--zl-text-tertiary); margin-left: auto; }
+      .zenleap-pm-setting-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: var(--zl-r-md); }
+      .zenleap-pm-setting-row:hover { background: var(--zl-bg-raised); }
       .zenleap-pm-setting-label { flex: 1; }
-      .zenleap-pm-setting-name { font-size: 13px; font-weight: 500; color: #e0e0e0; }
-      .zenleap-pm-setting-desc { font-size: 11px; color: #666; margin-top: 2px; }
-      .zenleap-pm-path-info { font-size: 11px; color: #555; font-family: monospace; word-break: break-all; background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; margin-top: 8px; }
+      .zenleap-pm-setting-name { font-size: 13px; font-weight: 500; color: var(--zl-text-primary); }
+      .zenleap-pm-setting-desc { font-size: 11px; color: var(--zl-text-tertiary); margin-top: 2px; }
+      .zenleap-pm-input { background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong); color: var(--zl-text-primary); padding: 5px 10px; border-radius: var(--zl-r-sm); font-size: 13px; outline: none; font-family: inherit; }
+      .zenleap-pm-input:focus { border-color: var(--zl-accent); }
+      .zenleap-pm-switch { position: relative; display: inline-block; width: 36px; height: 20px; flex-shrink: 0; }
+      .zenleap-pm-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+      .zenleap-pm-switch-slider { position: absolute; cursor: pointer; inset: 0; background: var(--zl-bg-elevated); border: 1px solid var(--zl-border-strong); border-radius: 20px; transition: background 0.2s; }
+      .zenleap-pm-switch-slider::before { content: ''; position: absolute; height: 14px; width: 14px; left: 2px; top: 2px; background: var(--zl-text-secondary); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+      .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); }
+      .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider::before { transform: translateX(16px); background: var(--zl-accent); }
+      .zenleap-pm-path-info { font-size: 11px; color: var(--zl-text-tertiary); font-family: var(--zl-font-mono); word-break: break-all; background: var(--zl-bg-raised); padding: 8px 12px; border-radius: var(--zl-r-sm); margin-top: 8px; }
     `;
     document.head.appendChild(style);
     document.documentElement.appendChild(modal);
@@ -4233,6 +4498,28 @@
     else renderPluginList(container);
   }
 
+  function togglePluginEnabled(pluginId) {
+    const entry = _pluginRegistry.get(pluginId);
+    if (!entry) return;
+    if (entry.enabled) disablePlugin(pluginId); else enablePlugin(pluginId);
+    renderPluginManagerContent();
+  }
+
+  async function confirmAndUninstallPlugin(plugin) {
+    const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
+    if (!confirmed) return;
+    await uninstallExternalPlugin(plugin.id);
+    _pluginManagerView = 'list';
+    _pluginManagerDetailId = null;
+    renderPluginManagerContent();
+  }
+
+  function openPluginDetail(pluginId) {
+    _pluginManagerView = 'detail';
+    _pluginManagerDetailId = pluginId;
+    renderPluginManagerContent();
+  }
+
   function renderPluginList(container) {
     const header = document.createElement('div');
     header.className = 'zenleap-pm-header';
@@ -4241,49 +4528,54 @@
     h1.textContent = 'Plugins';
     const sub = document.createElement('span');
     sub.className = 'zenleap-pm-subtitle';
-    sub.textContent = 'Manage ZenLeap plugins';
+    sub.textContent = 'Plugins run with full browser privileges — only enable plugins you trust';
     headerLeft.appendChild(h1);
     headerLeft.appendChild(sub);
     header.appendChild(headerLeft);
     const closeBtn = document.createElement('button');
     closeBtn.className = 'zenleap-pm-close';
-    closeBtn.textContent = '\u2715';
+    closeBtn.textContent = '✕';
     closeBtn.addEventListener('click', () => exitPluginManagerMode());
     header.appendChild(closeBtn);
 
     const body = document.createElement('div');
     body.className = 'zenleap-pm-body';
     const plugins = getRegisteredPlugins();
+    _pluginManagerFocus = Math.max(0, Math.min(_pluginManagerFocus, plugins.length - 1));
     if (plugins.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'zenleap-pm-empty';
       empty.textContent = 'No plugins installed';
       body.appendChild(empty);
     } else {
-      for (const plugin of plugins) {
+      plugins.forEach((plugin, idx) => {
         const card = document.createElement('div');
-        card.className = 'zenleap-pm-plugin-card';
+        card.className = `zenleap-pm-plugin-card${idx === _pluginManagerFocus ? ' focused' : ''}`;
+        card.dataset.pluginId = plugin.id;
         const icon = document.createElement('div');
         icon.className = 'zenleap-pm-plugin-icon';
-        icon.textContent = plugin.icon;
+        icon.appendChild(createIconNode(plugin.icon, '🧩'));
         const info = document.createElement('div');
         info.className = 'zenleap-pm-plugin-info';
-        info.addEventListener('click', () => { _pluginManagerView = 'detail'; _pluginManagerDetailId = plugin.id; renderPluginManagerContent(); });
+        info.addEventListener('click', () => { _pluginManagerFocus = idx; openPluginDetail(plugin.id); });
         const nameRow = document.createElement('div');
         nameRow.className = 'zenleap-pm-plugin-name';
         nameRow.appendChild(document.createTextNode(plugin.name));
-        const vBadge = document.createElement('span');
-        vBadge.className = 'zenleap-pm-badge zenleap-pm-badge-version';
-        vBadge.textContent = `v${plugin.version}`;
-        nameRow.appendChild(vBadge);
-        if (plugin.builtIn) { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-builtin'; b.textContent = 'Built-in'; nameRow.appendChild(b); }
-        else { const b = document.createElement('span'); b.className = 'zenleap-pm-badge zenleap-pm-badge-external'; b.textContent = 'External'; nameRow.appendChild(b); }
+        const badge = (cls, text) => { const b = document.createElement('span'); b.className = `zenleap-pm-badge ${cls}`; b.textContent = text; nameRow.appendChild(b); };
+        badge('zenleap-pm-badge-version', `v${plugin.version}`);
+        badge(plugin.builtIn ? 'zenleap-pm-badge-builtin' : 'zenleap-pm-badge-external', plugin.builtIn ? 'Built-in' : 'External');
+        if (plugin.isNew) badge('zenleap-pm-badge-new', 'New');
+        if (plugin.error) badge('zenleap-pm-badge-error', 'Error');
         const desc = document.createElement('div');
         desc.className = 'zenleap-pm-plugin-desc';
         desc.textContent = plugin.description;
         const meta = document.createElement('div');
-        meta.className = 'zenleap-pm-plugin-meta';
-        meta.textContent = `${plugin.commandCount} command${plugin.commandCount !== 1 ? 's' : ''} · by ${plugin.author}`;
+        meta.className = `zenleap-pm-plugin-meta${plugin.error ? ' error' : ''}`;
+        meta.textContent = plugin.error
+          ? `Failed to load: ${plugin.error}`
+          : plugin.isNew
+            ? 'New plugin found — enable it to run it'
+            : `${plugin.commandCount} command${plugin.commandCount !== 1 ? 's' : ''} · by ${plugin.author}`;
         info.appendChild(nameRow);
         info.appendChild(desc);
         info.appendChild(meta);
@@ -4292,42 +4584,40 @@
         const toggleBtn = document.createElement('button');
         toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
         toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
-        toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+        toggleBtn.addEventListener('click', (e) => { e.stopPropagation(); _pluginManagerFocus = idx; togglePluginEnabled(plugin.id); });
         actions.appendChild(toggleBtn);
         if (!plugin.builtIn) {
           const unBtn = document.createElement('button');
           unBtn.className = 'zenleap-pm-uninstall-btn';
           unBtn.textContent = 'Uninstall';
-          unBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
-            if (!confirmed) return;
-            await uninstallExternalPlugin(plugin.id);
-            renderPluginManagerContent();
-          });
+          unBtn.addEventListener('click', (e) => { e.stopPropagation(); confirmAndUninstallPlugin(plugin); });
           actions.appendChild(unBtn);
         }
         card.appendChild(icon);
         card.appendChild(info);
         card.appendChild(actions);
         body.appendChild(card);
-      }
+      });
     }
 
     const footer = document.createElement('div');
     footer.className = 'zenleap-pm-footer';
     const fLeft = document.createElement('span');
-    fLeft.textContent = `${plugins.length} plugin${plugins.length !== 1 ? 's' : ''} installed`;
+    fLeft.className = 'zenleap-pm-footer-keys';
+    fLeft.textContent = plugins.length
+      ? 'j/k select · Enter details · Space enable/disable · Esc close'
+      : 'Esc close';
     footer.appendChild(fLeft);
     const fRight = document.createElement('span');
     fRight.className = 'zenleap-pm-footer-hint';
     fRight.textContent = 'Loading...';
-    getPluginsDirectory().then(dir => { fRight.textContent = `Plugins dir: ${dir}`; });
+    getPluginsDirectory().then(dir => { fRight.textContent = `Plugins dir: ${dir}`; fRight.title = dir; });
     footer.appendChild(fRight);
 
     container.appendChild(header);
     container.appendChild(body);
     container.appendChild(footer);
+    body.querySelector('.zenleap-pm-plugin-card.focused')?.scrollIntoView({ block: 'nearest' });
   }
 
   function renderPluginDetail(container) {
@@ -4340,20 +4630,20 @@
     header.className = 'zenleap-pm-detail-header';
     const backBtn = document.createElement('button');
     backBtn.className = 'zenleap-pm-detail-back';
-    backBtn.textContent = '\u2190 Back to plugins';
+    backBtn.textContent = '← Back to plugins';
     backBtn.addEventListener('click', () => { _pluginManagerView = 'list'; _pluginManagerDetailId = null; renderPluginManagerContent(); });
     const titleRow = document.createElement('div');
     titleRow.className = 'zenleap-pm-detail-title';
     const iconEl = document.createElement('div');
     iconEl.className = 'zenleap-pm-detail-icon';
-    iconEl.textContent = manifest.icon || '🧩';
+    iconEl.appendChild(createIconNode(manifest.icon, '🧩'));
     const titleInfo = document.createElement('div');
     const nameEl = document.createElement('h2');
     nameEl.className = 'zenleap-pm-detail-name';
     nameEl.textContent = manifest.name;
     const authorEl = document.createElement('div');
     authorEl.className = 'zenleap-pm-detail-author';
-    authorEl.textContent = `v${manifest.version || '1.0.0'} · by ${manifest.author || 'Unknown'}`;
+    authorEl.textContent = `v${manifest.version} · by ${manifest.author}`;
     titleInfo.appendChild(nameEl);
     titleInfo.appendChild(authorEl);
     titleRow.appendChild(iconEl);
@@ -4363,56 +4653,58 @@
 
     const body = document.createElement('div');
     body.className = 'zenleap-pm-detail-body';
+    const section = (title) => {
+      const sec = document.createElement('div');
+      sec.className = 'zenleap-pm-detail-section';
+      const h3 = document.createElement('h3');
+      h3.textContent = title;
+      sec.appendChild(h3);
+      body.appendChild(sec);
+      return sec;
+    };
+
+    if (entry.error) {
+      const pre = document.createElement('div');
+      pre.className = 'zenleap-pm-detail-error';
+      pre.textContent = entry.error;
+      section('Load error').appendChild(pre);
+    }
 
     // Description
     if (manifest.description) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Description';
       const p = document.createElement('p');
       p.className = 'zenleap-pm-detail-desc';
       p.textContent = manifest.description;
-      sec.appendChild(h3);
-      sec.appendChild(p);
-      body.appendChild(sec);
+      section('Description').appendChild(p);
     }
 
     // Commands
-    if (manifest.commands?.length > 0) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = `Commands (${manifest.commands.length})`;
-      sec.appendChild(h3);
+    if (manifest.commands.length > 0) {
+      const sec = section(`Commands (${manifest.commands.length})`);
       for (const cmd of manifest.commands) {
         const row = document.createElement('div');
         row.className = 'zenleap-pm-cmd-row';
-        const ci = document.createElement('span'); ci.className = 'zenleap-pm-cmd-icon'; ci.textContent = cmd.icon || manifest.icon || '🧩';
+        const ci = document.createElement('span'); ci.className = 'zenleap-pm-cmd-icon'; ci.appendChild(createIconNode(cmd.icon || manifest.icon, '🧩'));
         const cl = document.createElement('span'); cl.className = 'zenleap-pm-cmd-label'; cl.textContent = cmd.label;
-        const ct = document.createElement('span'); ct.className = 'zenleap-pm-cmd-tags'; ct.textContent = (cmd.tags || []).join(', ');
+        const ct = document.createElement('span'); ct.className = 'zenleap-pm-cmd-tags'; ct.textContent = cmd.tags.join(', ');
         row.appendChild(ci); row.appendChild(cl); row.appendChild(ct);
         sec.appendChild(row);
       }
-      body.appendChild(sec);
     }
 
     // Plugin settings
-    if (manifest.settings && Object.keys(manifest.settings).length > 0) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Settings';
-      sec.appendChild(h3);
+    const settingEntries = Object.entries(manifest.settings);
+    if (settingEntries.length > 0) {
+      const sec = section('Settings');
       const api = createScopedPluginAPI(_pluginManagerDetailId);
-      for (const [key, schema] of Object.entries(manifest.settings)) {
+      for (const [key, schema] of settingEntries) {
         const row = document.createElement('div');
         row.className = 'zenleap-pm-setting-row';
         const label = document.createElement('div');
         label.className = 'zenleap-pm-setting-label';
         const nameSpan = document.createElement('span');
         nameSpan.className = 'zenleap-pm-setting-name';
-        nameSpan.textContent = schema.label || key;
+        nameSpan.textContent = schema.label;
         label.appendChild(nameSpan);
         if (schema.description) { const d = document.createElement('div'); d.className = 'zenleap-pm-setting-desc'; d.textContent = schema.description; label.appendChild(d); }
         row.appendChild(label);
@@ -4421,12 +4713,12 @@
         const currentVal = api.settings.getOwn(key);
         if (schema.type === 'toggle') {
           const toggle = document.createElement('label');
-          toggle.className = 'zenleap-toggle';
+          toggle.className = 'zenleap-pm-switch';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = !!currentVal;
           const slider = document.createElement('span');
-          slider.className = 'zenleap-toggle-slider';
+          slider.className = 'zenleap-pm-switch-slider';
           toggle.appendChild(cb);
           toggle.appendChild(slider);
           cb.addEventListener('change', () => { api.settings.setOwn(key, cb.checked); });
@@ -4434,73 +4726,99 @@
         } else if (schema.type === 'number') {
           const input = document.createElement('input');
           input.type = 'number';
-          input.value = currentVal;
+          input.className = 'zenleap-pm-input';
+          input.style.width = '80px';
+          input.value = currentVal ?? '';
           if (schema.min !== undefined) input.min = schema.min;
           if (schema.max !== undefined) input.max = schema.max;
           if (schema.step !== undefined) input.step = schema.step;
-          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 80px; outline: none; font-family: inherit;';
-          input.addEventListener('change', () => { api.settings.setOwn(key, parseFloat(input.value) || schema.default); });
+          input.addEventListener('change', () => {
+            let v = parseFloat(input.value);
+            if (!Number.isFinite(v)) v = schema.default;
+            if (typeof schema.min === 'number') v = Math.max(schema.min, v);
+            if (typeof schema.max === 'number') v = Math.min(schema.max, v);
+            input.value = v;
+            api.settings.setOwn(key, v);
+          });
           control.appendChild(input);
         } else if (schema.type === 'text') {
           const input = document.createElement('input');
           input.type = 'text';
+          input.className = 'zenleap-pm-input';
+          input.style.width = '120px';
           input.value = currentVal || '';
-          input.style.cssText = 'background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #e0e0e0; padding: 5px 10px; border-radius: 6px; font-size: 13px; width: 120px; outline: none; font-family: inherit;';
           input.addEventListener('change', () => { api.settings.setOwn(key, input.value); });
           control.appendChild(input);
         }
         row.appendChild(control);
         sec.appendChild(row);
       }
-      body.appendChild(sec);
     }
 
     // Path info for external plugins
     if (manifest._path) {
-      const sec = document.createElement('div');
-      sec.className = 'zenleap-pm-detail-section';
-      const h3 = document.createElement('h3');
-      h3.textContent = 'Location';
-      sec.appendChild(h3);
       const pathInfo = document.createElement('div');
       pathInfo.className = 'zenleap-pm-path-info';
       pathInfo.textContent = manifest._path;
-      sec.appendChild(pathInfo);
-      body.appendChild(sec);
+      section('Location').appendChild(pathInfo);
     }
 
     // Actions
-    const actSec = document.createElement('div');
-    actSec.className = 'zenleap-pm-detail-section';
-    const actH3 = document.createElement('h3');
-    actH3.textContent = 'Actions';
-    actSec.appendChild(actH3);
+    const actSec = section('Actions');
     const actRow = document.createElement('div');
     actRow.style.cssText = 'display: flex; gap: 8px;';
     const toggleBtn = document.createElement('button');
     toggleBtn.className = `zenleap-pm-toggle-btn ${plugin.enabled ? 'enabled' : 'disabled'}`;
     toggleBtn.textContent = plugin.enabled ? 'Enabled' : 'Disabled';
-    toggleBtn.addEventListener('click', () => { if (plugin.enabled) disablePlugin(plugin.id); else enablePlugin(plugin.id); renderPluginManagerContent(); });
+    toggleBtn.addEventListener('click', () => togglePluginEnabled(plugin.id));
     actRow.appendChild(toggleBtn);
     if (!plugin.builtIn) {
       const unBtn = document.createElement('button');
       unBtn.className = 'zenleap-pm-uninstall-btn';
       unBtn.textContent = 'Uninstall';
-      unBtn.addEventListener('click', async () => {
-        const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
-        if (!confirmed) return;
-        await uninstallExternalPlugin(plugin.id);
-        _pluginManagerView = 'list';
-        _pluginManagerDetailId = null;
-        renderPluginManagerContent();
-      });
+      unBtn.addEventListener('click', () => confirmAndUninstallPlugin(plugin));
       actRow.appendChild(unBtn);
     }
     actSec.appendChild(actRow);
-    body.appendChild(actSec);
+
+    const footer = document.createElement('div');
+    footer.className = 'zenleap-pm-footer';
+    footer.textContent = 'h/Backspace back · j/k scroll · Space enable/disable · Esc back';
 
     container.appendChild(header);
     container.appendChild(body);
+    container.appendChild(footer);
+  }
+
+  // Keyboard navigation for the Plugin Manager (Escape is handled by the main key handler).
+  function handlePluginManagerKey(event) {
+    if (event.key === 'Escape' || event.ctrlKey || event.altKey || event.metaKey) return false;
+    const target = event.composedTarget || event.target;
+    if (target?.closest?.('input, textarea')) return false;
+    const isDetail = _pluginManagerView === 'detail' && _pluginManagerDetailId;
+    const key = event.key;
+    if (isDetail) {
+      const body = _pluginManagerModal?.querySelector('.zenleap-pm-detail-body');
+      if (key === 'j' || key === 'ArrowDown') { body?.scrollBy({ top: 60 }); return true; }
+      if (key === 'k' || key === 'ArrowUp') { body?.scrollBy({ top: -60 }); return true; }
+      if (key === 'h' || key === 'Backspace' || key === 'ArrowLeft') {
+        _pluginManagerView = 'list';
+        _pluginManagerDetailId = null;
+        renderPluginManagerContent();
+        return true;
+      }
+      if (key === ' ' || key === 'e') { togglePluginEnabled(_pluginManagerDetailId); return true; }
+      return false;
+    }
+    const plugins = getRegisteredPlugins();
+    if (plugins.length === 0) return false;
+    if (key === 'j' || key === 'ArrowDown') { _pluginManagerFocus = Math.min(_pluginManagerFocus + 1, plugins.length - 1); renderPluginManagerContent(); return true; }
+    if (key === 'k' || key === 'ArrowUp') { _pluginManagerFocus = Math.max(_pluginManagerFocus - 1, 0); renderPluginManagerContent(); return true; }
+    const focused = plugins[_pluginManagerFocus];
+    if (!focused) return false;
+    if (key === 'Enter' || key === 'l' || key === 'ArrowRight') { openPluginDetail(focused.id); return true; }
+    if (key === ' ' || key === 'e') { togglePluginEnabled(focused.id); return true; }
+    return false;
   }
 
   function enterPluginManagerMode() {
@@ -4513,6 +4831,7 @@
     _pluginManagerMode = true;
     _pluginManagerView = 'list';
     _pluginManagerDetailId = null;
+    _pluginManagerFocus = 0;
     renderPluginManagerContent();
     _pluginManagerModal.classList.add('active');
     log('Entered plugin manager mode');
@@ -4527,13 +4846,155 @@
   }
 
   // ── Initialize Plugin System ──
+  function _onWorkspaceChangedForPlugins({ workspace } = {}) {
+    _pluginEventBus.emit('workspace:changed', { workspaceId: workspace?.uuid || null, workspace: workspace || null });
+  }
+
+  // Window unload: stop plugins (destroy hooks, sandboxes) and flush pending data. Runs
+  // before destroy() (registered at script load); clearing the flags below makes
+  // destroy()'s legacy full-file flush a no-op so it cannot overwrite newer data.
+  function _pluginSystemUnload() {
+    try { Services.obs.removeObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC); } catch (e) {}
+    try { window.gZenWorkspaces?.removeChangeListeners?.(_onWorkspaceChangedForPlugins); } catch (e) {}
+    for (const entry of _pluginRegistry.values()) {
+      if (entry.enabled) deactivatePlugin(entry);
+    }
+    flushPluginData();
+    _pluginDataLoaded = false;
+  }
+  window.addEventListener('unload', _pluginSystemUnload, { once: true });
+
   async function initPluginSystem() {
+    // Listen before reading the file, so changes broadcast meanwhile are not lost
+    Services.obs.addObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC);
+    try { window.gZenWorkspaces?.addChangeListeners?.(_onWorkspaceChangedForPlugins); }
+    catch (e) { reportError('Could not subscribe to workspace changes for plugins', e); }
     await loadPluginData();
     await loadExternalPlugins();
-    log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) loaded`);
+    log(`Plugin system initialized: ${_pluginRegistry.size} plugin(s) registered`);
   }
 
 
+  // ============================================
+  // TAB / FOLDER / WORKSPACE HELPERS (commands, sub-flows, sessions)
+  // ============================================
+
+  // Display name of a Zen folder
+  function folderName(folder) {
+    return folder?.label || 'Unnamed Folder';
+  }
+
+  // Tabs in a folder (recursively), without Zen's placeholder tabs
+  function folderTabCount(folder) {
+    return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0;
+  }
+
+  // Workspaces exist in this window (not a private/unsynced window)
+  function workspacesEnabled() {
+    try { return !!window.gZenWorkspaces && !gZenWorkspaces.privateWindowOrDisabled; } catch (e) { return false; }
+  }
+
+  function workspaceCount() {
+    try { return workspacesEnabled() ? (gZenWorkspaces.getWorkspaces()?.length || 0) : 0; } catch (e) { return 0; }
+  }
+
+  // Regular Zen folders of the active workspace, in sidebar order. Live folders are
+  // excluded: Zen manages their tabs itself (matches Zen's own "Move to folder" menu).
+  function getWorkspaceFolders() {
+    let folders;
+    try { folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')); } catch (e) { return []; }
+    const activeWsId = window.gZenWorkspaces?.activeWorkspace;
+    return folders.filter(f => {
+      if (!f.isZenFolder || f.isLiveFolder) return false;
+      const wsId = f.getAttribute('zen-workspace-id');
+      return !activeWsId || !wsId || wsId === activeWsId;
+    });
+  }
+
+  function getWorkspaceName(workspaceId) {
+    try { return gZenWorkspaces.getWorkspaces().find(w => w.uuid === workspaceId)?.name || null; }
+    catch (e) { return null; }
+  }
+
+  // Sort tabs by their current sidebar position to preserve relative order.
+  // Covers every workspace (gBrowser.tabs only holds the active one on Zen 1.2x).
+  function sortTabsBySidebarPosition(tabs) {
+    let allTabs;
+    try { allTabs = window.gZenWorkspaces?.allStoredTabs; } catch (e) { allTabs = null; }
+    if (!allTabs?.length) allTabs = gBrowser.tabs;
+    const positionMap = new Map();
+    Array.from(allTabs).forEach((t, idx) => positionMap.set(t, idx));
+    return [...tabs].sort((a, b) => (positionMap.get(a) ?? Infinity) - (positionMap.get(b) ?? Infinity));
+  }
+
+  // Move tabs to a workspace in one batch, keeping their sidebar order.
+  // Zen's moveTabsToWorkspace preserves order (and reverses its argument in place when
+  // new tabs go to the top), so always pass a fresh array.
+  function moveTabsToWorkspaceOrdered(tabs, workspaceId) {
+    const valid = sortTabsBySidebarPosition(tabs.filter(t => t && !t.closing && t.isConnected));
+    if (valid.length === 0 || !window.gZenWorkspaces) return 0;
+    gZenWorkspaces.moveTabsToWorkspace([...valid], workspaceId);
+    return valid.length;
+  }
+
+  // Zen resolves removeWorkspace() only on its next ZenWorkspacesUIUpdate; never wait forever.
+  function removeWorkspaceWithTimeout(workspaceId, timeoutMs = 5000) {
+    let timer;
+    const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    const removal = Promise.resolve(gZenWorkspaces.removeWorkspace(workspaceId)).then(() => true);
+    return Promise.race([removal, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  // Small transient message at the bottom of the window (command results, plugins).
+  let _toastTimer = null;
+  function showZenLeapToast(message, duration = 3000) {
+    if (!document.getElementById('zenleap-toast-styles')) {
+      const style = document.createElement('style');
+      style.id = 'zenleap-toast-styles';
+      style.textContent = `
+        @keyframes zenleap-toast-rise {
+          from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+          to { opacity: 1; transform: translateX(-50%) translateY(0); }
+        }
+        #zenleap-toast {
+          position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+          background: var(--zl-bg-elevated); color: var(--zl-text-primary); padding: 10px 20px;
+          border-radius: var(--zl-r-md); font-size: 13px; z-index: 100010; max-width: 80vw;
+          border: 1px solid var(--zl-accent-border); box-shadow: var(--zl-shadow-elevated);
+          animation: zenleap-toast-rise 0.2s ease-out; font-family: var(--zl-font-ui);
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    let toast = document.getElementById('zenleap-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'zenleap-toast';
+      document.documentElement.appendChild(toast);
+    }
+    toast.textContent = String(message ?? '');
+    toast.style.display = 'block';
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { toast.style.display = 'none'; }, duration);
+  }
+
+  // Icons from plugins, session files or synced spaces end up in HTML templates: keep
+  // them to short plain text (emoji) or an icon URL so they can never break the
+  // XHTML parser; fall back when nothing usable is left.
+  function safeIconText(icon, fallback = '') {
+    if (typeof icon !== 'string') return fallback;
+    const cleaned = icon.replace(/[<>&"'`]/g, '').trim();
+    if (!cleaned) return fallback;
+    return isImageIcon(cleaned) ? cleaned : Array.from(cleaned).slice(0, 8).join('');
+  }
+
+  // Stable per-tab key for result rows (tab._tPos no longer exists since Firefox 151)
+  const _tabKeys = new WeakMap();
+  let _tabKeyCounter = 0;
+  function tabKey(tab) {
+    if (!_tabKeys.has(tab)) _tabKeys.set(tab, ++_tabKeyCounter);
+    return _tabKeys.get(tab);
+  }
 
   // ============================================
   // COMMAND PALETTE

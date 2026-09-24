@@ -4,7 +4,7 @@ var ZenLeapPlugin = {
     return {
       commands: {
         'show-stats': () => {
-          const tabs = api.tabs.getAll();
+          const tabs = api.tabs.getAll({ allWorkspaces: true });
           const domains = {};
           let pinnedCount = 0;
           let totalAge = 0;
@@ -42,7 +42,7 @@ var ZenLeapPlugin = {
         },
 
         'domain-breakdown': () => {
-          const tabs = api.tabs.getAll();
+          const tabs = api.tabs.getAll({ allWorkspaces: true });
           const domains = {};
 
           for (const tab of tabs) {
