@@ -948,7 +948,7 @@
     } catch (e) {
       // File doesn't exist — create template
       const template = JSON.stringify({
-        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme. Run :reload-themes after editing.",
+        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme (themes without it start from Meridian). After editing, run 'Reload Themes' from the ZenLeap command palette (type > in tab search).",
         "example-custom": {
           name: "Example Custom",
           extends: "meridian",
