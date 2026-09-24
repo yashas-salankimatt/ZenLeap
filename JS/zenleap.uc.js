@@ -104,7 +104,8 @@
     'display.showRelativeNumbers': { default: 'always', type: 'select', label: 'Show Relative Numbers', description: 'When to show relative distance numbers on tab icons', category: 'Display', group: 'Tab Badges', options: [{ value: 'always', label: 'Always' }, { value: 'active', label: 'In Leap/Browse Mode' }, { value: 'off', label: 'Off' }] },
     'display.persistEssentialMarks': { default: true, type: 'toggle', label: 'Persist Essential Tab Marks', description: 'Save marks on essential tabs across browser restarts', category: 'Display', group: 'Tab Badges' },
     'display.currentTabIndicator': { default: '\u00B7', type: 'text', label: 'Current Tab Indicator', description: 'Badge character on current tab', category: 'Display', group: 'Tab Badges', maxLength: 2 },
-    'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars. When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
+    'display.vimModeInBars':        { default: true, type: 'toggle', label: 'Vim Mode in Search/Command', description: 'Enable vim normal mode in search and command bars (and the URL bar, see below). When off, Escape always closes the bar.', category: 'Display', group: 'Search' },
+    'display.urlbarVim':            { default: true, type: 'toggle', label: 'Vim Mode in URL Bar', description: 'INSERT/NORMAL modes in the browser URL bar (Ctrl+L). Escape switches to NORMAL once you typed something; otherwise it closes the URL bar as usual.', category: 'Display', group: 'Search' },
     'display.searchAllWorkspaces':  { default: false, type: 'toggle', label: 'Search All Workspaces', description: 'Search tabs across all workspaces, not just the current one', category: 'Display', group: 'Search' },
     'display.searchIncludeEssentialTabs': { default: true, type: 'toggle', label: 'Search Includes Essential Tabs', description: 'Include essential tabs in tab search results', category: 'Display', group: 'Search' },
     'display.ggSkipPinned':         { default: true, type: 'toggle', label: 'gg Skips Pinned Tabs', description: 'When enabled, gg in browse/g-mode jumps to first unpinned tab instead of absolute first', category: 'Display', group: 'Navigation' },
@@ -14794,6 +14795,12 @@
     try { return gURLBar?.inputField; } catch (e) { return null; }
   }
 
+  // URL-bar vim mode has its own toggle; it also follows the general
+  // "Vim Mode in Search/Command" switch, as it always has.
+  function isUrlbarVimEnabled() {
+    return !!S['display.vimModeInBars'] && S['display.urlbarVim'] !== false;
+  }
+
   // --- jj helpers for URL bar ---
   function cancelUrlbarJJ() {
     if (urlbarJjPendingTimeout) {
@@ -14827,11 +14834,17 @@
   // late — moz-urlbar registers its own handlers first and the editor
   // processes keys before our preventDefault can take effect.
   function urlbarInputKeyHandler(e) {
-    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+    if (!urlbarVimActive || !isUrlbarVimEnabled()) return;
+    if (e.isComposing || e.keyCode === 229) return;
 
     // Skip modifier-only keys — they never generate keypress/beforeinput
     // and would leave urlbarSuppressKeypress stuck true.
     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+
+    // A new key: a flag left by the previous keydown is stale. A keydown that
+    // was preventDefault()ed gets no keypress, so without this reset the
+    // first character typed after i/a/A was swallowed.
+    urlbarSuppressKeypress = false;
 
     // ---- NORMAL MODE: intercept ALL keys ----
     if (urlbarVimMode === 'normal') {
@@ -14864,8 +14877,15 @@
     }
 
     // ---- INSERT MODE ----
-    // Escape: switch to normal mode
+    // Escape: switch to normal mode — but only once the user typed something.
+    // Otherwise (nothing typed, or a search-mode chip to leave) Firefox's own
+    // Escape handling runs, so a single Escape still closes the URL bar
+    // (incl. Zen's floating Ctrl+T bar) as it does without ZenLeap.
     if (e.key === 'Escape') {
+      if (!gURLBar.valueIsTyped || gURLBar.searchMode) {
+        flushUrlbarJ();
+        return;
+      }
       urlbarSuppressKeypress = true;
       e.preventDefault();
       e.stopPropagation();
@@ -14937,7 +14957,7 @@
       e.stopImmediatePropagation();
       return;
     }
-    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+    if (!urlbarVimActive || !isUrlbarVimEnabled()) return;
     // Belt-and-suspenders: also block keypress if still in normal mode
     if (urlbarVimMode === 'normal' && e.key !== 'Escape') {
       e.preventDefault();
@@ -14949,11 +14969,12 @@
   // beforeinput handler — last line of defense against text insertion.
   // Checks the suppress flag (deferred-cleared by keypress) and normal mode.
   function urlbarBeforeinputHandler(e) {
+    if (_urlbarProgrammaticEdit) return;
     if (urlbarSuppressKeypress) {
       e.preventDefault();
       return;
     }
-    if (!urlbarVimActive || !S['display.vimModeInBars']) return;
+    if (!urlbarVimActive || !isUrlbarVimEnabled()) return;
     if (urlbarVimMode === 'normal') {
       e.preventDefault();
     }
@@ -14967,7 +14988,7 @@
     urlbarCursorPos = 0;
     urlbarSuppressKeypress = false;
     cancelUrlbarJJ();
-    if (S['display.vimModeInBars']) {
+    if (isUrlbarVimEnabled()) {
       ensureUrlbarVimIndicator();
       updateUrlbarVimIndicator();
     }
@@ -15018,8 +15039,7 @@
     if (urlbarVimIndicator && urlbarVimIndicator.isConnected) return;
 
     // moz-urlbar uses class, not id, for this container
-    const container = gURLBar?.querySelector('.urlbar-input-container')
-      || gURLBar?.inputField?.closest('.urlbar-input-container');
+    const container = gURLBar?.querySelector('.urlbar-input-container');
     if (!container) return;
 
     urlbarVimIndicator = document.createElement('span');
@@ -15031,7 +15051,7 @@
   }
 
   function updateUrlbarVimIndicator() {
-    if (!S['display.vimModeInBars']) {
+    if (!isUrlbarVimEnabled()) {
       hideUrlbarVimIndicator();
       // Clean up normal mode state if we were in it (setting was toggled off)
       if (urlbarVimMode === 'normal') {
@@ -15117,15 +15137,9 @@
         });
         gURLBar.handleCommand(syntheticEvent);
       } catch (e) {
-        // handleCommand failed — try loading the URL directly as fallback
-        try {
-          const url = input.value.trim();
-          if (url) {
-            gBrowser.loadURI(Services.io.newURI(url), {
-              triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-            });
-          }
-        } catch (_) { /* truly no recourse */ }
+        // Never load the typed text ourselves: that would bypass the URL bar's
+        // checks and run with the system principal (javascript:, file:, ...).
+        reportError('URL bar navigation failed', e);
       }
       return;
     }
@@ -15192,23 +15206,11 @@
         break;
 
       case 'G': // Go to last autocomplete result
-        try {
-          if (gURLBar.view?.isOpen) {
-            gURLBar.controller.userSelectionBehavior = 'arrow';
-            const count = gURLBar.view.visibleRowCount || 0;
-            if (count > 0) gURLBar.view.selectBy(count, { reverse: false });
-          }
-        } catch (e) { /* ignore */ }
+        urlbarSelectRow(Infinity);
         break;
 
       case 'g': // Go to first autocomplete result
-        try {
-          if (gURLBar.view?.isOpen) {
-            gURLBar.controller.userSelectionBehavior = 'arrow';
-            const count = gURLBar.view.visibleRowCount || 0;
-            if (count > 0) gURLBar.view.selectBy(count, { reverse: true });
-          }
-        } catch (e) { /* ignore */ }
+        urlbarSelectRow(0);
         break;
 
       // Insert mode switches
@@ -15243,22 +15245,21 @@
         updateUrlbarVimIndicator();
         break;
 
-      // Editing commands
+      // Editing commands (through the editor, so u can undo them)
       case 'x': // Delete character at cursor
+      case 'd': // Delete character (like x for simplicity)
         if (urlbarCursorPos < len) {
-          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
+          urlbarEdit(input, urlbarCursorPos, urlbarCursorPos + 1, '');
           if (urlbarCursorPos >= input.value.length && input.value.length > 0) {
             urlbarCursorPos = input.value.length - 1;
           }
-          input.dispatchEvent(new Event('input', { bubbles: true }));
           updateUrlbarBlockCursor();
         }
         break;
 
       case 's': // Substitute (delete char and enter insert)
         if (urlbarCursorPos < len) {
-          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
-          input.dispatchEvent(new Event('input', { bubbles: true }));
+          urlbarEdit(input, urlbarCursorPos, urlbarCursorPos + 1, '');
         }
         urlbarVimMode = 'insert';
         input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
@@ -15267,9 +15268,8 @@
         break;
 
       case 'S': // Substitute entire line (clear all and enter insert mode)
-        input.value = '';
+        urlbarEdit(input, 0, len, '');
         urlbarCursorPos = 0;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
         urlbarVimMode = 'insert';
         input.setSelectionRange(0, 0);
         input.focus();
@@ -15277,41 +15277,29 @@
         break;
 
       case 'D': // Delete to end of line
-        input.value = text.slice(0, urlbarCursorPos);
+        urlbarEdit(input, urlbarCursorPos, len, '');
         if (urlbarCursorPos > 0 && input.value.length > 0) {
           urlbarCursorPos = input.value.length - 1;
         } else {
           urlbarCursorPos = 0;
         }
-        input.dispatchEvent(new Event('input', { bubbles: true }));
         updateUrlbarBlockCursor();
         break;
 
       case 'C': // Change to end of line (delete to end + insert)
-        input.value = text.slice(0, urlbarCursorPos);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        urlbarEdit(input, urlbarCursorPos, len, '');
         urlbarVimMode = 'insert';
         input.setSelectionRange(urlbarCursorPos, urlbarCursorPos);
         input.focus();
         updateUrlbarVimIndicator();
         break;
 
-      case 'd': // Delete character (like x for simplicity)
-        if (urlbarCursorPos < len) {
-          input.value = text.slice(0, urlbarCursorPos) + text.slice(urlbarCursorPos + 1);
-          if (urlbarCursorPos >= input.value.length && input.value.length > 0) {
-            urlbarCursorPos = input.value.length - 1;
-          }
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          updateUrlbarBlockCursor();
-        }
-        break;
-
-      case 'u': // Undo — trigger native undo on the input
+      case 'u': // Undo the last edit (typing or a normal-mode edit above)
         input.focus();
+        _urlbarProgrammaticEdit = true;
         try { document.execCommand('undo'); } catch (e) { /* undo not available */ }
-        urlbarCursorPos = input.selectionStart || 0;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        finally { _urlbarProgrammaticEdit = false; }
+        urlbarCursorPos = Math.min(input.selectionStart || 0, Math.max(0, input.value.length - 1));
         updateUrlbarBlockCursor();
         break;
 
@@ -15321,15 +15309,48 @@
           // Re-read current state — the async gap may have allowed changes
           const inp = getUrlbarInput();
           if (!inp || !urlbarVimActive || urlbarVimMode !== 'normal') return;
-          const currentText = inp.value || '';
-          const currentLen = currentText.length;
-          const pos = Math.min(urlbarCursorPos + 1, currentLen);
-          inp.value = currentText.slice(0, pos) + clip + currentText.slice(pos);
+          const pos = Math.min(urlbarCursorPos + 1, (inp.value || '').length);
+          urlbarEdit(inp, pos, pos, clip);
           urlbarCursorPos = pos + clip.length - 1;
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
           updateUrlbarBlockCursor();
         }).catch(() => { /* clipboard read failed */ });
         break;
+    }
+  }
+
+  // Select the first (0) or last (Infinity) row of the open URL bar popup, the
+  // way arrow keys select (updates the input to that result).
+  function urlbarSelectRow(index) {
+    try {
+      const view = gURLBar.view;
+      if (!view?.isOpen) return;
+      const count = view.visibleRowCount || 0;
+      if (!count) return;
+      gURLBar.controller.cancelQuery?.();
+      gURLBar.controller.userSelectionBehavior = 'arrow';
+      view.selectedRowIndex = Math.max(0, Math.min(count - 1, index));
+    } catch (e) { /* view closed meanwhile */ }
+  }
+
+  // Replace [start, end) of the URL bar text through its editor, so the edit
+  // is undoable and fires the same input events as typing.
+  let _urlbarProgrammaticEdit = false;
+  function urlbarEdit(input, start, end, text) {
+    if (start === end && !text) return;
+    input.focus();
+    input.setSelectionRange(start, end);
+    let ok = false;
+    _urlbarProgrammaticEdit = true;
+    try {
+      ok = text ? document.execCommand('insertText', false, text) : document.execCommand('delete', false);
+    } catch (e) {
+      ok = false;
+    } finally {
+      _urlbarProgrammaticEdit = false;
+    }
+    if (!ok) {
+      input.setRangeText(text, start, end, 'end');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
     }
   }
 
@@ -15375,6 +15396,9 @@
     document.head.appendChild(style);
 
     log('URL bar vim mode CSS injected');
+    // Attach now so the INSERT badge shows on focus, not on the first keystroke
+    // (handleKeyDown still retries lazily if the URL bar wasn't ready yet).
+    lazySetupUrlbarVim();
   }
 
 
@@ -17694,7 +17718,7 @@
         const _gURLBarFocused = typeof gURLBar !== 'undefined' && gURLBar && gURLBar.focused;
         if (_gURLBarFocused) {
           if (!urlbarVimSetupDone) lazySetupUrlbarVim();
-          if (S['display.vimModeInBars'] && urlbarVimActive && urlbarVimMode === 'normal') return;
+          if (isUrlbarVimEnabled() && urlbarVimActive && urlbarVimMode === 'normal') return;
         }
       } catch (_e) { /* ignore */ }
     }
