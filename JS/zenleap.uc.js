@@ -9625,6 +9625,7 @@
     if (_gtileDocAbort) _gtileDocAbort.abort();
     _gtileDocAbort = new AbortController();
     const _gtileSig = { signal: _gtileDocAbort.signal };
+    onTeardown(() => _gtileDocAbort?.abort());
 
     const DRAG_THRESHOLD = 5;
 
@@ -14937,15 +14938,15 @@
     // and stopPropagation() prevents the input from ever seeing it.
     // This is the ONLY reliable way to prevent moz-urlbar's internal editor
     // from processing keystrokes.
-    gURLBar.addEventListener('keydown', urlbarInputKeyHandler, true);
-    gURLBar.addEventListener('keypress', urlbarKeypressHandler, true);
+    listen(gURLBar, 'keydown', urlbarInputKeyHandler, true);
+    listen(gURLBar, 'keypress', urlbarKeypressHandler, true);
 
     // beforeinput on the input itself — last line of defense
-    input.addEventListener('beforeinput', urlbarBeforeinputHandler, true);
+    listen(input, 'beforeinput', urlbarBeforeinputHandler, true);
 
     // Focus/blur listeners for immediate badge display
-    input.addEventListener('focus', onUrlbarFocus);
-    input.addEventListener('blur', onUrlbarBlur);
+    listen(input, 'focus', onUrlbarFocus);
+    listen(input, 'blur', onUrlbarBlur);
 
     urlbarVimSetupDone = true;
     log('URL bar vim mode listeners attached (on gURLBar capture)');
@@ -16398,7 +16399,6 @@
   // to prevent keydown/keyup leaking to web pages, then restore after a delay.
   function interceptQuickNav() {
     stealFocusFromContent();
-    quickNavInterceptedUntil = Date.now() + 300;
     clearTimeout(quickNavRestoreTimer);
     quickNavRestoreTimer = setTimeout(() => {
       if (!leapMode && !searchMode && !commandMode && !settingsMode && !helpMode && !reorgMode) {
@@ -18157,75 +18157,104 @@
 
   // Set up event listeners for tab changes
   function setupTabListeners() {
-    gBrowser.tabContainer.addEventListener('TabSelect', (event) => {
-      updateRelativeNumbers();
+    const tc = gBrowser.tabContainer;
+    listen(tc, 'TabSelect', (event) => {
+      // Coalesced with the folder-active mutation Zen makes right after a switch
+      scheduleRelativeNumberUpdate();
       if (recordingJumps && event.target) {
         recordJump(event.target);
       }
       _pluginEventBus.emit('tab:activated', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabOpen', (event) => {
+    listen(tc, 'TabOpen', (event) => {
       scheduleRelativeNumberUpdate();
       _pluginEventBus.emit('tab:created', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabClose', (event) => {
+    listen(tc, 'TabClose', (event) => {
       scheduleRelativeNumberUpdate();
+      if (gtileMode && gtileTabRects.some(r => r.tab === event.target)) {
+        // A split pane closed under the gTile overlay: its regions are stale
+        exitGtileMode(false);
+      }
       _pluginEventBus.emit('tab:closed', { tab: event.target });
     });
 
-    gBrowser.tabContainer.addEventListener('TabMove', (event) => {
+    listen(tc, 'TabMove', (event) => {
       scheduleRelativeNumberUpdate();
       _pluginEventBus.emit('tab:moved', { tab: event.target });
     });
 
-    document.addEventListener('ZenWorkspaceChanged', (event) => {
-      scheduleRelativeNumberUpdate();
-      _pluginEventBus.emit('workspace:changed', { event });
-    });
+    listen(tc, 'TabGroupMoved', () => scheduleRelativeNumberUpdate());
 
-    // Watch for folder collapse/expand and folder-active changes to refresh
-    // relative numbers.  Zen toggles 'collapsed' on zen-folder elements and
-    // 'folder-active' on tabs that peek out from collapsed folders.
+    // Workspace switches (Zen has no ZenWorkspaceChanged DOM event; this is its
+    // documented hook). Zen awaits these callbacks, so keep it cheap.
+    try {
+      const onWorkspaceChanged = ({ workspace } = {}) => {
+        if (_tornDown) return;
+        _visibleItemsCache = null;
+        scheduleRelativeNumberUpdate();
+        _pluginEventBus.emit('workspace:changed', { workspace });
+      };
+      gZenWorkspaces.addChangeListeners(onWorkspaceChanged);
+      onTeardown(() => gZenWorkspaces.removeChangeListeners?.(onWorkspaceChanged));
+    } catch (e) {
+      reportError('Could not register workspace change listener', e);
+    }
+
+    // Watch for folder collapse/expand, folder-active changes and the space's
+    // collapsed pinned section to refresh relative numbers.
     _folderObserver = new MutationObserver(() => {
       _visibleItemsCache = null;
       scheduleRelativeNumberUpdate();
     });
-    _folderObserver.observe(gBrowser.tabContainer, {
+    _folderObserver.observe(tc, {
       attributes: true,
-      attributeFilter: ['collapsed', 'folder-active'],
+      attributeFilter: ['collapsed', 'folder-active', 'collapsedpinnedtabs'],
       subtree: true,
     });
+    onTeardown(() => { _folderObserver?.disconnect(); _folderObserver = null; });
 
     log('Tab listeners set up');
   }
 
-  // Suppress keyup events while in active modes or after quick-nav interception
-  // to prevent them from leaking to content
-  // (e.g., Space keyup reaching YouTube after Ctrl+Space keydown entered Leap Mode,
-  //  or Alt/J/K keyup reaching content after Alt+HJKL navigation,
-  //  or browse mode j/k reaching about:newtab search input)
+  // Suppress keyups whose keydown ZenLeap consumed, so they don't reach the page
+  // (e.g. the Space keyup after Ctrl+Space, or j/k keyups in browse mode).
+  // Keyups of keys the page did receive must pass, or web apps see stuck keys.
+  const _consumedKeyCodes = new Set();
+
   function handleKeyUp(event) {
-    if (leapMode || searchMode || commandMode || settingsMode || helpMode || reorgMode || gtileMode
-        || folderDeleteMode || (urlbarVimActive && urlbarVimMode === 'normal')
-        || Date.now() < quickNavInterceptedUntil) {
+    const code = event.code || event.key;
+    const consumed = _consumedKeyCodes.delete(code);
+    if (consumed || (urlbarVimActive && urlbarVimMode === 'normal' && gURLBar?.focused)) {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
     }
   }
 
+  // Window-level keydown entry point: remembers which keys ZenLeap consumed so
+  // handleKeyUp can swallow exactly their keyups.
+  function onWindowKeyDown(event) {
+    const code = event.code || event.key;
+    const wasPrevented = event.defaultPrevented;
+    handleKeyDown(event);
+    if (!wasPrevented && event.defaultPrevented) _consumedKeyCodes.add(code);
+    else _consumedKeyCodes.delete(code);
+  }
+
   // Set up keyboard listener
   function setupKeyboardListener() {
-    window.addEventListener('keydown', handleKeyDown, true);
-    window.addEventListener('keyup', handleKeyUp, true);
+    listen(window, 'keydown', onWindowKeyDown, true);
+    listen(window, 'keyup', handleKeyUp, true);
+    // A window losing focus never delivers the pending keyups.
+    listen(window, 'blur', () => _consumedKeyCodes.clear());
 
     // Close gTile overlay if split view is deactivated externally
-    _splitViewDeactivatedHandler = () => {
+    listen(window, 'ZenViewSplitter:SplitViewDeactivated', () => {
       if (gtileMode) exitGtileMode(false);
-    };
-    window.addEventListener('ZenViewSplitter:SplitViewDeactivated', _splitViewDeactivatedHandler);
+    });
     log('Keyboard listener set up');
   }
 
@@ -18421,6 +18450,25 @@
       || document.getElementById('zen-toolbar-background');
   }
 
+  // Remove ZenLeap's browser-chrome overrides so Zen's own theme takes over.
+  function revertBrowserTheme() {
+    const root = document.documentElement;
+    document.getElementById('zenleap-browser-theme')?.remove();
+    for (const prop of _zenBrowserProps) root.style.removeProperty(prop);
+    // Clean up -old and opacity from :root too (defensive, for legacy Zen)
+    root.style.removeProperty('--zen-main-browser-background-old');
+    root.style.removeProperty('--zen-main-browser-background-toolbar-old');
+    root.style.removeProperty('--zen-background-opacity');
+    const zenBgEl = _getZenBgEl();
+    const zenToolbarBgEl = _getZenToolbarBgEl();
+    if (zenBgEl) {
+      for (const prop of _zenBgElProps) zenBgEl.style.removeProperty(prop);
+    }
+    if (zenToolbarBgEl) {
+      for (const prop of _zenToolbarBgElProps) zenToolbarBgEl.style.removeProperty(prop);
+    }
+  }
+
   // applyBrowserTheme accepts an options object:
   //   t: theme object (resolved from settings if omitted)
   //   duringAnimation: true when called from the workspace-change wrapper, so we
@@ -18445,19 +18493,7 @@
     if (existingStyle) existingStyle.remove();
 
     if (!S['appearance.applyToBrowser']) {
-      // Revert: remove our overrides so Zen's own theme takes over
-      for (const prop of _zenBrowserProps) root.style.removeProperty(prop);
-      // Clean up -old and opacity from :root too (defensive, for legacy Zen)
-      root.style.removeProperty('--zen-main-browser-background-old');
-      root.style.removeProperty('--zen-main-browser-background-toolbar-old');
-      root.style.removeProperty('--zen-background-opacity');
-      // Also clear element-level overrides if applicable
-      if (zenBgEl) {
-        for (const prop of _zenBgElProps) zenBgEl.style.removeProperty(prop);
-      }
-      if (zenToolbarBgEl) {
-        for (const prop of _zenToolbarBgElProps) zenToolbarBgEl.style.removeProperty(prop);
-      }
+      revertBrowserTheme();
       return;
     }
 
@@ -18597,16 +18633,17 @@
   // Hook into Zen workspace changes to re-apply browser theme
   let _workspaceHookRetries = 0;
   function setupWorkspaceThemeHook() {
+    if (_tornDown) return;
     if (!window.gZenThemePicker || !window.gZenWorkspaces) {
       if (++_workspaceHookRetries > 50) {
         log('Workspace theme hook: globals not found after 50 retries, skipping');
         return;
       }
-      setTimeout(setupWorkspaceThemeHook, 100);
+      lifetimeTimeout(setupWorkspaceThemeHook, 100);
       return;
     }
 
-    // Guard against double-wrapping if the script is reloaded in the same window
+    // Guard against double-wrapping if another copy is (still) loaded in this window
     if (gZenThemePicker._zenleapWrapped) {
       log('Workspace theme hook already installed, skipping');
       return;
@@ -18618,8 +18655,11 @@
     // our theme in the same rAF callback — before the browser paints — so the
     // user never sees native Zen colors flash through.
     try {
-      const _origOnWorkspaceChange = gZenThemePicker.onWorkspaceChange.bind(gZenThemePicker);
-      gZenThemePicker.onWorkspaceChange = (...args) => {
+      const picker = gZenThemePicker;
+      const hadOwn = Object.prototype.hasOwnProperty.call(picker, 'onWorkspaceChange');
+      const previous = picker.onWorkspaceChange;
+      const _origOnWorkspaceChange = previous.bind(picker);
+      const wrapper = (...args) => {
         const result = _origOnWorkspaceChange(...args);
         if (S['appearance.applyToBrowser']) {
           // Pass duringAnimation so we don't clobber Zen's cross-fade spring
@@ -18627,7 +18667,15 @@
         }
         return result;
       };
-      gZenThemePicker._zenleapWrapped = true;
+      picker.onWorkspaceChange = wrapper;
+      picker._zenleapWrapped = true;
+      onTeardown(() => {
+        if (picker.onWorkspaceChange === wrapper) {
+          if (hadOwn) picker.onWorkspaceChange = previous;
+          else delete picker.onWorkspaceChange;
+        }
+        delete picker._zenleapWrapped;
+      });
     } catch (e) {
       log(`Warning: Could not wrap onWorkspaceChange: ${e}`);
     }
@@ -18638,13 +18686,15 @@
     // covers any future code paths that reset CSS properties without going
     // through onWorkspaceChange.
     try {
-      gZenWorkspaces.addChangeListeners(() => {
-        if (S['appearance.applyToBrowser']) {
+      const onChange = () => {
+        if (S['appearance.applyToBrowser'] && !_tornDown) {
           // Change listeners fire after _animateTabs completes, so the animation
           // is done. Call without duringAnimation to sync -old and opacity values.
           try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
         }
-      });
+      };
+      gZenWorkspaces.addChangeListeners(onChange);
+      onTeardown(() => gZenWorkspaces.removeChangeListeners?.(onChange));
     } catch (e) {
       log(`Warning: Could not add workspace change listener: ${e}`);
     }
@@ -18665,7 +18715,7 @@
     // If the onWorkspaceChange wrapper is working, this is redundant but harmless.
     if (gZenWorkspaces.promiseInitialized?.then) {
       gZenWorkspaces.promiseInitialized.then(() => {
-        if (S['appearance.applyToBrowser']) {
+        if (S['appearance.applyToBrowser'] && !_tornDown) {
           requestAnimationFrame(() => requestAnimationFrame(() => {
             try { applyBrowserTheme(); } catch (e) { log(`Warning: applyBrowserTheme failed: ${e}`); }
           }));
@@ -19524,74 +19574,173 @@
     }
   }
 
-  // Cleanup all listeners and observers on window unload to prevent shutdown hangs
-  function destroy() {
-    // Remove window-level keyboard listeners
-    window.removeEventListener('keydown', handleKeyDown, true);
-    window.removeEventListener('keyup', handleKeyUp, true);
+  // ============================================
+  // LIFECYCLE: init, teardown registry, Sine hot-unload
+  // ============================================
 
-    if (_splitViewDeactivatedHandler) {
-      window.removeEventListener('ZenViewSplitter:SplitViewDeactivated', _splitViewDeactivatedHandler);
-      _splitViewDeactivatedHandler = null;
+  // Oldest Zen release this version targets. Older builds still load, but get
+  // one console warning (fallbacks for pre-floor versions were removed).
+  const MIN_ZEN_VERSION = '1.21.7b';
+
+  // Teardown registry. Window-lifetime listeners pass this signal (see listen())
+  // so teardown removes them all at once; observers, wrappers and other
+  // resources register a callback with onTeardown().
+  const _lifetime = new AbortController();
+  const _teardownCallbacks = [];
+  let _tornDown = false;
+
+  function onTeardown(fn) {
+    _teardownCallbacks.push(fn);
+  }
+
+  // addEventListener bound to this instance's lifetime.
+  function listen(target, type, handler, options = {}) {
+    if (typeof options === 'boolean') options = { capture: options };
+    target.addEventListener(type, handler, { ...options, signal: _lifetime.signal });
+  }
+
+  // setTimeout that teardown cancels (for deferred init-time work).
+  function lifetimeTimeout(fn, ms) {
+    const id = setTimeout(() => { if (!_tornDown) fn(); }, ms);
+    onTeardown(() => clearTimeout(id));
+    return id;
+  }
+
+  // Compare "1.22.3b"-style versions numerically (suffix letters are ignored).
+  function zenVersionAtLeast(version, min) {
+    const parse = v => String(v).trim().replace(/[a-z]+\d*$/i, '').split('.').map(n => parseInt(n, 10) || 0);
+    const a = parse(version), b = parse(min);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+    }
+    return true;
+  }
+
+  function warnIfZenTooOld() {
+    try {
+      const version = Services.appinfo.version;
+      if (zenVersionAtLeast(version, MIN_ZEN_VERSION)) return;
+      // Warn once per session, not once per window.
+      let windows = 0;
+      for (const _w of Services.wm.getEnumerator('navigator:browser')) windows++;
+      if (windows > 1) return;
+      console.warn(`[ZenLeap] Zen ${version} is older than the minimum supported version ${MIN_ZEN_VERSION}. Some features may not work; please update Zen Browser.`);
+    } catch (e) { /* appinfo unavailable */ }
+  }
+
+  // Attributes ZenLeap sets on tabs, folders, the URL bar and :root.
+  const ZENLEAP_ATTRS = [
+    'data-zenleap-rel', 'data-zenleap-direction', 'data-zenleap-distance', 'data-zenleap-has-mark',
+    'data-zenleap-mark', 'data-zenleap-highlight', 'data-zenleap-selected', 'data-zenleap-vim',
+    'data-zenleap-active', 'data-zenleap-mark-mode', 'data-zenleap-badges',
+  ];
+
+  // Close every ZenLeap mode/overlay without side effects on the page.
+  function exitAllModes() {
+    const steps = [
+      () => { if (gtileMode) exitGtileMode(false); },
+      () => { if (reorgMode) exitReorgMode(false); },
+      () => { if (settingsMode) exitSettingsMode(); },
+      () => { if (helpMode) exitHelpMode(); },
+      () => { if (searchMode) exitSearchMode(); },
+      () => { if (folderDeleteMode) closeFolderDeleteModal(); },
+      () => { if (leapMode || browseMode) exitLeapMode(false); },
+      () => { if (typeof updateMode !== 'undefined' && updateMode) exitUpdateMode(); },
+      () => { if (typeof _pluginManagerMode !== 'undefined' && _pluginManagerMode) exitPluginManagerMode(); },
+      () => { if (typeof updateToast !== 'undefined' && updateToast) dismissUpdateToast(false); },
+      () => { if (quickNavPeeking || sidebarWasExpanded) { hideFloatingSidebar(); quickNavPeeking = false; } },
+    ];
+    for (const step of steps) {
+      try { step(); } catch (e) { reportError('Closing mode during teardown failed', e); }
+    }
+  }
+
+  // Remove everything this instance added. `full` (Sine unload / disable / hot
+  // reload) also removes ZenLeap's DOM, attributes and theme overrides so a
+  // re-injected copy starts clean; on window unload the DOM goes away anyway.
+  function teardown({ full = true } = {}) {
+    if (_tornDown) return;
+    if (full) exitAllModes();
+    _tornDown = true;
+
+    _lifetime.abort();
+    for (const fn of _teardownCallbacks.splice(0).reverse()) {
+      try { fn(); } catch (e) { reportError('Teardown step failed', e); }
+    }
+    for (const t of [leapModeTimeout, gNumberTimeout, browseGTimeout, browseNumberTimeout, previewDebounceTimer,
+                     quickNavPeekTimer, quickNavRestoreTimer, jjPendingTimeout, urlbarJjPendingTimeout,
+                     _searchInputDebounceTimer]) {
+      clearTimeout(t);
+    }
+    if (_relNumRafId) cancelAnimationFrame(_relNumRafId);
+
+    // Plugin system: prefer its own teardown hook when it provides one.
+    if (typeof teardownPluginSystem === 'function') {
+      try { teardownPluginSystem({ windowClosing: !full }); } catch (e) { reportError('Plugin teardown failed', e); }
+    } else {
+      // Flush plugin data — fire-and-forget during unload (I/O still works here)
+      if (_pluginSaveTimer) {
+        clearTimeout(_pluginSaveTimer);
+        _pluginSaveTimer = null;
+      }
+      if (_pluginDataLoaded) {
+        IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
+          console.error('[ZenLeap] Plugin data flush on shutdown failed:', e);
+        });
+      }
     }
 
-    // Disconnect folder mutation observer
-    if (_folderObserver) {
-      _folderObserver.disconnect();
-      _folderObserver = null;
+    if (full) {
+      try {
+        for (const el of document.querySelectorAll('[id^="zenleap-"]')) el.remove();
+        const attrSelector = ZENLEAP_ATTRS.map(a => `[${a}]`).join(',');
+        for (const el of document.querySelectorAll(attrSelector)) {
+          for (const a of ZENLEAP_ATTRS) el.removeAttribute(a);
+        }
+        for (const a of ZENLEAP_ATTRS) document.documentElement.removeAttribute(a);
+        const rootStyle = document.documentElement.style;
+        for (const prop of [...rootStyle]) {
+          if (prop.startsWith('--zl-')) rootStyle.removeProperty(prop);
+        }
+        revertBrowserTheme();
+      } catch (e) { reportError('Removing ZenLeap DOM failed', e); }
+      // Let a re-injected copy (Sine hot reload) initialize.
+      delete window.__zenleapLoaded;
     }
-
-    // Abort all gTile document-level listeners
-    if (_gtileDocAbort) {
-      _gtileDocAbort.abort();
-      _gtileDocAbort = null;
-    }
-
-    // Flush plugin data — fire-and-forget during unload (I/O still works here)
-    if (_pluginSaveTimer) {
-      clearTimeout(_pluginSaveTimer);
-      _pluginSaveTimer = null;
-    }
-    if (_pluginDataLoaded) {
-      IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
-        console.error('[ZenLeap] Plugin data flush on shutdown failed:', e);
-      });
-    }
-
-    log('ZenLeap destroyed — listeners and observers cleaned up');
+    log(`ZenLeap torn down (${full ? 'full' : 'window unload'})`);
   }
 
   // Initialize
   let initRetries = 0;
-  const MAX_INIT_RETRIES = 20;
+  const MAX_INIT_RETRIES = 40;
   let _zenleapInitDone = false;
   let _folderObserver = null;         // MutationObserver for folder collapse/expand
-  let _splitViewDeactivatedHandler = null; // Handler for ZenViewSplitter:SplitViewDeactivated
 
   function init() {
-    if (_zenleapInitDone) {
+    if (_zenleapInitDone || _tornDown) {
       log('ZenLeap already initialized, skipping re-init');
       return;
     }
 
     log(`Initializing ZenLeap v${VERSION}...`);
 
-    if (!gBrowser || !gBrowser.tabs) {
+    if (!window.gBrowser?.tabs || !window.gZenWorkspaces) {
       initRetries++;
       if (initRetries > MAX_INIT_RETRIES) {
         console.error('[ZenLeap] Failed to initialize after ' + MAX_INIT_RETRIES + ' retries. gBrowser not available.');
         return;
       }
-      log(`gBrowser not ready, retrying in 500ms (attempt ${initRetries}/${MAX_INIT_RETRIES})`);
-      setTimeout(init, 500);
+      log(`gBrowser not ready, retrying (attempt ${initRetries}/${MAX_INIT_RETRIES})`);
+      lifetimeTimeout(init, initRetries < 5 ? 50 : 500);
       return;
     }
 
     _zenleapInitDone = true;
+    warnIfZenTooOld();
 
     injectStyles();
     // Load user themes async; re-apply theme once loaded (built-in applies immediately via injectStyles)
-    loadUserThemes().then(() => applyTheme());
+    loadUserThemes().then(() => { if (!_tornDown) applyTheme(); });
     ensureThemesFile();
     initPluginSystem().catch(e => console.error('[ZenLeap] Plugin system init failed:', e));
     setupTabListeners();
@@ -19600,33 +19749,40 @@
     setupWorkspaceThemeHook();
     updateRelativeNumbers();
 
-    // Clean up listeners/observers on window unload to prevent shutdown hangs
-    window.addEventListener('unload', destroy);
+    // Window unload: remove listeners/observers (prevents shutdown hangs), flush data.
+    listen(window, 'unload', () => teardown({ full: false }), { once: true });
 
     log(`ZenLeap v${VERSION} initialized successfully!`);
-    log('Press Ctrl+Space to enter leap mode (auto-expands sidebar in compact mode)');
-    log('  j/k/↑↓ = browse mode | Enter=open | x=close | Esc=cancel');
-    log('  g = goto (gg=first, G=last, g{num}=tab #)');
-    log('  z = scroll (zz=center, zt=top, zb=bottom)');
-    log('  m{char} = set/toggle mark | M = clear all marks');
-    log('  \'{char} = goto mark | Ctrl+\'{char} = quick goto');
-    log('  o = jump back | i = jump forward');
-    log('Press Ctrl+/ for tab search (vim-style fuzzy finder)');
 
     // Restore essential tab marks (delayed to let essential tabs finish loading URLs)
-    setTimeout(() => restoreEssentialMarks(), 2000);
+    lifetimeTimeout(() => restoreEssentialMarks(), 2000);
 
     // Detect Sine install, then auto-check for updates (delayed to not block startup)
     detectSineInstall().then(() => {
-      setTimeout(() => autoCheckForUpdates(), 5000);
+      lifetimeTimeout(() => autoCheckForUpdates(), 5000);
     });
   }
 
-  // Start initialization
-  if (document.readyState === 'complete') {
-    init();
+  // Sine (>= Jun 2026) hot-unloads mods through this hook: on disable, update or
+  // rebuild it calls the callback, then may re-inject the script. It attributes
+  // the callback to this file via Components.stack, so register synchronously.
+  try {
+    window.addUnloadListener?.(() => teardown({ full: true }));
+  } catch (e) { reportError('Registering Sine unload listener failed', e); }
+
+  // Start initialization. fx-autoconfig injects during the window's
+  // DOMContentLoaded (readyState "interactive") and Sine on "load" ("complete"),
+  // so normally init runs now. Only wait while still "loading", and only for
+  // this document's own event: tab-modal prompts and parent-process pages
+  // (about:preferences) bubble their DOMContentLoaded up to this document.
+  if (document.readyState === 'loading') {
+    listen(document, 'DOMContentLoaded', function onChromeDocReady(event) {
+      if (event.target !== document) return;
+      document.removeEventListener('DOMContentLoaded', onChromeDocReady);
+      init();
+    });
   } else {
-    document.addEventListener('DOMContentLoaded', init);
+    init();
   }
 
 })();
