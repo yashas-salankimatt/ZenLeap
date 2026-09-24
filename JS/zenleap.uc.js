@@ -16620,9 +16620,14 @@
       el.removeAttribute('data-zenleap-selected');
     }
     _previousHighlightedItem = null;
-    // Dismiss folder delete modal if open
+    // Dismiss folder delete modal / close confirmation if open
     if (folderDeleteMode) {
       closeFolderDeleteModal();
+    }
+    if (browseCloseConfirmMode) {
+      browseCloseConfirmMode = false;
+      browseClosePending = null;
+      document.getElementById('zenleap-close-confirm-modal')?.classList.remove('active');
     }
   }
 
@@ -16777,36 +16782,68 @@
     exitLeapMode(true); // true = center scroll on new tab
   }
 
+  // Close tabs the way Zen's own close command would: pinned tabs and
+  // Essentials follow zen.pinned-tab-manager.close-shortcut-behavior (by
+  // default reset + unload rather than close), the rest close as one batch so a
+  // single Ctrl+Shift+T restores them (LEAP-B-23). Returns a promise.
+  function closeTabsLikeZen(tabs, event) {
+    tabs = tabs.filter(t => t && t.isConnected && !t.closing);
+    const pinned = tabs.filter(t => t.pinned);
+    const normal = tabs.filter(t => !t.pinned);
+    if (normal.length > 1 &&
+        !gBrowser.warnAboutClosingTabs(normal.length, gBrowser.closingTabsEnum.MULTI_SELECTED)) {
+      return Promise.resolve(false);
+    }
+    if (normal.length) gBrowser.removeTabs(normal);
+    if (!pinned.length) return Promise.resolve(true);
+    if (typeof window.gZenPinnedTabManager?.onCloseTabShortcut === 'function') {
+      const evt = event || new KeyboardEvent('keydown');
+      return gZenPinnedTabManager.onCloseTabShortcut(evt, pinned).then(() => true, (e) => {
+        reportError('Closing pinned tabs failed', e);
+        return false;
+      });
+    }
+    gBrowser.removeTabs(pinned);
+    return Promise.resolve(true);
+  }
+
+  // Re-sync browse mode after items were closed/removed.
+  function refreshBrowseAfterClose(preferLast = false) {
+    if (!browseMode) return;
+    _visibleItemsCache = null;
+    const newItems = getVisibleItems();
+    if (newItems.length === 0) {
+      exitLeapMode(false);
+      return;
+    }
+    if (preferLast || highlightedTabIndex >= newItems.length) {
+      highlightedTabIndex = newItems.length - 1;
+    }
+    updateHighlight();
+    updateLeapOverlayState();
+  }
+
   // Close the highlighted tab/folder (or all selected items if any are selected)
-  function closeHighlightedTab() {
+  function closeHighlightedTab(event) {
     const items = getVisibleItems();
 
     // If there are selected items, close all of them (tabs and folders)
     if (selectedItems.size > 0) {
-      const itemsToClose = [...selectedItems].filter(t => t && t.parentNode);
-      const tabsToClose = itemsToClose.filter(t => !isFolder(t) && !t.closing);
-      const foldersToClose = itemsToClose.filter(isFolder);
-      log(`Closing ${tabsToClose.length} selected tabs + ${foldersToClose.length} folders`);
-      for (const tab of tabsToClose) {
-        gBrowser.removeTab(tab);
-      }
-      for (const folder of foldersToClose) {
-        try { folder.delete(); } catch(e) { log(`Folder delete failed: ${e}`); }
-      }
-      selectedItems.clear();
-
-      _visibleItemsCache = null; // Invalidate after DOM mutation
-      const newItems = getVisibleItems();
-      if (newItems.length === 0) {
-        exitLeapMode(false);
+      const itemsToClose = [...selectedItems].filter(t => t && t.isConnected);
+      const foldersToClose = itemsToClose.filter(isFolder)
+        // a selected subfolder goes away with its selected parent folder
+        .filter((f, _, all) => !all.some(other => other !== f && other.contains(f)));
+      const tabsToClose = itemsToClose.filter(t => !isFolder(t) && !t.closing &&
+        !foldersToClose.some(f => f.contains(t)));
+      if (foldersToClose.length > 0) {
+        // Deleting folders closes everything inside them: confirm first (LEAP-B-17)
+        showBrowseCloseConfirm(tabsToClose, foldersToClose, event);
         return;
       }
-      // Clamp highlight index
-      if (highlightedTabIndex >= newItems.length) {
-        highlightedTabIndex = newItems.length - 1;
-      }
-      updateHighlight();
-      updateLeapOverlayState();
+      log(`Closing ${tabsToClose.length} selected tabs`);
+      selectedItems.clear();
+      closeTabsLikeZen(tabsToClose, event).then(() => refreshBrowseAfterClose());
+      refreshBrowseAfterClose();
       return;
     }
 
@@ -16825,24 +16862,106 @@
     }
 
     const wasLast = highlightedTabIndex === items.length - 1;
+    log(`Closing tab at index ${highlightedTabIndex}`);
+    closeTabsLikeZen([item], event).then(() => refreshBrowseAfterClose(wasLast));
+    refreshBrowseAfterClose(wasLast);
+  }
 
-    gBrowser.removeTab(item);
-    log(`Closed tab at index ${highlightedTabIndex}`);
+  // --- Confirm step: closing a selection that contains folders ---
+  let browseCloseConfirmMode = false;
+  let browseClosePending = null; // { tabs, folders, event }
 
-    _visibleItemsCache = null; // Invalidate after DOM mutation
-    const newItems = getVisibleItems();
+  function showBrowseCloseConfirm(tabs, folders, event) {
+    browseCloseConfirmMode = true;
+    browseClosePending = { tabs, folders, event };
 
-    if (newItems.length === 0) {
-      exitLeapMode(false);
-      return;
+    const folderTabCount = folders.reduce((n, f) =>
+      n + (f.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')).length || 0), 0);
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+    let modal = document.getElementById('zenleap-close-confirm-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'zenleap-close-confirm-modal';
+      modal.className = 'zenleap-confirm-modal';
+      document.documentElement.appendChild(modal);
     }
+    modal.replaceChildren();
 
-    if (wasLast || highlightedTabIndex >= newItems.length) {
-      highlightedTabIndex = newItems.length - 1;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'zenleap-folder-delete-backdrop';
+    backdrop.addEventListener('click', () => closeBrowseCloseConfirm());
+
+    const container = document.createElement('div');
+    container.className = 'zenleap-folder-delete-container';
+
+    const title = document.createElement('div');
+    title.className = 'zenleap-folder-delete-title';
+    const parts = [];
+    if (tabs.length) parts.push(`close ${plural(tabs.length, 'tab')}`);
+    parts.push(`delete ${plural(folders.length, 'folder')} (${plural(folderTabCount, 'tab')} inside)`);
+    const text = parts.join(' and ');
+    title.textContent = `${text[0].toUpperCase()}${text.slice(1)}?`;
+    container.appendChild(title);
+
+    const option = (shortcut, label, sublabel, action, destructive) => {
+      const el = createDeleteOption(shortcut, label, sublabel, action);
+      if (destructive) el.classList.add('destructive');
+      return el;
+    };
+    container.appendChild(option('1', 'Delete folders and everything in them',
+      `Closes ${plural(tabs.length + folderTabCount, 'tab')} in total`, () => confirmBrowseClose(true), true));
+    container.appendChild(option('2', 'Delete folders but keep their tabs',
+      `Closes ${plural(tabs.length, 'selected tab')}; folder tabs stay open`, () => confirmBrowseClose(false), false));
+    container.appendChild(option('Esc', 'Cancel', 'Nothing is closed', () => closeBrowseCloseConfirm(), false));
+
+    modal.appendChild(backdrop);
+    modal.appendChild(container);
+    modal.classList.add('active');
+    log(`Confirm closing ${tabs.length} tabs + ${folders.length} folders`);
+  }
+
+  function closeBrowseCloseConfirm() {
+    browseCloseConfirmMode = false;
+    browseClosePending = null;
+    document.getElementById('zenleap-close-confirm-modal')?.classList.remove('active');
+    if (browseMode) updateHighlight();
+  }
+
+  // Enter/Space/Escape cancel: the default is always the non-destructive choice.
+  function handleBrowseCloseConfirmKey(event) {
+    if (event.repeat) return;
+    if (event.key === '1') confirmBrowseClose(true);
+    else if (event.key === '2') confirmBrowseClose(false);
+    else if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') closeBrowseCloseConfirm();
+  }
+
+  async function confirmBrowseClose(withContents) {
+    const pending = browseClosePending;
+    closeBrowseCloseConfirm();
+    if (!pending) return;
+    const { tabs, folders, event } = pending;
+    selectedItems.clear();
+    for (const folder of folders) {
+      if (!folder.isConnected) continue;
+      const label = folder.label || 'Unnamed Folder';
+      const folderTabs = folder.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || [];
+      try {
+        if (withContents) {
+          folderUndoStack.push({ type: 'folder-and-contents', folderLabel: label, folderId: folder.id,
+                                 tabCount: folderTabs.length, timestamp: Date.now() });
+          await folder.delete();
+        } else {
+          folderUndoStack.push({ type: 'folder-only', folderLabel: label, folderId: folder.id,
+                                 tabRefs: [...folderTabs], timestamp: Date.now() });
+          folder.unpackTabs();
+        }
+      } catch (e) {
+        reportError(`Deleting folder "${label}" failed`, e);
+      }
     }
-
-    updateHighlight();
-    updateLeapOverlayState();
+    await closeTabsLikeZen(tabs, event);
+    refreshBrowseAfterClose();
   }
 
   // Toggle selection on the highlighted item (tab or folder)
@@ -17469,7 +17588,7 @@
   // Any ZenLeap mode or overlay that owns the keyboard right now.
   function isAnyZenLeapModeActive() {
     return leapMode || browseMode || searchMode || helpMode || reorgMode || folderDeleteMode ||
-      gtileMode || settingsMode || updateMode || _pluginManagerMode;
+      gtileMode || settingsMode || updateMode || _pluginManagerMode || browseCloseConfirmMode;
   }
 
   // Sub-modes (g, z, mark, goto-mark) get a generous timeout instead of none,
@@ -17712,6 +17831,13 @@
         if (k === 'G') { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' }); return; }
         if (k === 'g') { scrollEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       }
+      return;
+    }
+
+    // Confirm step for closing a browse-mode selection that includes folders
+    if (browseCloseConfirmMode) {
+      consumeEvent(event);
+      handleBrowseCloseConfirmKey(event);
       return;
     }
 
@@ -17974,7 +18100,7 @@
         return;
       }
       if (keyMatches(event, 'keys.browse.close')) {
-        closeHighlightedTab();
+        closeHighlightedTab(event);
         return;
       }
       if (keyMatches(event, 'keys.browse.select')) {
@@ -19115,15 +19241,17 @@
         box-shadow: 0 0 8px var(--zl-highlight-60) !important;
       }
 
-      /* ═══ Folder Delete Modal ═══ */
-      #zenleap-folder-delete-modal {
+      /* ═══ Folder Delete Modal / browse close confirmation ═══ */
+      #zenleap-folder-delete-modal,
+      #zenleap-close-confirm-modal {
         display: none;
         position: fixed;
         inset: 0;
         z-index: 10001;
       }
 
-      #zenleap-folder-delete-modal.active {
+      #zenleap-folder-delete-modal.active,
+      #zenleap-close-confirm-modal.active {
         display: block;
       }
 
