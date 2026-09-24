@@ -3330,8 +3330,10 @@
     };
     return {
       has(key) { return Object.prototype.hasOwnProperty.call(getAll(), key); },
-      get(key) { return getAll()[key]; },
-      getAll,
+      // Copies: a plugin mutating a returned object must not change the shared state
+      // behind the store's back (it would never be marked for saving)
+      get(key) { return clonePluginValue(getAll()[key]); },
+      getAll: () => clonePluginValue(getAll()),
       set(key, value) {
         const stored = clonePluginValue(value);
         if (field === 'storage' && !checkStorageQuota({ ...getAll(), [key]: stored }, pluginId)) return false;
