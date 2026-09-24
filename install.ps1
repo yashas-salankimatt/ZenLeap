@@ -17,13 +17,17 @@
 .PARAMETER Action
     install (default), uninstall, or check
 .PARAMETER Profile
-    Profile(s) to use: a number from the list, a profile name, or "all".
+    Profile(s) to use: numbers from the list ("2" or "1,3"; 1 is the profile
+    Zen opens by default), a profile or directory name, or "all".
     Default: the profile Zen opens by default plus every profile that already
     has ZenLeap (interactive runs show the list first).
+.PARAMETER AllProfiles
+    Same as -Profile all.
 .PARAMETER ProfileDir
     Use this profile directory directly.
 .PARAMETER ZenPath
     Zen Browser installation directory (the folder containing zen.exe).
+    Default: the one that last ran the profile, else a standard location.
 .PARAMETER Remote
     Install the latest release from GitHub (verified against the release's
     CHECKSUMS.sha256) even when the script sits in a ZenLeap checkout.
@@ -31,11 +35,18 @@
     Don't ask questions (non-interactive mode).
 .PARAMETER RemoveFxAutoconfig
     Also remove fx-autoconfig when uninstalling.
+.NOTES
+    fx-autoconfig is installed from a tested commit and verified with SHA-256.
+    An existing fx-autoconfig (e.g. from ZenRipple) is kept; interactive runs
+    offer to update a loader older than the tested one. Environment variables
+    FX_AUTOCONFIG_DIR (local checkout) or FX_AUTOCONFIG_REF (another commit)
+    select a different, unverified fx-autoconfig.
 #>
 param(
     [ValidateSet("install", "uninstall", "check")]
     [string]$Action = "install",
     [string]$Profile = "",
+    [switch]$AllProfiles,
     [string]$ProfileDir = "",
     [string]$ZenPath = "",
     [switch]$Remote,
@@ -54,8 +65,25 @@ try {
 $GitHubRepo       = "yashas-salankimatt/ZenLeap"
 $RawBase          = "https://raw.githubusercontent.com/$GitHubRepo"
 $InstallerUrl     = "$RawBase/main/install.ps1"
-$FxAutoconfigRepo = "https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip"
 $SineModId        = "zenleap-relative-tab-nav"
+$ZenMinVersion    = "1.21.7b"   # oldest Zen release ZenLeap supports
+$ZenTestedVersion = "1.22.3b"
+
+# fx-autoconfig commit tested with Zen 1.22.3b (Firefox 156; loader 0.10.16). The
+# files we copy are checked against these hashes (same pin as install.sh, the
+# macOS manager and the ZenRipple installer; scripts/check-release.sh compares them).
+$FxPinnedRef     = "dfdab5684faffc112b76ccb1d8cab7f75da0102c"
+$FxPinnedVersion = "0.10.16"
+$FxPinnedSha256  = @"
+80dc421264a3ea04275e1724b7b57234f89254e9582a6c17e9a911b65c3aa6d7  program/config.js
+6bfd2ed139d18ff5178e0fc62a3b4058540ddbeba3adc912c0d69edb70c17ece  program/defaults/pref/config-prefs.js
+1f0b37d765c7b10b963a465a62a420059e334a18b6b48bd8c09059837e676106  profile/chrome/utils/boot.sys.mjs
+d80557b7bdd46f91f0d249f25f1bf66ed83f8c9e620cd0c9334029e4826924d0  profile/chrome/utils/chrome.manifest
+1d6302c5484dc914e43685740937f1d89908099f835e53f532338822c31b08af  profile/chrome/utils/fs.sys.mjs
+e7fca8757159751df080e5cbfcd27b508d98c5cdfd6434ea14247832418d1f63  profile/chrome/utils/module_loader.mjs
+dc7547aecbaac67da94b54e353f8e306a0ca01b2a461e106cc88c63a2e210cac  profile/chrome/utils/uc_api.sys.mjs
+3fb7c9799864ee01428722939f324acea1e6065cb63a9298e7bbc59e5adbd96a  profile/chrome/utils/utils.sys.mjs
+"@
 # Directory of this script's checkout. Empty when run through "irm | iex":
 # then there are no local files, whatever the current directory contains.
 $ScriptDir = $PSScriptRoot
@@ -68,6 +96,9 @@ $script:FxFailed = $false
 $script:FxProgramCommands = $null
 $script:ZenNeedsRestart = $false
 $script:ZenWasRunning = $false
+$script:GreState = @{}        # Zen installation dir -> ok | pending | sine | foreign
+$script:FxError = $null
+$script:RunningDirs = @()     # profiles Zen still has open
 
 # --- Helper functions ---
 function Write-Status  { param([string]$Msg) Write-Host "[OK] $Msg" -ForegroundColor Green }
@@ -213,9 +244,29 @@ function Join-ProfilePath {
     return [IO.Path]::GetFullPath([IO.Path]::Combine($Base, $Relative))
 }
 
+# The candidate that was used most recently (newest prefs.js); ties keep the first
+function Select-Newest {
+    param($Candidates)
+    $best = $null
+    $bestTime = [datetime]::MinValue
+    foreach ($c in $Candidates) {
+        $prefs = Join-Path $c.Dir "prefs.js"
+        $t = [datetime]::MinValue
+        if (Test-Path -LiteralPath $prefs) { $t = (Get-Item -LiteralPath $prefs).LastWriteTimeUtc }
+        if ($null -eq $best -or $t -gt $bestTime) {
+            $best = $c
+            $bestTime = $t
+        }
+    }
+    return $best
+}
+
 # Zen keeps profiles in %APPDATA%\zen (profiles.ini, Profiles\...) and their
-# local data (startupCache) in %LOCALAPPDATA%\zen\Profiles\... The default
-# profile is the install's [Install*] Default= entry, not the Default=1 one.
+# local data (startupCache) in %LOCALAPPDATA%\zen\Profiles\... profiles.ini is
+# read like Firefox does: [Profile0], [Profile1], ... up to the first missing
+# section or one without IsRelative; entries without Name or Path are skipped.
+# The default profile (the install's [Install*]/installs.ini Default=, else
+# Default=1, else the most recently used) is listed first.
 # Returns @{ Root; Profiles; Default } or $null.
 function Find-ZenProfiles {
     param([string]$ZenDir)
@@ -229,26 +280,11 @@ function Find-ZenProfiles {
     foreach ($root in $roots) {
         $ini = Join-Path $root "profiles.ini"
         if (-not (Test-Path -LiteralPath $ini)) { continue }
-        $first = $all.Count
+        $byNumber = @{}
         $installDefaults = New-Object System.Collections.ArrayList
-        $flagged = $null
         foreach ($s in (Read-IniSections $ini)) {
-            if ($s.Name -match '^Profile\d+$') {
-                $path = $s.Values['Path']
-                if (-not $path) { continue }
-                if ($s.Values['IsRelative'] -eq '0') {
-                    $dir = $path
-                    $local = $path
-                } else {
-                    $dir = Join-ProfilePath $root $path
-                    $local = Join-ProfilePath $localRoot $path
-                }
-                if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
-                if (@($all | Where-Object { $_.Dir -eq $dir }).Count -gt 0) { continue }
-                $name = $s.Values['Name']
-                if (-not $name) { $name = Split-Path $dir -Leaf }
-                [void]$all.Add([pscustomobject]@{ Name = $name; Dir = $dir; LocalDir = $local; Raw = $path; Root = $root })
-                if ($s.Values['Default'] -eq '1') { $flagged = $path }
+            if ($s.Name -match '^Profile(\d+)$' -and "Profile$([int]$Matches[1])" -eq $s.Name) {
+                $byNumber[[int]$Matches[1]] = $s.Values
             } elseif ($s.Name -ne 'General' -and $s.Name -ne 'BackgroundTasksProfiles' -and $s.Values['Default']) {
                 [void]$installDefaults.Add($s.Values['Default'])   # [Install<hash>]
             }
@@ -260,34 +296,59 @@ function Find-ZenProfiles {
             }
         }
 
-        if (-not $primaryRoot -and $all.Count -gt $first) {
+        $candidates = New-Object System.Collections.ArrayList
+        $n = 0
+        while ($byNumber.ContainsKey($n) -and $byNumber[$n].ContainsKey('IsRelative')) {
+            $v = $byNumber[$n]
+            $n++
+            if (-not $v['Path'] -or -not $v.ContainsKey('Name')) { continue }
+            if ($v['IsRelative'] -eq '1') {
+                $dir = Join-ProfilePath $root $v['Path']
+                $local = Join-ProfilePath $localRoot $v['Path']
+            } else {
+                $dir = $v['Path'].TrimEnd('\', '/')
+                $local = $dir
+            }
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            if (@($all | Where-Object { $_.Dir -eq $dir }).Count -gt 0) { continue }
+            if (@($candidates | Where-Object { $_.Dir -eq $dir }).Count -gt 0) { continue }
+            [void]$candidates.Add([pscustomobject]@{ Name = $v['Name']; Dir = $dir; LocalDir = $local; Root = $root; Flagged = ($v['Default'] -eq '1') })
+        }
+        if ($candidates.Count -eq 0) { continue }
+
+        # Which listed profiles are an install's default?
+        $inst = New-Object System.Collections.ArrayList
+        foreach ($want in $installDefaults) {
+            if ([IO.Path]::IsPathRooted($want)) { $full = $want.TrimEnd('\', '/') } else { $full = Join-ProfilePath $root $want }
+            foreach ($c in $candidates) {
+                if ($c.Dir -eq $full -and -not $inst.Contains($c)) { [void]$inst.Add($c) }
+            }
+        }
+        $pick = $null
+        if ($inst.Count -gt 1 -and $ZenDir) {
+            foreach ($c in $inst) {
+                $lp = Get-LastPlatformDir $c.Dir
+                if ($lp -and $lp.TrimEnd('\', '/') -eq $ZenDir.TrimEnd('\', '/')) { $pick = $c; break }
+            }
+        }
+        if (-not $pick) {
+            if ($inst.Count -gt 0) {
+                $pick = Select-Newest $inst
+            } elseif (@($candidates | Where-Object { $_.Flagged }).Count -gt 0) {
+                $pick = Select-Newest @($candidates | Where-Object { $_.Flagged })
+            } else {
+                $pick = Select-Newest $candidates
+            }
+        }
+
+        # The default first, then the rest in profiles.ini order
+        if (-not $primaryRoot) {
             $primaryRoot = $root
-            $matchIdx = New-Object System.Collections.ArrayList
-            foreach ($want in $installDefaults) {
-                for ($i = $first; $i -lt $all.Count; $i++) {
-                    if ($all[$i].Raw -eq $want -and -not $matchIdx.Contains($i)) { [void]$matchIdx.Add($i) }
-                }
-            }
-            if ($matchIdx.Count -gt 1 -and $ZenDir) {
-                # Several installs share this root: prefer the one last run from $ZenDir
-                foreach ($i in $matchIdx) {
-                    $compat = Join-Path $all[$i].Dir "compatibility.ini"
-                    if (Test-Path -LiteralPath $compat) {
-                        $line = @([IO.File]::ReadAllLines($compat) | Where-Object { $_ -like 'LastPlatformDir=*' })[0]
-                        if ($line -and $line.Substring(16).TrimEnd('\', '/') -eq $ZenDir.TrimEnd('\', '/')) {
-                            $default = $i
-                            break
-                        }
-                    }
-                }
-            }
-            if ($default -lt 0 -and $matchIdx.Count -gt 0) { $default = $matchIdx[0] }
-            if ($default -lt 0 -and $flagged) {
-                for ($i = $first; $i -lt $all.Count; $i++) {
-                    if ($all[$i].Raw -eq $flagged) { $default = $i; break }
-                }
-            }
-            if ($default -lt 0) { $default = $first }
+            $default = $all.Count
+        }
+        [void]$all.Add($pick)
+        foreach ($c in $candidates) {
+            if ($c -ne $pick) { [void]$all.Add($c) }
         }
     }
 
@@ -298,16 +359,41 @@ function Find-ZenProfiles {
             if (-not (Test-Path -LiteralPath $base)) { continue }
             foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory)) {
                 if ((Test-Path -LiteralPath (Join-Path $d.FullName "prefs.js")) -or (Test-Path -LiteralPath (Join-Path $d.FullName "times.json"))) {
-                    [void]$all.Add([pscustomobject]@{ Name = $d.Name; Dir = $d.FullName; LocalDir = (Join-Path (Join-Path $localRoot "Profiles") $d.Name); Raw = "Profiles/$($d.Name)"; Root = $root })
+                    [void]$all.Add([pscustomobject]@{ Name = $d.Name; Dir = $d.FullName; LocalDir = (Join-Path (Join-Path $localRoot "Profiles") $d.Name); Root = $root; Flagged = $false })
                 }
             }
-            if ($all.Count -gt 0) { $primaryRoot = $root; break }
+            if ($all.Count -gt 0) {
+                $primaryRoot = $root
+                $default = $all.IndexOf((Select-Newest $all))
+                break
+            }
         }
-        if ($all.Count -eq 1) { $default = 0 }
     }
 
     if ($all.Count -eq 0) { return $null }
     return @{ Root = $primaryRoot; Profiles = @($all); Default = $default }
+}
+
+# compatibility.ini LastPlatformDir of a profile: the Zen installation that last ran it
+function Get-LastPlatformDir {
+    param([string]$Dir)
+    $compat = Join-Path $Dir "compatibility.ini"
+    if (-not (Test-Path -LiteralPath $compat)) { return $null }
+    $line = @([IO.File]::ReadAllLines($compat) | Where-Object { $_ -like 'LastPlatformDir=*' })[0]
+    if ($line) { return $line.Substring(16) }
+    return $null
+}
+
+# The Zen installation a profile runs with: -ZenPath, else the one that last
+# ran it (if still there), else the one found on this system
+function Get-ProfileZenDir {
+    param($P, [string]$Fallback)
+    if ($ZenPath) { return $Fallback }
+    $lp = Get-LastPlatformDir $P.Dir
+    if ($lp -and ((Test-Path -LiteralPath (Join-Path $lp "zen.exe")) -or (Test-Path -LiteralPath (Join-Path $lp "omni.ja")))) {
+        return $lp.TrimEnd('\', '/')
+    }
+    return $Fallback
 }
 
 function Get-ProfileLabel {
@@ -368,6 +454,11 @@ function Resolve-ProfileSpec {
     for ($i = 0; $i -lt $n; $i++) {
         if ($Found.Profiles[$i].Name -eq $Spec) { $hits += $i }   # -eq is case-insensitive
     }
+    if ($hits.Count -eq 0) {
+        for ($i = 0; $i -lt $n; $i++) {
+            if ((Split-Path $Found.Profiles[$i].Dir -Leaf) -eq $Spec) { $hits += $i }
+        }
+    }
     if ($hits.Count -eq 1) { return $hits }
     if ($hits.Count -gt 1) { throw "Several profiles are named ""$Spec""; use its number instead" }
     throw "No profile named ""$Spec"" (use a number from the list, a profile name, or ""all"")"
@@ -389,6 +480,7 @@ function Show-ProfileList {
 function Select-Profiles {
     param($Found, [string]$Mode)
     $n = $Found.Profiles.Count
+    if ($AllProfiles) { return @(0..($n - 1)) }
     if ($Profile) {
         try {
             return @(Resolve-ProfileSpec $Found $Profile)
@@ -463,6 +555,7 @@ function Wait-ZenClosed {
     param($Profiles)
     while ($true) {
         $running = @($Profiles | Where-Object { Test-ProfileInUse $_.Dir })
+        $script:RunningDirs = @($running | ForEach-Object { $_.Dir })
         if ($running.Count -eq 0) { return }
         Write-Warn "Zen is running with: $(($running | ForEach-Object { $_.Name }) -join ', ')"
         if ($Yes) {
@@ -566,63 +659,155 @@ function Get-SourceDir {
 }
 
 # --- fx-autoconfig ---
+# Check an extracted fx-autoconfig tree against the pinned hashes: every listed
+# file must match and chrome\utils must contain nothing else. Throws.
+function Test-FxAutoconfigTree {
+    param([string]$Dir)
+    $listed = @()
+    foreach ($line in ($FxPinnedSha256 -split "`n")) {
+        if ($line.Trim() -notmatch '^([0-9a-f]{64})\s+(\S.*)$') { continue }
+        $want = $Matches[1]
+        $rel = $Matches[2]
+        $listed += $rel
+        $file = Join-Path $Dir $rel
+        if (-not (Test-Path -LiteralPath $file)) { throw "fx-autoconfig download is missing $rel" }
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLower() -ne $want) {
+            throw "fx-autoconfig file $rel does not match the tested version"
+        }
+    }
+    $utils = Join-Path (Join-Path (Join-Path $Dir "profile") "chrome") "utils"
+    foreach ($f in @(Get-ChildItem -LiteralPath $utils -Force)) {
+        if ($listed -notcontains "profile/chrome/utils/$($f.Name)") {
+            throw "fx-autoconfig download contains an unexpected file: profile/chrome/utils/$($f.Name)"
+        }
+    }
+}
+
+# Get fx-autoconfig once per run: the pinned, tested commit, verified file by
+# file. FX_AUTOCONFIG_DIR (local checkout) and FX_AUTOCONFIG_REF are unverified.
 function Get-FxAutoconfig {
     if ($script:FxSrc) { return $true }
     if ($script:FxFailed) { return $false }
     $script:FxFailed = $true
     try {
-        $dir = Join-Path (Get-WorkDir) "fxac-download"
-        New-Item -Path $dir -ItemType Directory -Force | Out-Null
-        Write-Info "Downloading fx-autoconfig..."
-        $zipPath = Join-Path $dir "fxautoconfig.zip"
-        Invoke-WebRequest -Uri $FxAutoconfigRepo -OutFile $zipPath -UseBasicParsing
-        Expand-Archive -LiteralPath $zipPath -DestinationPath $dir -Force
-        $extracted = Get-ChildItem -LiteralPath $dir -Directory | Where-Object { $_.Name -like "fx-autoconfig*" } | Select-Object -First 1
-        if (-not $extracted) { return $false }
-        $boot = Join-Path (Join-Path (Join-Path (Join-Path $extracted.FullName "profile") "chrome") "utils") "boot.sys.mjs"
-        if (-not (Test-Path -LiteralPath $boot)) { return $false }
-        $script:FxSrc = $extracted.FullName
-        $script:FxVersion = Get-Version $boot
+        if ($env:FX_AUTOCONFIG_DIR) {
+            if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $env:FX_AUTOCONFIG_DIR "program") "config.js"))) {
+                throw "FX_AUTOCONFIG_DIR=$($env:FX_AUTOCONFIG_DIR) is not an fx-autoconfig checkout"
+            }
+            $script:FxSrc = (Resolve-Path -LiteralPath $env:FX_AUTOCONFIG_DIR).ProviderPath
+            Write-Warn "Using fx-autoconfig from $($script:FxSrc) (FX_AUTOCONFIG_DIR, not verified)"
+        } else {
+            $ref = $(if ($env:FX_AUTOCONFIG_REF) { $env:FX_AUTOCONFIG_REF } else { $FxPinnedRef })
+            $dir = Join-Path (Get-WorkDir) "fxac-download"
+            New-Item -Path $dir -ItemType Directory -Force | Out-Null
+            Write-Info "Downloading fx-autoconfig..."
+            $zipPath = Join-Path $dir "fxautoconfig.zip"
+            Invoke-WebRequest -Uri "https://github.com/MrOtherGuy/fx-autoconfig/archive/$ref.zip" -OutFile $zipPath -UseBasicParsing
+            Expand-Archive -LiteralPath $zipPath -DestinationPath $dir -Force
+            $extracted = Get-ChildItem -LiteralPath $dir -Directory | Where-Object { $_.Name -like "fx-autoconfig*" } | Select-Object -First 1
+            if (-not $extracted) { throw "unexpected fx-autoconfig archive layout" }
+            if ($ref -eq $FxPinnedRef) {
+                Test-FxAutoconfigTree $extracted.FullName
+            } else {
+                Write-Warn "Using fx-autoconfig $ref (FX_AUTOCONFIG_REF: not the tested version, not verified)"
+            }
+            $script:FxSrc = $extracted.FullName
+        }
+        $script:FxVersion = Get-Version (Join-Path (Join-Path (Join-Path (Join-Path $script:FxSrc "profile") "chrome") "utils") "boot.sys.mjs")
         $script:FxFailed = $false
         return $true
     } catch {
+        $script:FxError = $_.Exception.Message
         return $false
     }
 }
 
+# The loader version this installer installs
+function Get-FxTargetVersion {
+    if (-not $env:FX_AUTOCONFIG_DIR -and -not $env:FX_AUTOCONFIG_REF) { return $FxPinnedVersion }
+    if (Get-FxAutoconfig) { return $script:FxVersion }
+    return $null
+}
+
+# What a Zen installation's autoconfig does at startup: fxac (fx-autoconfig with
+# its pref file), fxac-noprefs, sine (Sine's bootloader), foreign, or missing
+function Get-ProgramStatus {
+    param([string]$ZenDir)
+    $configJs = Join-Path $ZenDir "config.js"
+    if (-not (Test-Path -LiteralPath $configJs)) { return "missing" }
+    $content = [IO.File]::ReadAllText($configJs)
+    if ($content -match 'userchromejs/content/boot\.sys\.mjs') {
+        $prefDir = Join-Path (Join-Path $ZenDir "defaults") "pref"
+        if (Test-Path -LiteralPath $prefDir) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $prefDir -Filter "*.js" -File)) {
+                if ([IO.File]::ReadAllText($f.FullName) -match 'general\.config\.filename') { return "fxac" }
+            }
+        }
+        return "fxac-noprefs"
+    }
+    if ($content -match 'sine\.sys\.mjs') { return "sine" }
+    return "foreign"
+}
+
+# Copy a file through a temporary name so an interrupted copy never leaves a
+# half-written script behind
+function Copy-FileSafely {
+    param([string]$Source, [string]$Destination)
+    $tmp = "$Destination.zenleap-tmp"
+    Copy-Item -LiteralPath $Source -Destination $tmp -Force
+    Move-Item -LiteralPath $tmp -Destination $Destination -Force
+}
+
 # fx-autoconfig's program files (config.js, defaults\pref\config-prefs.js) go
-# into the Zen installation directory, once for all profiles.
+# into a Zen installation directory, once for all its profiles. An existing
+# config.js is never replaced: fx-autoconfig's is kept (only a missing pref
+# file is added); Sine's or any other one is left alone.
 function Install-FxAutoconfigProgram {
     param([string]$ZenDir)
+    if ($script:GreState.ContainsKey($ZenDir)) { return }
+    $appIni = Join-Path $ZenDir "application.ini"
+    if (Test-Path -LiteralPath $appIni) {
+        $vline = @([IO.File]::ReadAllLines($appIni) | Where-Object { $_ -like 'Version=*' })[0]
+        if ($vline -and (Compare-Versions $vline.Substring(8) $ZenMinVersion) -lt 0) {
+            Write-Warn "Zen $($vline.Substring(8)) in $ZenDir is older than $ZenMinVersion, the oldest version ZenLeap supports (tested: $ZenTestedVersion)."
+        }
+    }
     $configJs = Join-Path $ZenDir "config.js"
     $prefsDir = Join-Path (Join-Path $ZenDir "defaults") "pref"
     $prefsJs = Join-Path $prefsDir "config-prefs.js"
-
-    if (Test-Path -LiteralPath $configJs) {
-        $content = Get-Content -LiteralPath $configJs -Raw
-        if ($content -notmatch 'userchromejs/content/boot') {
-            Write-Warn "$configJs is not fx-autoconfig's (Sine's or another loader's); leaving it alone."
-            Write-Info "ZenLeap in chrome\JS only runs if that config.js also loads fx-autoconfig."
+    $status = Get-ProgramStatus $ZenDir
+    switch ($status) {
+        "fxac" {
+            Write-Status "fx-autoconfig is set up in $ZenDir"
+            $script:GreState[$ZenDir] = "ok"
             return
         }
-        if ($content -match 'boot\.sys\.mjs' -and (Test-Path -LiteralPath $prefsJs)) {
-            Write-Status "fx-autoconfig is set up in the Zen installation"
+        "sine" {
+            Write-Warn "$ZenDir starts Sine's bootloader, which only runs Sine mods."
+            $script:GreState[$ZenDir] = "sine"
+            return
+        }
+        "foreign" {
+            Write-Warn "$configJs is not fx-autoconfig's (another loader, or an old fx-autoconfig); leaving it alone."
+            Write-Info "ZenLeap in chrome\JS only loads if that file loads fx-autoconfig's boot.sys.mjs."
+            $script:GreState[$ZenDir] = "foreign"
             return
         }
     }
 
-    Write-Info "Installing fx-autoconfig into the Zen installation..."
+    Write-Info "Installing fx-autoconfig into the Zen installation ($ZenDir)..."
     if (-not (Get-FxAutoconfig)) {
-        Write-Err "Failed to download fx-autoconfig"
+        Write-Err "Could not get fx-autoconfig: $($script:FxError)"
         Stop-Installer 1
     }
     $srcConfig = Join-Path (Join-Path $script:FxSrc "program") "config.js"
     $srcPrefs = Join-Path (Join-Path (Join-Path (Join-Path $script:FxSrc "program") "defaults") "pref") "config-prefs.js"
     try {
         New-Item -Path $prefsDir -ItemType Directory -Force | Out-Null
-        Copy-Item -LiteralPath $srcConfig -Destination $configJs -Force
-        Copy-Item -LiteralPath $srcPrefs -Destination $prefsJs -Force
-        Write-Status "Installed fx-autoconfig program files into $ZenDir"
+        if ($status -eq "missing") { Copy-FileSafely $srcConfig $configJs }
+        Copy-FileSafely $srcPrefs $prefsJs
+        Write-Status "Installed fx-autoconfig's loader files into $ZenDir"
+        $script:GreState[$ZenDir] = "ok"
         return
     } catch {}
 
@@ -631,20 +816,22 @@ function Install-FxAutoconfigProgram {
     New-Item -Path $stage -ItemType Directory -Force | Out-Null
     Copy-Item -LiteralPath $srcConfig -Destination (Join-Path $stage "config.js") -Force
     Copy-Item -LiteralPath $srcPrefs -Destination (Join-Path $stage "config-prefs.js") -Force
-    $commands = @(
-        "New-Item -ItemType Directory -Force -Path $(ConvertTo-Literal $prefsDir) | Out-Null",
-        "Copy-Item -LiteralPath $(ConvertTo-Literal (Join-Path $stage 'config.js')) -Destination $(ConvertTo-Literal $configJs) -Force",
-        "Copy-Item -LiteralPath $(ConvertTo-Literal (Join-Path $stage 'config-prefs.js')) -Destination $(ConvertTo-Literal $prefsJs) -Force"
-    )
+    $commands = @("New-Item -ItemType Directory -Force -Path $(ConvertTo-Literal $prefsDir) | Out-Null")
+    if ($status -eq "missing") {
+        $commands += "Copy-Item -LiteralPath $(ConvertTo-Literal (Join-Path $stage 'config.js')) -Destination $(ConvertTo-Literal $configJs) -Force"
+    }
+    $commands += "Copy-Item -LiteralPath $(ConvertTo-Literal (Join-Path $stage 'config-prefs.js')) -Destination $(ConvertTo-Literal $prefsJs) -Force"
     Write-Warn "Copying fx-autoconfig into $ZenDir needs administrator rights."
     if (-not $Yes -and (Confirm-Action "Copy it now with administrator rights (Windows will ask for permission)?" $true)) {
-        if ((Invoke-Elevated ($commands -join "; ")) -and (Test-Path -LiteralPath $configJs) -and (Test-Path -LiteralPath $prefsJs)) {
-            Write-Status "Installed fx-autoconfig program files into $ZenDir"
+        if ((Invoke-Elevated ($commands -join "; ")) -and (Get-ProgramStatus $ZenDir) -eq "fxac") {
+            Write-Status "Installed fx-autoconfig's loader files into $ZenDir"
+            $script:GreState[$ZenDir] = "ok"
             return
         }
         Write-Warn "Could not copy the files with administrator rights."
     }
-    $script:FxProgramCommands = $commands
+    $script:FxProgramCommands = @($script:FxProgramCommands) + $commands | Where-Object { $_ }
+    $script:GreState[$ZenDir] = "pending"
     Write-Info "Run these commands in PowerShell opened with 'Run as administrator':"
     Write-Host ""
     foreach ($c in $commands) { Write-Host "    $c" }
@@ -652,26 +839,32 @@ function Install-FxAutoconfigProgram {
 }
 
 # fx-autoconfig's loader in the profile: chrome\utils only (the rest of its
-# profile folder is examples). Offers to update an outdated loader.
+# profile folder is examples). An existing loader is kept; interactive runs
+# offer to update one older than the tested version.
 function Install-FxAutoconfigProfile {
     param([string]$ChromeDir)
     $utils = Join-Path $ChromeDir "utils"
     $boot = Join-Path $utils "boot.sys.mjs"
     if ((Test-Path -LiteralPath $boot) -or (Test-Path -LiteralPath (Join-Path $utils "boot.jsm"))) {
         $have = Get-Version $boot
-        if (-not (Get-FxAutoconfig)) {
-            Write-Warn "Could not download fx-autoconfig to check for loader updates; keeping the installed one"
-            return
-        }
-        if ($have -and (Compare-Versions $have $script:FxVersion) -ge 0) {
-            Write-Status "fx-autoconfig loader $have (up to date)"
+        $target = Get-FxTargetVersion
+        if (-not $target -or ($have -and (Compare-Versions $have $target) -ge 0)) {
+            Write-Status "fx-autoconfig loader $have already installed"
             return
         }
         $shown = $(if ($have) { $have } else { "pre-0.8" })
-        Write-Warn "This profile's fx-autoconfig loader is outdated ($shown < $($script:FxVersion))."
-        if (-not (Confirm-Action "  Update chrome\utils to $($script:FxVersion)?" $true)) {
+        Write-Warn "This profile's fx-autoconfig loader is older than the tested one ($shown < $target)."
+        if ($Yes) {
+            Write-Info "Leaving it as it is; run the installer without -Yes to update it."
+            return
+        }
+        if (-not (Confirm-Action "  Update chrome\utils to $target?" $true)) {
             Write-Info "Keeping the installed loader"
             return
+        }
+        if (-not (Get-FxAutoconfig)) {
+            Write-Err "Could not get fx-autoconfig: $($script:FxError)"
+            Stop-Installer 1
         }
         $backup = Join-Path $ChromeDir "utils.zenleap-backup"
         if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
@@ -685,7 +878,7 @@ function Install-FxAutoconfigProfile {
         return
     }
     if (-not (Get-FxAutoconfig)) {
-        Write-Err "Failed to download fx-autoconfig"
+        Write-Err "Could not get fx-autoconfig: $($script:FxError)"
         Stop-Installer 1
     }
     New-Item -Path $ChromeDir -ItemType Directory -Force | Out-Null
@@ -717,8 +910,9 @@ function Uninstall-FxAutoconfigProgram {
     }
     $configJs = Join-Path $ZenDir "config.js"
     $prefsJs = Join-Path (Join-Path (Join-Path $ZenDir "defaults") "pref") "config-prefs.js"
-    if (-not (Test-Path -LiteralPath $configJs)) { return }
-    if ((Get-Content -LiteralPath $configJs -Raw) -notmatch 'userchromejs/content/boot') {
+    $status = Get-ProgramStatus $ZenDir
+    if ($status -eq "missing") { return }
+    if ($status -ne "fxac" -and $status -ne "fxac-noprefs") {
         Write-Warn "$configJs is not fx-autoconfig's; leaving it alone"
         return
     }
@@ -755,7 +949,7 @@ function Remove-ZenLeapCss {
 
 # --- ZenLeap ---
 function Install-ZenLeap {
-    param($P, [string]$SourceDir)
+    param($P, [string]$SourceDir, [string]$GreStatus)
     $chromeDir = Join-Path $P.Dir "chrome"
     $srcJs = Join-Path (Join-Path $SourceDir "JS") "zenleap.uc.js"
     $srcThemes = Join-Path $SourceDir "zenleap-themes.json"
@@ -769,15 +963,19 @@ function Install-ZenLeap {
             Write-Warn "Skipped this profile (update ZenLeap from Sine's mods page instead)"
             return $false
         }
-        Copy-Item -LiteralPath $srcJs -Destination (Join-Path (Join-Path $sineDir "JS") "zenleap.uc.js") -Force
+        Copy-FileSafely $srcJs (Join-Path (Join-Path $sineDir "JS") "zenleap.uc.js")
         $srcCss = Join-Path $SourceDir "chrome.css"
         if (Test-Path -LiteralPath $srcCss) { Copy-Item -LiteralPath $srcCss -Destination (Join-Path $sineDir "chrome.css") -Force }
         if (Test-Path -LiteralPath $srcThemes) { Copy-Item -LiteralPath $srcThemes -Destination (Join-Path $sineDir "zenleap-themes.json") -Force }
         Write-Status "Updated Sine-managed zenleap.uc.js (v$version)"
         return $true
     }
-    if (Test-UsesSine $P.Dir) {
-        Write-Warn "This profile loads scripts through Sine, which does not run scripts from chrome\JS."
+    if ((Test-UsesSine $P.Dir) -or $GreStatus -eq "sine") {
+        if (Test-UsesSine $P.Dir) {
+            Write-Warn "This profile loads scripts through Sine, which does not run scripts from chrome\JS."
+        } else {
+            Write-Warn "This Zen installation starts Sine's bootloader, which does not run scripts from chrome\JS."
+        }
         Write-Info "Install ZenLeap from Sine instead (Sine mods page -> install yashas-salankimatt/ZenLeap)."
         return $false
     }
@@ -786,7 +984,7 @@ function Install-ZenLeap {
 
     $jsDir = Join-Path $chromeDir "JS"
     New-Item -Path $jsDir -ItemType Directory -Force | Out-Null
-    Copy-Item -LiteralPath $srcJs -Destination (Join-Path $jsDir "zenleap.uc.js") -Force
+    Copy-FileSafely $srcJs (Join-Path $jsDir "zenleap.uc.js")
     Write-Status "Installed zenleap.uc.js (v$version)"
 
     if (Remove-ZenLeapCss $chromeDir) {
@@ -827,21 +1025,41 @@ function Uninstall-ZenLeap {
 }
 
 # --- Cache ---
+# InvalidateCaches=1 in compatibility.ini makes Zen drop its startup cache on
+# its next start (what about:support's "Clear startup cache" does), which also
+# works while Zen is running. Profiles that are not open also get the cache
+# directories removed right away.
 function Clear-StartupCache {
     param($Profiles)
     Write-Host ""
     Write-Info "Clearing startup cache..."
-    $cleared = $false
+    $any = $false
+    $later = $false
     foreach ($p in $Profiles) {
+        $compat = Join-Path $p.Dir "compatibility.ini"
+        if (Test-Path -LiteralPath $compat) {
+            $text = [IO.File]::ReadAllText($compat)
+            if ($text -notmatch '(?m)^InvalidateCaches=1\s*$') {
+                $sep = $(if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { "`r`n" } else { "" })
+                [IO.File]::AppendAllText($compat, "${sep}InvalidateCaches=1`r`n")
+            }
+            $any = $true
+        }
+        if ($script:RunningDirs -contains $p.Dir) {
+            $later = $true
+            continue
+        }
         foreach ($dir in @($p.LocalDir, $p.Dir)) {
             $sc = Join-Path $dir "startupCache"
             if (Test-Path -LiteralPath $sc) {
                 Remove-Item -LiteralPath $sc -Recurse -Force -ErrorAction SilentlyContinue
-                $cleared = $true
+                $any = $true
             }
         }
     }
-    if ($cleared) {
+    if ($later) {
+        Write-Status "Zen will clear its startup cache when it next starts"
+    } elseif ($any) {
         Write-Status "Startup cache cleared"
     } else {
         Write-Status "No startup cache to clear"
@@ -880,15 +1098,10 @@ function Invoke-Main {
         Stop-Installer 1
     }
 
-    # Find Zen Browser (needed to install fx-autoconfig; optional otherwise)
+    # Find Zen Browser (fx-autoconfig's program files go there). A profile's own
+    # compatibility.ini can also name it, so this may be empty for now.
     $zenDir = Find-ZenInstall
-    if ($zenDir) {
-        if ($Action -ne "check") { Write-Status "Found Zen Browser at: $zenDir" }
-    } elseif ($Action -eq "install") {
-        Write-Err "Could not find Zen Browser installation."
-        Write-Info "Install Zen Browser first (https://zen-browser.app/), or pass -ZenPath <folder containing zen.exe>."
-        Stop-Installer 1
-    }
+    if ($zenDir -and $Action -ne "check") { Write-Status "Found Zen Browser at: $zenDir" }
 
     # Find profiles
     $found = Find-ZenProfiles $zenDir
@@ -924,14 +1137,28 @@ function Invoke-Main {
             $sourceDir = Get-SourceDir
             Wait-ZenClosed $selected
 
-            $needsFx = @($selected | Where-Object { -not (Get-SineZenLeapDir $_.Dir) -and -not (Test-UsesSine $_.Dir) }).Count -gt 0
-            if ($needsFx) { Install-FxAutoconfigProgram $zenDir }
+            # fx-autoconfig's program files, once per Zen installation in use
+            $profileGre = @{}
+            foreach ($p in $selected) {
+                if ((Get-SineZenLeapDir $p.Dir) -or (Test-UsesSine $p.Dir)) { continue }
+                $gre = Get-ProfileZenDir $p $zenDir
+                if (-not $gre) {
+                    Write-Err "Could not find the Zen Browser installation for profile $($p.Name)."
+                    Write-Info "Install Zen Browser first (https://zen-browser.app/), or pass -ZenPath <folder containing zen.exe>."
+                    Stop-Installer 1
+                }
+                if (-not $zenDir) { $zenDir = $gre }
+                $profileGre[$p.Dir] = $gre
+                Install-FxAutoconfigProgram $gre
+            }
 
             $installed = 0
             foreach ($p in $selected) {
                 Write-Host ""
                 Write-Host "--- $($p.Name) ---" -ForegroundColor Blue
-                if (Install-ZenLeap $p $sourceDir) { $installed++ }
+                $greStatus = ""
+                if ($profileGre.ContainsKey($p.Dir)) { $greStatus = $script:GreState[$profileGre[$p.Dir]] }
+                if (Install-ZenLeap $p $sourceDir $greStatus) { $installed++ }
             }
 
             Clear-StartupCache $selected
@@ -965,7 +1192,7 @@ function Invoke-Main {
                 Write-Warn "Restart Zen Browser to activate ZenLeap"
             } elseif ($Yes) {
                 Write-Warn "Please start Zen Browser to activate ZenLeap"
-            } elseif (Confirm-Action "Open Zen Browser now?") {
+            } elseif ($zenDir -and (Confirm-Action "Open Zen Browser now?")) {
                 Start-Process (Join-Path $zenDir "zen.exe")
             } else {
                 Write-Warn "Please start Zen Browser to activate ZenLeap"
@@ -987,8 +1214,14 @@ function Invoke-Main {
 
             # Offer to remove fx-autoconfig (other userscripts may depend on it)
             $hasFx = @($selected | Where-Object { Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path $_.Dir "chrome") "utils") "boot.sys.mjs") }).Count -gt 0
-            if ($zenDir -and (Test-Path -LiteralPath (Join-Path $zenDir "config.js"))) {
-                if ((Get-Content -LiteralPath (Join-Path $zenDir "config.js") -Raw) -match 'userchromejs/content/boot') { $hasFx = $true }
+            $gres = @()
+            foreach ($p in $selected) {
+                $gre = Get-ProfileZenDir $p $zenDir
+                if ($gre -and $gres -notcontains $gre) {
+                    $gres += $gre
+                    $st = Get-ProgramStatus $gre
+                    if ($st -eq "fxac" -or $st -eq "fxac-noprefs") { $hasFx = $true }
+                }
             }
             $removeFx = $false
             if ($hasFx) {
@@ -996,12 +1229,13 @@ function Invoke-Main {
                     $removeFx = [bool]$RemoveFxAutoconfig
                     if (-not $removeFx) { Write-Warn "Skipping fx-autoconfig removal (use -RemoveFxAutoconfig to include)" }
                 } else {
-                    $removeFx = Confirm-Action "Also remove fx-autoconfig? Other userscripts may depend on it"
+                    $removeFx = Confirm-Action "Also remove fx-autoconfig? Other userscripts (e.g. ZenRipple) may depend on it"
                 }
             }
             if ($removeFx) {
                 foreach ($p in $selected) { Uninstall-FxAutoconfigProfile $p.Dir }
-                Uninstall-FxAutoconfigProgram $zenDir
+                if ($gres.Count -eq 0) { Uninstall-FxAutoconfigProgram $zenDir }
+                foreach ($gre in $gres) { Uninstall-FxAutoconfigProgram $gre }
             }
 
             Clear-StartupCache $selected
