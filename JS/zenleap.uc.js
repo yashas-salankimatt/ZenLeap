@@ -3164,12 +3164,14 @@
     const changed = {};
     for (const id of _pluginDirty.keys()) changed[id] = _pluginData[id] ? clonePluginValue(_pluginData[id]) : null;
     _pluginDirty.clear();
-    const json = JSON.stringify(_pluginData);
     try {
       Services.obs.notifyObservers(null, PLUGIN_DATA_TOPIC, JSON.stringify({ sender: _windowUid, changed }));
     } catch (e) { reportError('Broadcasting plugin data change failed', e); }
+    // Serialize when the write runs, not now: a write queued behind one still in
+    // flight then includes what other windows broadcast meanwhile, instead of
+    // landing after their newer write with older data (REV-LCMDS-13).
     _pluginSavePromise = _pluginSavePromise
-      .then(() => IOUtils.writeUTF8(_pluginDataPath, json, { tmpPath: `${_pluginDataPath}.tmp` }))
+      .then(() => IOUtils.writeUTF8(_pluginDataPath, JSON.stringify(_pluginData), { tmpPath: `${_pluginDataPath}.tmp` }))
       .catch(e => reportError('Saving plugin data failed', e));
     return _pluginSavePromise;
   }
@@ -3189,7 +3191,10 @@
       if (!PLUGIN_ID_RE.test(id)) continue;
       const localDirty = _pluginDirty.get(id);
       if (remote === null || !_isPlainObject(remote)) {
-        if (!localDirty) delete _pluginData[id];
+        // Uninstalled in another window: that wins over this window's unflushed
+        // changes, which would otherwise write the plugin's entry back (REV-LCMDS-13)
+        _pluginDirty.delete(id);
+        delete _pluginData[id];
       } else {
         const merged = clonePluginValue(remote);
         if (localDirty && _pluginData[id]) {
