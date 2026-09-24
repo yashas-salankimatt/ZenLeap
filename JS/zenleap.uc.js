@@ -4244,8 +4244,10 @@
 
   const _newPluginNames = []; // found by the current scan, announced together
 
-  // Register a plugin manifest. Built-in manifests carry init/destroy directly; external
-  // ones carry _scriptPath and their plugin.js is only evaluated when enabled.
+  // Register a plugin manifest. External manifests carry _scriptPath and their plugin.js
+  // is only evaluated when enabled. The builtIn branches are reserved for a plugin bundled
+  // with ZenLeap (its manifest would carry init/destroy directly); none ships today, and
+  // scanned plugins are always registered with builtIn: false, whatever their manifest says.
   function registerPlugin(rawManifest) {
     const manifest = validatePluginManifest(rawManifest, rawManifest?._path || 'built-in');
     if (!manifest) return false;
