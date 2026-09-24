@@ -15700,6 +15700,21 @@
     }
   }
 
+  // Index of the first loose unpinned tab (where "the tabs" start below
+  // essentials, pinned tabs and folders); -1 if there is none.
+  function firstUnpinnedIndex(items) {
+    return items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+  }
+
+  // Where numbering starts when no sidebar item is current (Zen selects its
+  // hidden empty tab in a fresh space or window): a virtual position just
+  // above the first unpinned tab. Items below count 1, 2, ... down, items
+  // above 1, 2, ... up, and nothing gets the current-tab indicator.
+  function virtualOriginIndex(items) {
+    const first = firstUnpinnedIndex(items);
+    return first >= 0 ? first : items.length;
+  }
+
   // Find the index of the current tab within the visible items list.
   // Handles the case where the selected tab is inside a collapsed folder
   // (including nested subfolders) by returning the folder's index instead.
@@ -15732,6 +15747,9 @@
     if (el.hasAttribute(name)) el.removeAttribute(name);
   }
 
+  // Tabs/folders that carry badge attributes (from the previous update).
+  let _badgedItems = new Set();
+
   // Remove all badge state from a tab or folder.
   function clearItemBadge(item) {
     removeAttrIfPresent(item, 'data-zenleap-direction');
@@ -15762,30 +15780,27 @@
     // approach (opacity/height transitions instead of display:none). The badge
     // text lives on .tab-content / the folder label, the direction on the host.
     const itemsSet = new Set(items);
-    const stale = new Set();
-    for (const el of gBrowser.tabContainer.querySelectorAll('[data-zenleap-rel], [data-zenleap-direction]')) {
-      const host = el.closest('tab, zen-folder') || el;
-      if (!itemsSet.has(host)) stale.add(host);
+    for (const host of _badgedItems) {
+      if (!itemsSet.has(host)) clearItemBadge(host);
     }
-    for (const host of stale) clearItemBadge(host);
+    _badgedItems = itemsSet;
 
     // Check relative numbers display mode: 'always', 'active' (leap/browse only), 'off'
     const relMode = S['display.showRelativeNumbers'];
     if (relMode === 'off' || (relMode === 'active' && !leapMode && !browseMode)) {
       for (const item of items) clearItemBadge(item);
+      _badgedItems = new Set();
       removeAttrIfPresent(document.documentElement, 'data-zenleap-badges');
       return;
     }
     setAttrIfChanged(document.documentElement, 'data-zenleap-badges', 'true');
 
-    let currentIndex = findCurrentItemIndex(items);
+    const currentIndex = findCurrentItemIndex(items);
+    if (items.length === 0) return;
 
-    // If the current tab isn't in the visible list (e.g. new tab page),
-    // fall back to index 0 so relative numbers still render correctly.
-    if (currentIndex === -1) {
-      if (items.length === 0) return;
-      currentIndex = 0;
-    }
+    // No current item (Zen's empty tab is selected): number from a virtual
+    // origin instead of pretending the first essential is current.
+    const origin = currentIndex === -1 ? virtualOriginIndex(items) : null;
 
     // Clean up marks for closed tabs
     cleanupMarks();
@@ -15797,8 +15812,14 @@
     }
 
     items.forEach((item, index) => {
-      const relativeDistance = Math.abs(index - currentIndex);
-      const direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
+      let relativeDistance, direction;
+      if (origin === null) {
+        relativeDistance = Math.abs(index - currentIndex);
+        direction = index < currentIndex ? 'up' : (index > currentIndex ? 'down' : 'current');
+      } else {
+        relativeDistance = index < origin ? origin - index : index - origin + 1;
+        direction = index < origin ? 'up' : 'down';
+      }
       const displayChar = numberToDisplay(relativeDistance);
 
       const mark = tabToMark.get(item) || null;
@@ -15829,7 +15850,7 @@
       }
     });
 
-    log(`Updated ${items.length} items (tabs + folders), current at index ${currentIndex}`);
+    log(`Updated ${items.length} items (tabs + folders), current at index ${currentIndex}${origin !== null ? `, virtual origin ${origin}` : ''}`);
   }
 
   // Coalesce rapid relative-number updates into a single animation frame.
@@ -16493,20 +16514,23 @@
     previewCache.delete(current);
 
     if (currentIndex === -1) {
-      // Current tab not in visible items (e.g. new tab page, empty workspace tab).
-      // Fall back to the first unpinned tab so browse mode can still start.
+      // Current tab not in visible items (Zen's empty tab in a fresh space or
+      // window). Start from the same virtual origin the badges use, so the
+      // first j lands on the item numbered 1 and digit jumps match the badges.
       if (items.length === 0) {
         log('Cannot enter browse mode: no visible items');
         return;
       }
-      const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
-      const fallbackIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
+      const origin = virtualOriginIndex(items);
 
       browseMode = true;
       browseDirection = direction;
-      originalTabIndex = fallbackIndex;
+      browseVirtualOrigin = origin;
+      originalTabIndex = direction === 'down' ? origin - 1 : origin;
       originalTab = current;
-      highlightedTabIndex = fallbackIndex;
+      highlightedTabIndex = direction === 'down'
+        ? Math.min(origin, items.length - 1)
+        : Math.max(origin - 1, 0);
     } else {
       browseMode = true;
       browseDirection = direction;
@@ -16658,6 +16682,9 @@
     updateLeapOverlayState();
   }
 
+  // Browse mode started with no current item (see virtualOriginIndex)
+  let browseVirtualOrigin = null;
+
   // Switch workspace in browse mode (h = prev, l = next)
   let _browseWorkspaceSwitchId = 0;
   async function browseWorkspaceSwitch(direction) {
@@ -16691,7 +16718,8 @@
       _visibleItemsCache = null; // Ensure fresh data after workspace switch
       const newItems = getVisibleItems();
       const activeIdx = findCurrentItemIndex(newItems);
-      highlightedTabIndex = activeIdx >= 0 ? activeIdx : 0;
+      // Fresh space (Zen's empty tab selected): start at the first tab
+      highlightedTabIndex = activeIdx >= 0 ? activeIdx : Math.min(virtualOriginIndex(newItems), newItems.length - 1);
       if (newItems.length > 0) {
         updateHighlight();
         updateRelativeNumbers();
@@ -16708,20 +16736,21 @@
 
     // Determine direction based on current highlight position vs original
     let direction;
-    if (highlightedTabIndex < originalTabIndex) {
-      direction = 'up';
-    } else if (highlightedTabIndex > originalTabIndex) {
-      direction = 'down';
-    } else {
-      // Highlight is on original tab, use initial browse direction as fallback
-      direction = browseDirection;
-    }
-
     let targetIndex;
-    if (direction === 'down') {
-      targetIndex = originalTabIndex + distance;
+    if (browseVirtualOrigin !== null) {
+      // Started from Zen's empty tab: the badges count from a virtual origin
+      direction = highlightedTabIndex >= browseVirtualOrigin ? 'down' : 'up';
+      targetIndex = direction === 'down' ? browseVirtualOrigin - 1 + distance : browseVirtualOrigin - distance;
     } else {
-      targetIndex = originalTabIndex - distance;
+      if (highlightedTabIndex < originalTabIndex) {
+        direction = 'up';
+      } else if (highlightedTabIndex > originalTabIndex) {
+        direction = 'down';
+      } else {
+        // Highlight is on original tab, use initial browse direction as fallback
+        direction = browseDirection;
+      }
+      targetIndex = direction === 'down' ? originalTabIndex + distance : originalTabIndex - distance;
     }
 
     // Clamp to valid range
@@ -17197,7 +17226,7 @@
   function saveBrowseState() {
     return {
       highlightedTabIndex, originalTabIndex, originalTab,
-      browseDirection, selectedItems: new Set(selectedItems),
+      browseDirection, browseVirtualOrigin, selectedItems: new Set(selectedItems),
       yankItems: [...yankItems], sidebarWasExpanded
     };
   }
@@ -17210,6 +17239,7 @@
     originalTabIndex = state.originalTabIndex;
     originalTab = state.originalTab;
     browseDirection = state.browseDirection;
+    browseVirtualOrigin = state.browseVirtualOrigin ?? null;
     selectedItems = new Set(state.selectedItems);
     yankItems = [...state.yankItems];
     sidebarWasExpanded = state.sidebarWasExpanded;
@@ -17267,6 +17297,7 @@
     originalTabIndex = -1;
     originalTab = null;
     browseDirection = null;
+    browseVirtualOrigin = null;
     browseGPending = false;
     clearTimeout(browseGTimeout);
     browseGTimeout = null;
@@ -18106,7 +18137,7 @@
           browseGTimeout = null;
           if (S['display.ggSkipPinned']) {
             const items = getVisibleItems();
-            const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+            const firstUnpinned = firstUnpinnedIndex(items);
             highlightedTabIndex = firstUnpinned >= 0 ? firstUnpinned : 0;
           } else {
             highlightedTabIndex = 0;
@@ -18169,7 +18200,7 @@
       if (keyMatches(event, 'keys.gMode.first') && gNumberBuffer === '') {
         if (S['display.ggSkipPinned']) {
           const items = getVisibleItems();
-          const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+          const firstUnpinned = firstUnpinnedIndex(items);
           const targetIdx = firstUnpinned >= 0 ? firstUnpinned : 0;
           const target = items[targetIdx];
           if (isFolder(target)) {
@@ -18437,7 +18468,7 @@
     // 0 = jump to first unpinned tab (like vim's 0 goes to start of line)
     if (key === '0') {
       const items = getVisibleItems();
-      const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
+      const firstUnpinned = firstUnpinnedIndex(items);
       if (firstUnpinned >= 0) {
         const target = items[firstUnpinned];
         gBrowser.selectedTab = target;
@@ -18471,8 +18502,11 @@
   function setupTabListeners() {
     const tc = gBrowser.tabContainer;
     listen(tc, 'TabSelect', (event) => {
-      // Coalesced with the folder-active mutation Zen makes right after a switch
-      scheduleRelativeNumberUpdate();
+      // Synchronous on purpose: updating in the next frame would restyle and
+      // re-layout the tab strip a second time after Zen's own flush. Writes are
+      // change-only, so the follow-up pass Zen's folder-active mutation
+      // triggers is cheap.
+      updateRelativeNumbers();
       if (recordingJumps && event.target) {
         recordJump(event.target);
       }
