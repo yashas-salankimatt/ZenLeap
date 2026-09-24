@@ -2956,7 +2956,9 @@
   //   that window only (never persisted); settings (configuration) are saved.
   // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
   //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
-  //   asynchronously; browser.getSelectedText() returns a Promise; tabs.getAll()/findBy*
+  //   asynchronously; browser.getSelectedText() returns a Promise of the whole selection,
+  //   except inside a page's text field (only its first 150 characters can be read there:
+  //   browser.getSelection() resolves to { text, truncated } to tell); tabs.getAll()/findBy*
   //   cover the active workspace unless called with { allWorkspaces: true }. While a
   //   Glance is open, tabs.getCurrent() (and the tabs.* default tab) is the Glance's
   //   parent tab; browser.* acts on the page on screen (the Glance).
@@ -3303,6 +3305,56 @@
     };
   }
 
+  // ── Selected text (plugin API) ──
+  // Read through Firefox's own content actors; ZenLeap puts no script into pages. The
+  // find bar's Finder locates the frame or text field holding the selection but returns
+  // at most 150 characters with whitespace collapsed. "View Selection Source" returns
+  // the selection's markup, which Firefox's plain-text serializer turns into the full
+  // text, line breaks included. Returns { text, truncated }: truncated when only
+  // Finder's 150 characters were readable (a selection inside a page's text field).
+  const FINDER_SELECTION_MAX = 150;
+
+  async function readSelectedText() {
+    try {
+      const focused = document.commandDispatcher.focusedElement;
+      if (focused && typeof focused.selectionStart === 'number' && focused.selectionEnd > focused.selectionStart) {
+        return { text: focused.value.slice(focused.selectionStart, focused.selectionEnd), truncated: false };
+      }
+      let bc = gBrowser.selectedBrowser?.browsingContext;
+      let preview = '';
+      for (let depth = 0; bc && depth < 16; depth++) {
+        const info = await bc.currentWindowGlobal?.getActor('Finder').sendQuery('Finder:GetInitialSelection', {});
+        if (!info?.focusedChildBrowserContextId) { preview = info?.selectedText || ''; break; }
+        bc = BrowsingContext.get(info.focusedChildBrowserContextId);
+      }
+      if (!preview || !bc) return { text: '', truncated: false };
+      let full = '';
+      try {
+        const source = await bc.currentWindowGlobal.getActor('ViewSource').sendQuery('ViewSource:GetSelection', {});
+        full = selectionTextFromSource(source?.URL);
+      } catch (e) { /* no document selection, e.g. the selection is in a text field */ }
+      // Only use it if it is the selection Finder saw (Finder trims and collapses whitespace)
+      if (full && full.replace(/\s+/g, ' ').includes(preview.slice(0, 100))) return { text: full, truncated: false };
+      return { text: preview, truncated: preview.length >= FINDER_SELECTION_MAX };
+    } catch (e) {
+      reportError('Reading the selected text failed', e);
+      return { text: '', truncated: false };
+    }
+  }
+
+  // "View Selection Source" answers with view-source:data:text/html,<markup>, where the
+  // selection starts at U+FDD0 and ends at U+FDEF. convertToPlainText() parses the markup
+  // into an inert document (no scripts, no loads) and serializes it the way
+  // Selection.toString() does, except that it can't see CSS-hidden elements.
+  function selectionTextFromSource(url) {
+    if (typeof url !== 'string' || !url.startsWith('view-source:data:')) return '';
+    const markup = decodeURIComponent(url.slice(url.indexOf(',') + 1));
+    const text = Cc['@mozilla.org/parserutils;1'].getService(Ci.nsIParserUtils).convertToPlainText(markup, 0, 0);
+    const start = text.indexOf('﷐');
+    const end = text.indexOf('﷯', start + 1);
+    return start >= 0 && end > start ? text.slice(start + 1, end).trim() : '';
+  }
+
   // ── Scoped Plugin API Factory ──
   // Each plugin gets its own API instance with storage/events scoped to its ID
   function createScopedPluginAPI(pluginId) {
@@ -3646,18 +3698,16 @@
           } catch (e) { reportError(`Plugin "${pluginId}": copyToClipboard failed`, e); }
         },
         toggleFullscreen: () => { try { BrowserCommands.fullScreen(); } catch (e) {} },
-        // Async (content lives in another process). Returns the selection in the focused
-        // chrome input (e.g. the URL bar) if any, otherwise the page selection.
+        // Async (content lives in another process). The selection in the focused chrome
+        // input (e.g. the URL bar) if any, otherwise the page selection.
         getSelectedText: async () => {
-          try {
-            const focused = document.commandDispatcher.focusedElement;
-            if (focused && typeof focused.selectionStart === 'number' && focused.selectionEnd > focused.selectionStart) {
-              return focused.value.slice(focused.selectionStart, focused.selectionEnd);
-            }
-            const result = await gBrowser.selectedBrowser.finder.getInitialSelection();
-            return result?.selectedText || '';
-          } catch (e) { return ''; }
+          const { text, truncated } = await readSelectedText();
+          if (truncated) console.warn(`[ZenLeap] Plugin "${pluginId}": only the first ${FINDER_SELECTION_MAX} characters of the selection could be read`);
+          return text;
         },
+        // Same as getSelectedText(), as { text, truncated }: truncated is true when only the
+        // first 150 characters could be read (e.g. a selection inside a page's text field).
+        getSelection: () => readSelectedText(),
         getPageTitle: () => {
           try { return gBrowser.selectedTab.label || gBrowser.selectedBrowser.contentTitle || ''; } catch (e) { return ''; }
         },

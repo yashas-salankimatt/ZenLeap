@@ -123,8 +123,12 @@ var ZenLeapPlugin = {
             api.ui.showToast('Set up Readwise first (run Configure Readwise Reader)');
             return;
           }
-          // Async: the page lives in a content process
-          var selection = await api.browser.getSelectedText();
+          // Async: the page lives in a content process. getSelection() also says whether
+          // the text had to be cut short (a selection inside a text field on the page).
+          var picked = api.browser.getSelection
+            ? await api.browser.getSelection()
+            : { text: await api.browser.getSelectedText(), truncated: false };
+          var selection = picked.text;
           if (!selection || !selection.trim()) {
             api.ui.showToast('No text selected — select text on the page first');
             return;
@@ -143,7 +147,9 @@ var ZenLeapPlugin = {
               notes: 'Selection from ZenLeap:\n\n' + selection,
               html: html,
             });
-            api.ui.showToast('Selection saved to Reader');
+            api.ui.showToast(picked.truncated
+              ? 'Saved to Reader, but only the first ' + selection.length + ' characters of the selection could be read'
+              : 'Selection saved to Reader');
           } catch (e) {
             api.ui.showToast('Failed: ' + e.message);
           }
