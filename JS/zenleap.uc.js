@@ -3688,16 +3688,18 @@
           try { return folder?.tabs?.filter(t => !t.hasAttribute('zen-empty-tab')) || []; }
           catch (e) { return []; }
         },
+        // (Zen's canDropElement() limits nesting when a *folder* is dropped; adding a tab
+        // never deepens nesting.)
         addTab: (folder, tab) => {
           try {
             if (!folder?.isZenFolder || !liveTab(tab)) return false;
-            if (!window.gZenFolders?.canDropElement(folder, tab)) return false;
             folder.addTabs([tab]);
             return true;
           } catch (e) { reportError(`Plugin "${pluginId}": folders.addTab failed`, e); return false; }
         },
+        // Only a folder: a pinned tab's group is the space's pinned section while it is collapsed
         removeTab: (tab) => {
-          try { if (liveTab(tab) && tab.group) gBrowser.ungroupTab(tab); }
+          try { if (liveTab(tab) && isFolder(tab.group)) gBrowser.ungroupTab(tab); }
           catch (e) { reportError(`Plugin "${pluginId}": folders.removeTab failed`, e); }
         },
         setIcon: (folder) => {
@@ -3781,6 +3783,8 @@
         // need input (sub-flows) open the palette on that step. Returns false for an
         // unknown key (REV-LCMDS-10).
         execute: (cmdKey) => {
+          // Outside the palette nothing refreshes the cached list: evaluate conditions now
+          if (!searchMode) invalidateCommandCache();
           const cmd = getAllCommands().find(c => c.key === cmdKey);
           if (!cmd) return false;
           if (cmd.subFlow) {
@@ -3792,7 +3796,10 @@
           }
           return true;
         },
-        getAll: () => getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon })),
+        getAll: () => {
+          if (!searchMode) invalidateCommandCache();
+          return getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon }));
+        },
       },
 
       // ─── Browser ───
@@ -3915,9 +3922,15 @@
 
       // ─── File I/O (convenience helpers rooted at the plugin's data directory) ───
       // Not a security boundary: plugins run with full chrome privileges anyway.
+      // Paths are relative, '/'-separated ('notes/today.txt'); joinPath() builds them.
       fs: (() => {
         const pluginDataDir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins', pluginId, 'data');
-        const resolvePath = (rel) => PathUtils.join(pluginDataDir, ...(rel ? [rel] : [])); // PathUtils rejects '..' and absolute segments
+        const segments = (rel) => {
+          const parts = String(rel ?? '').split(/[\\/]+/).filter(Boolean);
+          if (parts.some(p => p === '.' || p === '..' || p.includes(':'))) throw new Error(`Invalid plugin data path: ${rel}`);
+          return parts;
+        };
+        const resolvePath = (rel) => PathUtils.join(pluginDataDir, ...segments(rel));
         return {
           readText: async (rel) => {
             try { return await IOUtils.readUTF8(resolvePath(rel)); } catch (e) { return null; }
@@ -3956,7 +3969,11 @@
           remove: async (rel) => {
             try { await IOUtils.remove(resolvePath(rel)); return true; } catch (e) { return false; }
           },
-          joinPath: (...parts) => PathUtils.join(...parts),
+          // Relative parts: a path for the methods above ('a/b.txt'); from an absolute
+          // first part: a platform path, as PathUtils.join() makes it
+          joinPath: (...parts) => (parts.length && PathUtils.isAbsolute(String(parts[0])))
+            ? PathUtils.join(...parts.map(String))
+            : parts.flatMap(p => segments(p)).join('/'),
         };
       })(),
 
@@ -4292,7 +4309,9 @@
     try {
       Cu.evalInSandbox(source, sandbox, 'latest', PathUtils.toFileURI(manifest._scriptPath), 1);
       const exported = sandbox.ZenLeapPlugin;
-      if (!exported || typeof exported !== 'object') throw new Error('plugin.js must define a ZenLeapPlugin object');
+      if (!exported || typeof exported !== 'object') {
+        throw new Error('plugin.js must define a ZenLeapPlugin object: declare it with "var ZenLeapPlugin = { ... }" (const, let and class declarations are not visible outside plugin.js)');
+      }
       entry.sandbox = sandbox;
       entry.exports = exported;
       entry.loaded = true;
@@ -4513,10 +4532,13 @@
   }
 
   // ── External Plugin Loader ──
+  // Created once per window (the Plugin Manager asks on every render)
+  let _pluginsDirReady = null;
   async function getPluginsDirectory() {
     const dir = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-plugins');
-    try { await IOUtils.makeDirectory(dir, { ignoreExisting: true }); }
-    catch (e) { reportError('Failed to create the plugins directory', e); }
+    _pluginsDirReady ??= IOUtils.makeDirectory(dir, { ignoreExisting: true })
+      .catch(e => { _pluginsDirReady = null; reportError('Failed to create the plugins directory', e); });
+    await _pluginsDirReady;
     return dir;
   }
 
@@ -4966,19 +4988,29 @@
 
     const footer = document.createElement('div');
     footer.className = 'zenleap-pm-footer';
-    footer.textContent = 'h/Backspace back · j/k scroll · Space enable/disable · Esc back';
+    footer.textContent = 'h/Backspace back · j/k scroll · Space enable/disable · u uninstall · Esc back';
 
     container.appendChild(header);
     container.appendChild(body);
     container.appendChild(footer);
   }
 
-  // Keyboard navigation for the Plugin Manager (Escape is handled by the main key handler).
+  // Keyboard for the Plugin Manager (all of it: the dialog router calls this first).
   function handlePluginManagerKey(event) {
-    if (event.key === 'Escape' || event.ctrlKey || event.altKey || event.metaKey) return false;
+    const isDetail = _pluginManagerView === 'detail' && _pluginManagerDetailId;
+    if (event.key === 'Escape') {
+      if (isDetail) {
+        _pluginManagerView = 'list';
+        _pluginManagerDetailId = null;
+        renderPluginManagerContent();
+      } else {
+        exitPluginManagerMode();
+      }
+      return true;
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
     const target = event.composedTarget || event.target;
     if (target?.closest?.('input, textarea')) return false;
-    const isDetail = _pluginManagerView === 'detail' && _pluginManagerDetailId;
     const key = event.key;
     if (isDetail) {
       const body = _pluginManagerModal?.querySelector('.zenleap-pm-detail-body');
@@ -4991,6 +5023,11 @@
         return true;
       }
       if (key === ' ' || key === 'e') { togglePluginEnabled(_pluginManagerDetailId); return true; }
+      if ((key === 'u' || key === 'Delete') && !event.repeat) {
+        const plugin = getRegisteredPlugins().find(p => p.id === _pluginManagerDetailId);
+        if (plugin && !plugin.builtIn) confirmAndUninstallPlugin(plugin); // asks first; Enter cancels
+        return true;
+      }
       return false;
     }
     const plugins = getRegisteredPlugins();
@@ -5271,7 +5308,8 @@
       { key: 'add-to-essentials', label: 'Add Tab to Essentials', icon: '⭐', tags: ['tab', 'essential', 'add', 'star', 'zen'],
         condition: () => {
           const tab = currentTab();
-          return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !tab.group &&
+          // Not from a folder or split view (a collapsed pinned section isn't a tab group)
+          return !!window.gZenPinnedTabManager && !tab.hasAttribute('zen-essential') && !gBrowser.isTabGroup(tab.group) &&
             gZenPinnedTabManager.canEssentialBeAdded(tab);
         },
         command: () => { gZenPinnedTabManager.addToEssentials(currentTab()); } },
@@ -18334,20 +18372,8 @@
       return;
     }
 
-    // Handle plugin manager mode - Escape to close
-    if (_pluginManagerMode) {
-      if (event.key === 'Escape') {
-        consumeEvent(event);
-        if (_pluginManagerView === 'detail') {
-          _pluginManagerView = 'list';
-          _pluginManagerDetailId = null;
-          renderPluginManagerContent();
-        } else {
-          exitPluginManagerMode();
-        }
-      }
-      return;
-    }
+    // The Plugin Manager's keys are handled by the dialog router (handlePluginManagerKey)
+    if (_pluginManagerMode) return;
 
     // Handle settings mode - Escape to close, Enter to update from About tab
     if (settingsMode) {
