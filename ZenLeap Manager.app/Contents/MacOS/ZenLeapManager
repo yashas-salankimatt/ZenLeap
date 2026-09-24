@@ -5,15 +5,13 @@
 
 set -e
 
-FXAUTOCONFIG_URL="https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip"
-
 # Temp directory for downloads
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/zenleap-manager.XXXXXX")
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # >>> zen-paths.sh (generated from scripts/lib/zen-paths.sh by scripts/sync-lib.sh; edit it there)
-# zen-paths.sh - Zen profile discovery (and ZenLeap release download) shared by
-# ZenLeap's shell scripts.
+# zen-paths.sh - Zen profile discovery, fx-autoconfig and ZenLeap release
+# helpers shared by ZenLeap's shell scripts.
 #
 # This file is the single source of truth. install.sh and
 # "ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" carry an embedded copy
@@ -21,6 +19,7 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 # keep working when downloaded on their own (curl | bash, the .app bundle);
 # install-plugin.sh and clean-legacy-css.sh source this file. After editing it,
 # run scripts/sync-lib.sh (scripts/check-release.sh fails if a copy is stale).
+# The ZenRipple installer follows the same rules; keep the two in step.
 #
 # Keep it compatible with bash 3.2 (macOS /bin/bash): no associative arrays,
 # no mapfile, no ${var,,}, no namerefs. Callers may use `set -e`, so functions
@@ -44,6 +43,25 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 ZP_FLATPAK_ID="app.zen_browser.zen"
 ZP_SINE_MOD_ID="zenleap-relative-tab-nav"
 ZP_GITHUB_REPO="yashas-salankimatt/ZenLeap"
+
+# fx-autoconfig commit tested with Zen 1.22.3b (Firefox 156; loader 0.10.16).
+# The files the installers copy are checked against these hashes; another
+# FX_AUTOCONFIG_REF is used unverified. Same pin as the ZenRipple installer
+# and install.ps1 (scripts/check-release.sh compares them).
+# shellcheck disable=SC2034  # used by the scripts that include this file
+ZP_FXAC_PINNED_REF="dfdab5684faffc112b76ccb1d8cab7f75da0102c"
+# shellcheck disable=SC2034
+ZP_FXAC_PINNED_VERSION="0.10.16"   # @version of that commit's boot.sys.mjs
+ZP_FXAC_SHA256="
+80dc421264a3ea04275e1724b7b57234f89254e9582a6c17e9a911b65c3aa6d7  program/config.js
+6bfd2ed139d18ff5178e0fc62a3b4058540ddbeba3adc912c0d69edb70c17ece  program/defaults/pref/config-prefs.js
+1f0b37d765c7b10b963a465a62a420059e334a18b6b48bd8c09059837e676106  profile/chrome/utils/boot.sys.mjs
+d80557b7bdd46f91f0d249f25f1bf66ed83f8c9e620cd0c9334029e4826924d0  profile/chrome/utils/chrome.manifest
+1d6302c5484dc914e43685740937f1d89908099f835e53f532338822c31b08af  profile/chrome/utils/fs.sys.mjs
+e7fca8757159751df080e5cbfcd27b508d98c5cdfd6434ea14247832418d1f63  profile/chrome/utils/module_loader.mjs
+dc7547aecbaac67da94b54e353f8e306a0ca01b2a461e106cc88c63a2e210cac  profile/chrome/utils/uc_api.sys.mjs
+3fb7c9799864ee01428722939f324acea1e6065cb63a9298e7bbc59e5adbd96a  profile/chrome/utils/utils.sys.mjs
+"
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
 # values must be ignored, and Firefox does so).
@@ -81,6 +99,23 @@ zp__physical_dir() {
     (cd "$1" 2>/dev/null && pwd -P) || true
 }
 
+# Path without trailing slashes
+zp__strip_slash() {
+    local p="$1"
+    while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p=${p%/}; done
+    printf '%s\n' "$p"
+}
+
+# Value of <key> in [<section>] of an INI file (CRs ignored)
+zp_ini_value() {
+    [ -f "$1" ] || return 0
+    awk -v want="$2" -v key="$3" '
+        { sub(/\r$/, "") }
+        /^[ \t]*\[.*\][ \t]*$/ { s = $0; sub(/^[ \t]*\[/, "", s); sub(/\][ \t]*$/, "", s); sect = s; next }
+        sect == want && index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
+    ' "$1"
+}
+
 # Candidate profile roots, the one Zen uses first. Sets ZP_ROOT_CANDIDATES and
 # ZP_CACHE_ROOT. Usage: zp_candidate_roots <native|flatpak>
 zp_candidate_roots() {
@@ -109,11 +144,10 @@ zp_reset() {
     ZP_PROFILE_NAMES=()
     ZP_PROFILE_LOCAL=()
     ZP_PROFILE_ROOT=()
-    ZP_PROFILE_RAW=()
     ZP_SELECTED=()
 }
 
-# zp__add_profile <dir> <name> <local-dir> <root> <raw-path>
+# zp__add_profile <dir> <name> <local-dir> <root>
 zp__add_profile() {
     if [ ! -d "$1" ]; then return 0; fi   # listed in profiles.ini but deleted
     if zp__in_list "$1" "${ZP_PROFILE_DIRS[@]}"; then return 0; fi
@@ -121,51 +155,61 @@ zp__add_profile() {
     ZP_PROFILE_NAMES+=("$2")
     ZP_PROFILE_LOCAL+=("$3")
     ZP_PROFILE_ROOT+=("$4")
-    ZP_PROFILE_RAW+=("$5")
 }
 
-# Print an INI file without CRs, followed by a sentinel section header so the
-# last section gets flushed by the parse loops below.
+# Print an INI file without CRs.
 zp__ini_lines() {
     tr -d '\r' < "$1"
-    printf '\n[]\n'
+    printf '\n'
 }
 
-# Parse <root>/profiles.ini and append its profiles; sets ZP__ROOT_DEFAULT to
-# the index of the profile this root starts by default (-1 if none).
+# zp__newest <dirs...>: position (0-based) of the directory whose prefs.js
+# changed last, i.e. the profile used most recently.
+zp__newest() {
+    local best=0 i=0 d best_dir="$1"
+    for d in "$@"; do
+        if [ "$d/prefs.js" -nt "$best_dir/prefs.js" ]; then best=$i; best_dir="$d"; fi
+        i=$((i + 1))
+    done
+    printf '%s\n' "$best"
+}
+
+# Read <root>/profiles.ini like Firefox does: [Profile0], [Profile1], ... up
+# to the first missing section or one without IsRelative; entries without
+# Name= or Path= are skipped. The root's default profile (the install's
+# [Install*]/installs.ini Default=, else Default=1, else the most recently used;
+# ties go to the install in app-dir, then to the most recently used) is listed
+# first. Sets ZP__ROOT_DEFAULT to its index (-1 if the root adds nothing).
 # Usage: zp__parse_root <root> <cache-root> [app-dir]
 zp__parse_root() {
     local root="$1" cache_root="$2" app_dir="$3"
-    local line section="" name="" path="" rel=1 isdef="" flagged="" want have i
-    local first=${#ZP_PROFILE_DIRS[@]}
-    local defaults=() matches=()
+    local line section="" key val n dir want have pick i
+    local s_name=() s_path=() s_rel=() s_def=() defaults=()
+    local c_dir=() c_name=() c_local=() inst=() flagged=() all=() cands=()
     ZP__ROOT_DEFAULT=-1
 
     while IFS= read -r line; do
         case "$line" in
-            \[*\])
-                case "$section" in
-                    Profile[0-9]*)
-                        if [ -n "$path" ]; then
-                            if [ "$rel" = "0" ]; then
-                                zp__add_profile "$path" "${name:-${path##*/}}" "$path" "$root" "$path"
-                            else
-                                zp__add_profile "$root/$path" "${name:-${path##*/}}" "$cache_root/$path" "$root" "$path"
-                            fi
-                            if [ -n "$isdef" ]; then flagged=$path; fi
-                        fi ;;
-                esac
-                section=${line#\[}; section=${section%\]}
-                name=""; path=""; rel=1; isdef="" ;;
-            Name=*) name=${line#Name=} ;;
-            Path=*) path=${line#Path=} ;;
-            IsRelative=*) rel=${line#IsRelative=} ;;
-            Default=*)
-                case "$section" in
-                    Profile[0-9]*) if [ "${line#Default=}" = "1" ]; then isdef=1; fi ;;
-                    General|BackgroundTasksProfiles) ;;
-                    *) defaults+=("${line#Default=}") ;;   # [Install<hash>]
+            \[*\]) section=${line#\[}; section=${section%\]}; continue ;;
+            *=*) ;;
+            *) continue ;;
+        esac
+        key=${line%%=*}
+        val=${line#*=}
+        case "$section" in
+            Profile[0-9]*)
+                n=${section#Profile}
+                case "$n" in *[!0-9]*) continue ;; esac
+                if [ "Profile$((10#$n))" != "$section" ]; then continue; fi   # e.g. Profile01
+                n=$((10#$n))
+                case "$key" in
+                    Name) s_name[n]=$val ;;
+                    Path) s_path[n]=$val ;;
+                    IsRelative) s_rel[n]=$val ;;
+                    Default) s_def[n]=$val ;;
                 esac ;;
+            General|BackgroundTasksProfiles|"") ;;
+            *) if [ "$key" = "Default" ] && [ -n "$val" ]; then defaults+=("$val"); fi ;;   # [Install<hash>]
         esac
     done < <(zp__ini_lines "$root/profiles.ini")
 
@@ -175,42 +219,75 @@ zp__parse_root() {
         while IFS= read -r line; do
             case "$line" in
                 \[*\]) section=${line#\[}; section=${section%\]} ;;
-                Default=*) if [ -n "$section" ]; then defaults+=("${line#Default=}"); fi ;;
+                Default=*) if [ -n "$section" ] && [ -n "${line#Default=}" ]; then defaults+=("${line#Default=}"); fi ;;
             esac
         done < <(zp__ini_lines "$root/installs.ini")
     fi
 
-    # The install's default profile wins over the legacy Default=1 marker.
-    for want in "${defaults[@]}"; do
-        for ((i = first; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
-            if [ "${ZP_PROFILE_RAW[$i]}" = "$want" ] && ! zp__in_list "$i" "${matches[@]}"; then
-                matches+=("$i")
+    n=0
+    while [ -n "${s_rel[n]+set}" ]; do
+        if [ -n "${s_path[n]:-}" ] && [ -n "${s_name[n]+set}" ]; then
+            if [ "${s_rel[n]}" = "1" ]; then
+                dir="$root/${s_path[n]}"
+                have="$cache_root/${s_path[n]}"
+            else
+                dir="${s_path[n]}"
+                have="$dir"      # absolute profiles keep their local data inside
             fi
+            dir=$(zp__strip_slash "$dir")
+            if [ -d "$dir" ] && ! zp__in_list "$dir" "${c_dir[@]}"; then
+                c_dir+=("$dir")
+                c_name+=("${s_name[n]}")
+                c_local+=("$(zp__strip_slash "$have")")
+                if [ "${s_def[n]:-}" = "1" ]; then flagged+=("$((${#c_dir[@]} - 1))"); fi
+            fi
+        fi
+        n=$((n + 1))
+    done
+    if [ ${#c_dir[@]} -eq 0 ]; then return 0; fi
+
+    # Which listed profiles are an install's default?
+    for want in "${defaults[@]}"; do
+        case "$want" in /*) ;; *) want="$root/$want" ;; esac
+        want=$(zp__strip_slash "$want")
+        for ((i = 0; i < ${#c_dir[@]}; i++)); do
+            if [ "${c_dir[$i]}" = "$want" ] && ! zp__in_list "$i" "${inst[@]}"; then inst+=("$i"); fi
         done
     done
-    if [ ${#matches[@]} -gt 1 ] && [ -n "$app_dir" ]; then
-        # Several Zen installs share this root: prefer the profile that the
-        # install in app_dir ran last (compatibility.ini LastPlatformDir).
+
+    pick=""
+    if [ ${#inst[@]} -gt 1 ] && [ -n "$app_dir" ]; then
         want=$(zp__physical_dir "$app_dir")
-        for i in "${matches[@]}"; do
-            have=$(sed -n 's/^LastPlatformDir=//p' "${ZP_PROFILE_DIRS[$i]}/compatibility.ini" 2>/dev/null | tr -d '\r' | head -n 1)
+        for i in "${inst[@]}"; do
+            have=$(zp_ini_value "${c_dir[$i]}/compatibility.ini" Compatibility LastPlatformDir)
             if [ -n "$want" ] && [ -n "$have" ] && [ "$(zp__physical_dir "$have")" = "$want" ]; then
-                ZP__ROOT_DEFAULT=$i
-                return 0
+                pick=$i
+                break
             fi
         done
     fi
-    if [ ${#matches[@]} -gt 0 ]; then
-        ZP__ROOT_DEFAULT=${matches[0]}
-        return 0
+    if [ -z "$pick" ]; then
+        if [ ${#inst[@]} -gt 0 ]; then
+            all=("${inst[@]}")
+        elif [ ${#flagged[@]} -gt 0 ]; then
+            all=("${flagged[@]}")
+        else
+            all=()
+            for ((i = 0; i < ${#c_dir[@]}; i++)); do all+=("$i"); done
+        fi
+        for i in "${all[@]}"; do cands+=("${c_dir[$i]}"); done
+        pick=${all[$(zp__newest "${cands[@]}")]}
     fi
-    for ((i = first; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
-        if [ -n "$flagged" ] && [ "${ZP_PROFILE_RAW[$i]}" = "$flagged" ]; then
-            ZP__ROOT_DEFAULT=$i
-            return 0
+
+    # The default first, then the rest in profiles.ini order
+    ZP__ROOT_DEFAULT=${#ZP_PROFILE_DIRS[@]}
+    zp__add_profile "${c_dir[$pick]}" "${c_name[$pick]}" "${c_local[$pick]}" "$root"
+    for ((i = 0; i < ${#c_dir[@]}; i++)); do
+        if [ "$i" != "$pick" ]; then
+            zp__add_profile "${c_dir[$i]}" "${c_name[$i]}" "${c_local[$i]}" "$root"
         fi
     done
-    if [ ${#ZP_PROFILE_DIRS[@]} -gt "$first" ]; then ZP__ROOT_DEFAULT=$first; fi
+    if [ "${ZP_PROFILE_DIRS[$ZP__ROOT_DEFAULT]:-}" != "${c_dir[$pick]}" ]; then ZP__ROOT_DEFAULT=-1; fi
     return 0
 }
 
@@ -223,7 +300,7 @@ zp__parse_root() {
 #       ZP_DEFAULT (index of the profile Zen opens by default, -1 if unknown).
 # Returns 1 and sets ZP_ERROR when nothing is found.
 zp_discover() {
-    local mode="${1:-native}" app_dir="${2:-}" root d base
+    local mode="${1:-native}" app_dir="${2:-}" root d base found=()
     zp_reset
     zp_candidate_roots "$mode"
     for root in "${ZP_ROOT_CANDIDATES[@]}"; do
@@ -239,18 +316,20 @@ zp_discover() {
             if [ ! -d "$root" ]; then continue; fi
             base=$root
             if [ "$(uname -s)" = "Darwin" ]; then base="$root/Profiles"; fi
+            found=()
             for d in "$base"/*/; do
                 d=${d%/}
-                if [ -f "$d/prefs.js" ] || [ -f "$d/times.json" ]; then
-                    zp__add_profile "$d" "${d##*/}" "$ZP_CACHE_ROOT/${d#"$root"/}" "$root" "${d#"$root"/}"
-                fi
+                if [ -f "$d/prefs.js" ] || [ -f "$d/times.json" ]; then found+=("$d"); fi
             done
-            if [ ${#ZP_PROFILE_DIRS[@]} -gt 0 ]; then
+            if [ ${#found[@]} -gt 0 ]; then
+                for d in "${found[@]}"; do
+                    zp__add_profile "$d" "${d##*/}" "$ZP_CACHE_ROOT/${d#"$root"/}" "$root"
+                done
                 ZP_ROOT=$root
+                ZP_DEFAULT=$(zp__newest "${found[@]}")
                 break
             fi
         done
-        if [ ${#ZP_PROFILE_DIRS[@]} -eq 1 ]; then ZP_DEFAULT=0; fi
     fi
     if [ ${#ZP_PROFILE_DIRS[@]} -eq 0 ]; then
         ZP_ERROR="No Zen profiles found in: ${ZP_ROOT_CANDIDATES[*]}"
@@ -276,7 +355,7 @@ zp_use_profile_dir() {
             return 0
         fi
     done
-    zp__add_profile "$want" "${want##*/}" "$want" "" "$want"
+    zp__add_profile "$want" "${want##*/}" "$want" ""
     ZP_SELECTED=("$(( ${#ZP_PROFILE_DIRS[@]} - 1 ))")
 }
 
@@ -293,8 +372,9 @@ zp_describe() {
     printf '%s\n' "$out"
 }
 
-# Resolve a profile selection: "all", 1-based numbers ("2" or "1,3"), or a
-# profile name. Sets ZP_SELECTED (0-based indices); returns 1 with ZP_ERROR.
+# Resolve a profile selection: "all", 1-based numbers ("2" or "1,3"), a
+# profile name or a profile directory name. Sets ZP_SELECTED (0-based
+# indices); returns 1 with ZP_ERROR.
 zp_select() {
     local spec="$1" tok i n=${#ZP_PROFILE_DIRS[@]} lc hit=()
     ZP_SELECTED=()
@@ -322,6 +402,11 @@ zp_select() {
         lc=$(printf '%s' "$spec" | tr '[:upper:]' '[:lower:]')
         for ((i = 0; i < n; i++)); do
             if [ "$(printf '%s' "${ZP_PROFILE_NAMES[$i]}" | tr '[:upper:]' '[:lower:]')" = "$lc" ]; then hit+=("$i"); fi
+        done
+    fi
+    if [ ${#hit[@]} -eq 0 ]; then
+        for ((i = 0; i < n; i++)); do
+            if [ "${ZP_PROFILE_DIRS[$i]##*/}" = "$spec" ]; then hit+=("$i"); fi
         done
     fi
     if [ ${#hit[@]} -eq 1 ]; then
@@ -386,7 +471,7 @@ zp__is_zen_pid() {
     fi
     comm=${comm##*/}
     case "$comm" in
-        zen|zen-bin|Zen|"Zen Browser") return 0 ;;
+        *zen*|*Zen*|*twilight*|*Twilight*) return 0 ;;
     esac
     return 1
 }
@@ -412,17 +497,42 @@ zp_profile_pid() {
     return 1
 }
 
-# Remove the startup cache of profile <i> (in its local dir, and in the profile
-# dir itself for profiles started with -profile). Returns 1 if there was none.
+# Make Zen drop the startup cache of profile <i>: InvalidateCaches=1 in
+# compatibility.ini makes Zen clear it at its next start (what about:support's
+# "Clear startup cache" does), which also works while Zen is running. When the
+# profile is not in use (<in-use> = false) the cache directories are removed
+# right away too (in the local dir, and in the profile dir for profiles started
+# with -profile). Returns 1 if there was nothing to do.
+# Usage: zp_clear_startup_cache <i> [in-use]
 zp_clear_startup_cache() {
-    local d found=1
-    for d in "${ZP_PROFILE_LOCAL[$1]}/startupCache" "${ZP_PROFILE_DIRS[$1]}/startupCache"; do
-        if [ -d "$d" ]; then
-            rm -rf "$d" 2>/dev/null || true
-            found=0
+    local dir="${ZP_PROFILE_DIRS[$1]}" compat d done_=1
+    compat="$dir/compatibility.ini"
+    if [ -f "$compat" ]; then
+        if ! grep -qx 'InvalidateCaches=1' "$compat"; then
+            if [ -n "$(tail -c 1 "$compat")" ]; then printf '\n' >> "$compat"; fi
+            printf 'InvalidateCaches=1\n' >> "$compat"
         fi
-    done
-    return $found
+        done_=0
+    fi
+    if [ "${2:-false}" != true ]; then
+        for d in "${ZP_PROFILE_LOCAL[$1]}/startupCache" "$dir/startupCache"; do
+            if [ -d "$d" ]; then
+                rm -rf "$d" 2>/dev/null || true
+                done_=0
+            fi
+        done
+    fi
+    return $done_
+}
+
+# Copy a file through a temporary name so an interrupted copy never leaves a
+# half-written script behind.
+zp_copy_file() {
+    if cp "$1" "$2.zenleap-tmp" 2>/dev/null && mv -f "$2.zenleap-tmp" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$2.zenleap-tmp" 2>/dev/null
+    return 1
 }
 
 # Remove the "/* === ZenLeap Styles === */ ... /* === End ZenLeap Styles === */"
@@ -464,7 +574,7 @@ zp_file_version() {
     fi
 }
 
-# zp_version_gte <a> <b>: true if dotted version a >= b.
+# zp_version_gte <a> <b>: true if dotted version a >= b ("1.22.3b" works).
 zp_version_gte() {
     local a="$1" b="$2" x y
     while [ -n "$a" ] || [ -n "$b" ]; do
@@ -489,7 +599,7 @@ zp_sine_zenleap_dir() {
 # True if <profile-dir> boots through Sine's loader (which only runs Sine mods,
 # not fx-autoconfig scripts in chrome/JS).
 zp_profile_uses_sine() {
-    if [ -f "$1/chrome/JS/sine.sys.mjs" ]; then return 0; fi
+    if [ -f "$1/chrome/JS/sine.sys.mjs" ] || [ -f "$1/chrome/sine-mods/mods.json" ]; then return 0; fi
     if grep -qs 'sine-mods' "$1/chrome/utils/chrome.manifest"; then return 0; fi
     return 1
 }
@@ -503,6 +613,84 @@ zp_zenleap_version() {
         zp_file_version "$d/JS/zenleap.uc.js"
     fi
 }
+
+# --- Zen installation and fx-autoconfig ------------------------------------
+
+# True if <dir> is a Zen installation directory (GRE): where config.js goes.
+zp_is_zen_dir() {
+    [ -n "$1" ] && { [ -f "$1/omni.ja" ] || [ -f "$1/application.ini" ]; }
+}
+
+# The Zen installation that last ran profile <i> (compatibility.ini
+# LastPlatformDir), if it is still there. Flatpak/AppImage paths (/app/...,
+# /tmp/.mount_*) are not usable from outside and are skipped.
+zp_profile_zen_dir() {
+    local lp
+    lp=$(zp_ini_value "${ZP_PROFILE_DIRS[$1]}/compatibility.ini" Compatibility LastPlatformDir)
+    case "$lp" in
+        ""|/app/*|/tmp/.mount_*) return 1 ;;
+    esac
+    if zp_is_zen_dir "$lp"; then printf '%s\n' "$(zp__strip_slash "$lp")"; return 0; fi
+    return 1
+}
+
+# Zen version of an installation directory (application.ini), e.g. 1.22.3b
+zp_zen_version() {
+    zp_ini_value "$1/application.ini" App Version
+}
+
+# What an installation directory's autoconfig does at startup:
+#   fxac          fx-autoconfig's config.js and a pref file that enables it
+#   fxac-noprefs  fx-autoconfig's config.js, but no general.config.filename pref
+#   sine          Sine's bootloader (runs only Sine mods)
+#   foreign       some other autoconfig file (or an old fx-autoconfig)
+#   missing       no config.js
+zp_program_status() {
+    if [ ! -f "$1/config.js" ]; then
+        echo missing
+    elif grep -q 'userchromejs/content/boot.sys.mjs' "$1/config.js" 2>/dev/null; then
+        if grep -qs 'general.config.filename' "$1"/defaults/pref/*.js; then echo fxac; else echo fxac-noprefs; fi
+    elif grep -q 'sine.sys.mjs' "$1/config.js" 2>/dev/null; then
+        echo sine
+    else
+        echo foreign
+    fi
+}
+
+# Download URL of an fx-autoconfig commit/branch as a zip archive
+zp_fxac_url() {
+    printf 'https://github.com/MrOtherGuy/fx-autoconfig/archive/%s.zip\n' "$1"
+}
+
+# Check an extracted fx-autoconfig tree against the pinned hashes: every
+# listed file must match and chrome/utils must contain nothing else.
+# Returns 1 with ZP_ERROR.
+zp_fxac_verify() {
+    local dir="$1" sum file extra
+    while read -r sum file; do
+        [ -n "$file" ] || continue
+        if [ ! -f "$dir/$file" ]; then
+            ZP_ERROR="fx-autoconfig download is missing $file"
+            return 1
+        fi
+        if [ "$(zp_sha256 "$dir/$file")" != "$sum" ]; then
+            ZP_ERROR="fx-autoconfig file $file does not match the tested version"
+            return 1
+        fi
+    done <<EOF
+$ZP_FXAC_SHA256
+EOF
+    for file in "$dir"/profile/chrome/utils/*; do
+        extra="profile/chrome/utils/${file##*/}"
+        if ! printf '%s\n' "$ZP_FXAC_SHA256" | grep -qF "  $extra"; then
+            ZP_ERROR="fx-autoconfig download contains an unexpected file: $extra"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# --- ZenLeap releases -------------------------------------------------------
 
 # Tag of the latest ZenLeap release (e.g. v3.4.0). Uses the GitHub API and
 # falls back to the releases/latest redirect (no API rate limit).
@@ -567,7 +755,6 @@ ZEN_RESOURCES="$ZEN_APP/Contents/Resources"
 NL=$'\n'
 ZEN_NEEDS_RESTART=false
 FXAC_SRC=""
-FXAC_VERSION=""
 
 # All dialog text is passed to AppleScript as arguments, so it needs no escaping.
 
@@ -632,6 +819,20 @@ run_as_admin() {
         -e 'end run' "$@" >/dev/null 2>&1
 }
 
+# Use the Zen.app that last ran profile $1 (compatibility.ini), if there is one
+use_profile_zen_app() {
+    local lp
+    if lp=$(zp_profile_zen_dir "$1"); then
+        case "$lp" in
+            */Contents/Resources)
+                ZEN_APP="${lp%/Contents/Resources}"
+                ZEN_RESOURCES="$lp"
+                ;;
+        esac
+    fi
+    return 0
+}
+
 # Label of profile index $1 for dialogs, with its ZenLeap status
 profile_label() {
     local v label
@@ -666,47 +867,56 @@ pick_profile() {
     return 1
 }
 
-# Download fx-autoconfig into $FXAC_SRC
+# Download the tested fx-autoconfig commit into $FXAC_SRC, verified file by file
 fxac_fetch() {
     local dir
     if [ -n "$FXAC_SRC" ]; then return 0; fi
     dir="$TEMP_DIR/fxac-download"
     rm -rf "$dir"
     mkdir -p "$dir"
-    curl -sfL "$FXAUTOCONFIG_URL" -o "$dir/fxautoconfig.zip" || return 1
+    curl -sfL "$(zp_fxac_url "$ZP_FXAC_PINNED_REF")" -o "$dir/fxautoconfig.zip" || return 1
     unzip -q "$dir/fxautoconfig.zip" -d "$dir" || return 1
     dir=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name "fx-autoconfig*" | head -n 1)
-    if [ -z "$dir" ] || [ ! -f "$dir/profile/chrome/utils/boot.sys.mjs" ]; then return 1; fi
+    if [ -z "$dir" ] || ! zp_fxac_verify "$dir"; then return 1; fi
     FXAC_SRC="$dir"
-    FXAC_VERSION=$(zp_file_version "$dir/profile/chrome/utils/boot.sys.mjs")
 }
 
-# fx-autoconfig's program files in Zen.app (once for all profiles)
+# fx-autoconfig's program files in Zen.app (once for all profiles). An existing
+# fx-autoconfig config.js is kept; only a missing pref file is added.
 install_fxautoconfig_program() {
-    if [ -f "$ZEN_RESOURCES/config.js" ] && grep -q 'boot.sys.mjs' "$ZEN_RESOURCES/config.js" && \
-       [ -f "$ZEN_RESOURCES/defaults/pref/config-prefs.js" ]; then
-        return 0
-    fi
+    local status
+    status=$(zp_program_status "$ZEN_RESOURCES")
+    case "$status" in
+        fxac) return 0 ;;
+        missing|fxac-noprefs) ;;
+        *) return 1 ;;   # Sine's or a foreign config.js: do_install refuses earlier
+    esac
     fxac_fetch || return 1
     if mkdir -p "$ZEN_RESOURCES/defaults/pref" 2>/dev/null && \
-       cp "$FXAC_SRC/program/config.js" "$ZEN_RESOURCES/config.js" 2>/dev/null && \
-       cp "$FXAC_SRC/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js" 2>/dev/null; then
+       { [ "$status" != missing ] || zp_copy_file "$FXAC_SRC/program/config.js" "$ZEN_RESOURCES/config.js"; } && \
+       zp_copy_file "$FXAC_SRC/program/defaults/pref/config-prefs.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js"; then
         return 0
     fi
-    # shellcheck disable=SC2016  # $1..$3 are expanded by the admin shell
-    run_as_admin 'mkdir -p "$1/defaults/pref" && cp "$2" "$1/config.js" && cp "$3" "$1/defaults/pref/config-prefs.js"' \
-        "$ZEN_RESOURCES" "$FXAC_SRC/program/config.js" "$FXAC_SRC/program/defaults/pref/config-prefs.js"
+    if [ "$status" = missing ]; then
+        # shellcheck disable=SC2016  # $1..$3 are expanded by the admin shell
+        run_as_admin 'mkdir -p "$1/defaults/pref" && cp "$2" "$1/config.js" && cp "$3" "$1/defaults/pref/config-prefs.js"' \
+            "$ZEN_RESOURCES" "$FXAC_SRC/program/config.js" "$FXAC_SRC/program/defaults/pref/config-prefs.js"
+    else
+        # shellcheck disable=SC2016  # $1..$2 are expanded by the admin shell
+        run_as_admin 'mkdir -p "$1/defaults/pref" && cp "$2" "$1/defaults/pref/config-prefs.js"' \
+            "$ZEN_RESOURCES" "$FXAC_SRC/program/defaults/pref/config-prefs.js"
+    fi
 }
 
-# fx-autoconfig's loader in the profile (only chrome/utils, not the examples);
-# offers to update an outdated one
+# fx-autoconfig's loader in the profile (only chrome/utils, not the examples).
+# An existing loader is kept; one older than the tested version may be updated.
 install_fxautoconfig_profile() {
     local profile_path="$1" utils="$1/chrome/utils" have
     if [ -f "$utils/boot.sys.mjs" ] || [ -f "$utils/boot.jsm" ]; then
         have=$(zp_file_version "$utils/boot.sys.mjs")
-        fxac_fetch || return 0   # can't check for updates; keep the installed loader
-        if [ -n "$have" ] && zp_version_gte "$have" "$FXAC_VERSION"; then return 0; fi
-        if ask_yes_no "The fx-autoconfig loader in this profile is outdated (${have:-pre-0.8}; current: $FXAC_VERSION).${NL}${NL}Update it? The old copy is kept as chrome/utils.zenleap-backup."; then
+        if [ -n "$have" ] && zp_version_gte "$have" "$ZP_FXAC_PINNED_VERSION"; then return 0; fi
+        if ask_yes_no "The fx-autoconfig loader in this profile is older than the tested one (${have:-pre-0.8}; tested: $ZP_FXAC_PINNED_VERSION).${NL}${NL}Update it? The old copy is kept as chrome/utils.zenleap-backup."; then
+            fxac_fetch || return 1
             rm -rf "$profile_path/chrome/utils.zenleap-backup"
             mv "$utils" "$profile_path/chrome/utils.zenleap-backup"
             cp -R "$FXAC_SRC/profile/chrome/utils" "$utils"
@@ -727,7 +937,7 @@ install_zenleap() {
     local src="$1" profile_path="$2" chrome_dir="$2/chrome"
 
     mkdir -p "$chrome_dir/JS"
-    cp "$src/JS/zenleap.uc.js" "$chrome_dir/JS/zenleap.uc.js"
+    zp_copy_file "$src/JS/zenleap.uc.js" "$chrome_dir/JS/zenleap.uc.js" || return 1
 
     # Older versions appended styles to userChrome.css; ZenLeap injects its
     # styles at runtime now, so only remove such blocks (keeping a backup).
@@ -761,7 +971,8 @@ uninstall_fxautoconfig() {
        { [ -f "$profile_path/chrome/utils/boot.sys.mjs" ] || [ -f "$profile_path/chrome/utils/boot.jsm" ]; }; then
         rm -rf "$profile_path/chrome/utils"
     fi
-    if [ -f "$ZEN_RESOURCES/config.js" ] && grep -q 'userchromejs/content/boot' "$ZEN_RESOURCES/config.js"; then
+    case "$(zp_program_status "$ZEN_RESOURCES")" in fxac|fxac-noprefs) ;; *) return 0 ;; esac
+    if [ -f "$ZEN_RESOURCES/config.js" ]; then
         if ! rm -f "$ZEN_RESOURCES/config.js" "$ZEN_RESOURCES/defaults/pref/config-prefs.js" 2>/dev/null || \
            [ -e "$ZEN_RESOURCES/config.js" ]; then
             # shellcheck disable=SC2016  # $1 is expanded by the admin shell
@@ -815,14 +1026,20 @@ open_zen() {
 # Main menu
 main_menu() {
     local remote_tag="" remote_version="" i installed_version="" installed_name="" status_msg choice
+    if ! zp_discover native "$ZEN_RESOURCES"; then
+        if [ -z "$ZEN_APP" ]; then
+            show_error "Zen Browser is not installed.${NL}${NL}Please install Zen Browser first from:${NL}https://zen-browser.app"
+        else
+            show_error "No Zen Browser profiles found.${NL}${NL}Please run Zen Browser at least once."
+        fi
+        exit 1
+    fi
+    if [ -z "$ZEN_APP" ] && [ "$ZP_DEFAULT" -ge 0 ]; then
+        use_profile_zen_app "$ZP_DEFAULT"
+    fi
     # Check for Zen Browser
     if [ -z "$ZEN_APP" ]; then
         show_error "Zen Browser is not installed.${NL}${NL}Please install Zen Browser first from:${NL}https://zen-browser.app"
-        exit 1
-    fi
-
-    if ! zp_discover native "$ZEN_RESOURCES"; then
-        show_error "No Zen Browser profiles found.${NL}${NL}Please run Zen Browser at least once."
         exit 1
     fi
 
@@ -884,6 +1101,7 @@ do_install() {
         exit 0
     fi
     profile_path="${ZP_PROFILE_DIRS[$selected]}"
+    use_profile_zen_app "$selected"
 
     # Sine-managed profiles: Sine installs and updates ZenLeap there
     if zp_sine_zenleap_dir "$profile_path" >/dev/null; then
@@ -894,10 +1112,14 @@ do_install() {
         show_alert "This profile loads scripts through Sine, which does not run fx-autoconfig scripts.${NL}${NL}Install ZenLeap from Sine instead: open Sine's mods page and install yashas-salankimatt/ZenLeap."
         exit 0
     fi
-    if [ -f "$ZEN_RESOURCES/config.js" ] && ! grep -q 'userchromejs/content/boot' "$ZEN_RESOURCES/config.js"; then
-        show_error "Zen.app already contains a config.js that is not fx-autoconfig's (for example Sine's bootloader).${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
-        exit 1
-    fi
+    case "$(zp_program_status "$ZEN_RESOURCES")" in
+        sine)
+            show_error "$ZEN_APP starts Sine's bootloader, which only runs Sine mods.${NL}${NL}Install ZenLeap from Sine instead: open Sine's mods page and install yashas-salankimatt/ZenLeap."
+            exit 1 ;;
+        foreign)
+            show_error "$ZEN_APP already contains a config.js that is not fx-autoconfig's (another loader, or an old fx-autoconfig).${NL}${NL}ZenLeap Manager will not replace it. Install ZenLeap through that loader instead."
+            exit 1 ;;
+    esac
 
     # Download and verify the latest release first
     osascript -e 'display notification "Downloading ZenLeap..." with title "ZenLeap Manager"' 2>/dev/null || true
@@ -931,7 +1153,7 @@ do_install() {
         exit 1
     fi
 
-    zp_clear_startup_cache "$selected" || true
+    zp_clear_startup_cache "$selected" "$ZEN_NEEDS_RESTART" || true
 
     version=$(zp_file_version "$profile_path/chrome/JS/zenleap.uc.js")
     if [ "$ZEN_NEEDS_RESTART" = true ]; then
@@ -956,6 +1178,7 @@ do_uninstall() {
         exit 0
     fi
     profile_path="${ZP_PROFILE_DIRS[$selected]}"
+    use_profile_zen_app "$selected"
 
     if zp_profile_pid "$profile_path" >/dev/null; then
         zen_was_running=true
@@ -968,7 +1191,7 @@ do_uninstall() {
     uninstall_zenleap "$profile_path"
 
     # Offer to uninstall fx-autoconfig
-    if grep -qs 'userchromejs/content/boot' "$ZEN_RESOURCES/config.js" || \
+    if grep -qs 'userchromejs/content/boot.sys.mjs' "$ZEN_RESOURCES/config.js" || \
        [ -f "$profile_path/chrome/utils/boot.sys.mjs" ]; then
         if ask_yes_no "Also remove fx-autoconfig?${NL}${NL}Note: Other userscripts may depend on it."; then
             if ! uninstall_fxautoconfig "$profile_path"; then
@@ -977,7 +1200,7 @@ do_uninstall() {
         fi
     fi
 
-    zp_clear_startup_cache "$selected" || true
+    zp_clear_startup_cache "$selected" "$ZEN_NEEDS_RESTART" || true
 
     # Success
     if [ "$ZEN_NEEDS_RESTART" = true ]; then
