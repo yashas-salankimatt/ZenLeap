@@ -13548,6 +13548,40 @@
     return out;
   }
 
+  // ZenRipple's "spawn agent" shortcut, when ZenRipple is installed: its pref
+  // zenripple.spawn_shortcut ("accel+alt+shift+D" by default, empty = off), read the
+  // way ZenRipple parses it. ZenLeap handles its own chords first, so binding one to
+  // the same keys would silently take this shortcut away from ZenRipple.
+  const ZENRIPPLE_SPAWN_PREF = 'zenripple.spawn_shortcut';
+  function zenRippleSpawnChord() {
+    const installed = zenRippleActive() || !!document.getElementById('zenripple-keyset') ||
+      Services.prefs.getPrefType(ZENRIPPLE_SPAWN_PREF) !== Services.prefs.PREF_INVALID;
+    if (!installed) return null;
+    const spec = Services.prefs.getStringPref(ZENRIPPLE_SPAWN_PREF, 'accel+alt+shift+D');
+    const parts = spec.split('+').map(p => p.trim()).filter(Boolean);
+    const key = parts.pop();
+    if (!key || !parts.length) return null;
+    const chord = { key: key.length === 1 ? key.toLowerCase() : key.replace(/^VK_/i, ''), ctrl: false, shift: false, alt: false, meta: false, spec };
+    for (const part of parts) {
+      const mod = part.toLowerCase();
+      if (mod === 'accel') chord[IS_MACOS ? 'meta' : 'ctrl'] = true;
+      else if (mod === 'ctrl' || mod === 'control') chord.ctrl = true;
+      else if (mod === 'alt' || mod === 'option') chord.alt = true;
+      else if (mod === 'shift') chord.shift = true;
+      else if (mod === 'meta' || mod === 'cmd' || mod === 'command') chord.meta = true;
+      else return null; // ZenRipple ignores such a spec too
+    }
+    return chord;
+  }
+
+  function usesZenRippleSpawnChord(combo) {
+    const chord = zenRippleSpawnChord();
+    if (!chord || !combo || typeof combo !== 'object') return false;
+    const key = String(combo.key || '').toLowerCase();
+    const sameKey = key === chord.key.toLowerCase() || (!!combo.code && combo.code.toLowerCase() === `key${chord.key}`.toLowerCase());
+    return sameKey && !!combo.ctrl === chord.ctrl && !!combo.shift === chord.shift && !!combo.alt === chord.alt && !!combo.meta === chord.meta;
+  }
+
   // Human-readable list of what else uses the binding of `settingId`.
   // Zen shortcut names are localized asynchronously via `onLabels`.
   function findKeyConflicts(settingId, value = S[settingId], onLabels = null) {
@@ -13558,6 +13592,7 @@
       for (const [id, other] of Object.entries(SETTINGS_SCHEMA)) {
         if (id !== settingId && other.type === 'combo' && sameCombo(value, S[id])) names.push(`ZenLeap: ${other.label}`);
       }
+      if (usesZenRippleSpawnChord(value)) names.push(`ZenRipple: open agent spawn (${ZENRIPPLE_SPAWN_PREF})`);
       // Undo Folder Delete shadows Cmd+Shift+T on purpose and falls through to it
       const zen = settingId === 'keys.global.undoFolderDelete' ? [] : zenShortcutsUsing(value);
       const zenNames = zen.map(zenShortcutFallbackName);
@@ -13595,6 +13630,14 @@
       if (!zen.length) continue;
       console.warn(`[ZenLeap] ${SETTINGS_SCHEMA[id].label} (${formatKeyDisplay(S[id], SETTINGS_SCHEMA[id])}) is also bound in Zen (${zen.map(sc => sc.getID?.() || zenShortcutFallbackName(sc)).join(', ')}). ZenLeap handles it first; rebind one of them in ZenLeap Settings or Zen's keyboard shortcuts.`);
     }
+    // ZenRipple starts after ZenLeap in each window: look once it had time to
+    setTimeout(() => {
+      if (_tornDown) return;
+      for (const id of GLOBAL_COMBO_IDS) {
+        if (!usesZenRippleSpawnChord(S[id])) continue;
+        console.warn(`[ZenLeap] ${SETTINGS_SCHEMA[id].label} (${formatKeyDisplay(S[id], SETTINGS_SCHEMA[id])}) is also ZenRipple's spawn shortcut (${ZENRIPPLE_SPAWN_PREF}). ZenLeap handles it first; rebind one of them.`);
+      }
+    }, 5000);
   }
 
   // Show (or clear) a warning line under a settings row.
