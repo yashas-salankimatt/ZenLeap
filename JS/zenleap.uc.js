@@ -103,8 +103,6 @@
     'timing.gModeTimeout':         { default: 800, type: 'number', label: 'G-Mode Auto-Execute', description: 'Execute g{num} after (ms)', category: 'Timing', group: 'Timeouts', min: 200, max: 5000, step: 50 },
     'timing.browseGTimeout':       { default: 500, type: 'number', label: 'Browse gg Timeout', description: 'Wait for second g (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 3000, step: 50 },
     'timing.browseNumberTimeout':  { default: 300, type: 'number', label: 'Browse Number Timeout', description: 'Wait for multi-digit number (ms)', category: 'Timing', group: 'Timeouts', min: 100, max: 2000, step: 50 },
-    'timing.workspaceSwitchDelay': { default: 100, type: 'number', label: 'Workspace Switch Delay', description: 'UI update delay after switch (ms)', category: 'Timing', group: 'Delays', min: 50, max: 1000, step: 10 },
-    'timing.unloadTabDelay':       { default: 500, type: 'number', label: 'Unload Tab Delay', description: 'Delay before discarding tab (ms)', category: 'Timing', group: 'Delays', min: 100, max: 3000, step: 50 },
     'timing.previewDelay':         { default: 500, type: 'number', label: 'Browse Preview Delay', description: 'Delay before showing tab preview in browse mode (ms)', category: 'Timing', group: 'Delays', min: 0, max: 2000, step: 50 },
     'timing.quickNavSidebarPeek':  { default: 1000, type: 'number', label: 'Quick Nav Sidebar Peek', description: 'Show sidebar after Alt+J/K in compact mode (ms, 0 to disable)', category: 'Timing', group: 'Delays', min: 0, max: 5000, step: 100 },
     'timing.jjThreshold':          { default: 150, type: 'number', label: 'jj Escape Threshold', description: 'Max gap between two j presses to trigger normal mode escape (ms)', category: 'Timing', group: 'Timeouts', min: 50, max: 500, step: 10 },
@@ -943,8 +941,8 @@
   // The pref is the single source of truth for settings shared by every window.
   // Writes are key-level read-merge-write (only keys this window changed), so two
   // windows never revert each other's changes; the other windows pick changes up
-  // through a pref observer. NOTE: loadSettings() runs before CONFIG/log() exist,
-  // so nothing on the load path may call log() or saveSettings().
+  // through a pref observer. NOTE: loadSettings() runs while this file is still being
+  // evaluated, so nothing on the load path may call log() or saveSettings().
   const SETTINGS_PREF = 'uc.zenleap.settings';
   const _settingsSynced = {};     // id -> JSON of the value last read from / written to the pref
   let _settingsSelfWrite = false;
@@ -1665,17 +1663,6 @@
   loadSettings();
   watchSettingsPref();
 
-  // Legacy CONFIG compat — thin wrapper around S for any remaining references
-  const CONFIG = {
-    get debug() { return S['advanced.debug']; },
-    get currentTabIndicator() { return S['display.currentTabIndicator']; },
-    get leapModeTimeout() { return S['timing.leapTimeout']; },
-    get triggerKey() { return S['keys.global.leapMode'].key; },
-    get triggerModifier() { return 'ctrlKey'; },
-  };
-
-
-
   // Modifier keys to ignore when pressed alone
   const MODIFIER_KEYS = ['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'];
 
@@ -1712,7 +1699,6 @@
   let previewCaptureId = 0;        // Monotonic counter to cancel stale async captures
   let previewCache = new Map();    // tab -> { dataUrl, timestamp }
   const PREVIEW_CACHE_TTL = 30000; // 30 seconds
-  const PREVIEW_CAPTURE_DEBOUNCE_MS = 150; // Internal debounce for screenshot capture after panel shows
 
   // Sidebar state (for compact mode)
   let sidebarWasExpanded = false;  // Track if we expanded the sidebar
@@ -1854,7 +1840,7 @@
 
   // Utility: Convert relative distance to display string (always numeric)
   function numberToDisplay(num) {
-    if (num === 0) return CONFIG.currentTabIndicator;
+    if (num === 0) return S['display.currentTabIndicator'];
     return String(num);
   }
 
@@ -2522,15 +2508,9 @@
       const match = fuzzyMatch(query, title, url);
 
       if (match) {
-        const matchScore = match.score;
-        const recencyMultiplier = calculateRecencyMultiplier(tab);
-        const totalScore = matchScore * recencyMultiplier;
-
         results.push({
           tab,
-          score: totalScore,
-          matchScore,
-          recencyMultiplier,
+          score: match.score * calculateRecencyMultiplier(tab),
           titleIndices: match.titleIndices,
           urlIndices: match.urlIndices,
           workspaceName: getTabWorkspaceName(tab),
@@ -3873,7 +3853,7 @@
         showModal: (title, content) => _pluginShowStatsModal(title, content),
         showConfirm: (title, message) => _pluginShowConfirm(title, message),
         showPrompt: (title, placeholder, defaultValue, options) => _pluginShowPrompt(title, placeholder, defaultValue, options),
-        log: (msg) => { if (CONFIG.debug) console.log(`[ZenLeap:${pluginId}] ${msg}`); },
+        log: (msg) => { if (S['advanced.debug']) console.log(`[ZenLeap:${pluginId}] ${msg}`); },
         getAccentColor: () => resolveTheme().accent,
         getThemeColors: () => {
           const t = resolveTheme();
@@ -7199,21 +7179,8 @@
       if (!workspaceData) { log('Workspace not found for rename'); exitSearchMode(); return; }
       const oldName = workspaceData.name || 'Unnamed';
       workspaceData.name = newName;
-      if (typeof gZenWorkspaces.saveWorkspace === 'function') {
-        gZenWorkspaces.saveWorkspace(workspaceData);
-      } else {
-        log('No API available to save workspace');
-        exitSearchMode();
-        return;
-      }
-      // Update the workspace indicator UI if this is the active workspace
-      if (workspaceId === window.gZenWorkspaces.activeWorkspace) {
-        const indicator = gZenWorkspaces.workspaceElement?.(workspaceId)?.indicator;
-        if (indicator) {
-          const nameEl = indicator.querySelector('.zen-current-workspace-indicator-name');
-          if (nameEl) nameEl.textContent = newName;
-        }
-      }
+      // Zen saves it, syncs other windows and renames the space's indicator
+      gZenWorkspaces.saveWorkspace(workspaceData);
       log(`Renamed workspace: "${oldName}" → "${newName}"`);
     } catch (e) { reportError('Renaming workspace failed', e); }
     exitSearchMode();
@@ -11864,10 +11831,6 @@
       .zenleap-help-section h2 {
         margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: var(--zl-text-primary);
       }
-      .zenleap-help-section h3 {
-        margin: 16px 0 10px 0; font-size: 12px; font-weight: 600; color: var(--zl-text-secondary);
-        text-transform: uppercase; letter-spacing: 0.5px;
-      }
       .zenleap-help-trigger {
         margin: 0 0 14px 0; font-size: 12px; color: var(--zl-text-muted);
       }
@@ -16134,11 +16097,6 @@
         background-color: var(--zl-gold, #d4a754) !important;
         color: var(--zl-bg-deep, #13131f) !important;
       }
-      #urlbar[data-zenleap-vim="normal"] .urlbar-input::-moz-selection,
-      #urlbar[data-zenleap-vim="normal"] input.urlbar-input::-moz-selection {
-        background-color: var(--zl-gold, #d4a754) !important;
-        color: var(--zl-bg-deep, #13131f) !important;
-      }
     `);
 
     log('URL bar vim mode CSS injected');
@@ -16415,7 +16373,7 @@
   // Remove all badge state from a tab or folder.
   function clearItemBadge(item) {
     removeAttrIfPresent(item, 'data-zenleap-direction');
-    removeAttrIfPresent(item, 'data-zenleap-distance');
+    removeAttrIfPresent(item, 'data-zenleap-distance'); // set by v3.4.0 (Sine updates in place)
     removeAttrIfPresent(item, 'data-zenleap-has-mark');
     removeAttrIfPresent(item, 'data-zenleap-rel');
     const inner = isFolder(item)
@@ -18344,7 +18302,7 @@
   // so a forgotten half-typed command can't linger indefinitely.
   const LEAP_SUBMODE_TIMEOUT_MS = 60000;
 
-  function armLeapTimeout(ms = CONFIG.leapModeTimeout) {
+  function armLeapTimeout(ms = S['timing.leapTimeout']) {
     clearTimeout(leapModeTimeout);
     leapModeTimeout = setTimeout(() => {
       if (leapMode && !browseMode) {
@@ -19932,9 +19890,6 @@
     }
   }
 
-  // Legacy compat wrapper
-  function applyThemeColors() { applyTheme(); }
-
   // Inject a named stylesheet once. Lazily created UI (help, reorganize,
   // settings, preview, URL bar) adds its styles on first use; teardown removes
   // every ZenLeap style element with the rest of its DOM.
@@ -19957,12 +19912,6 @@
       /* ═══ Base styles ═══ */
       tab[data-zenleap-rel] {
         position: relative;
-      }
-
-      /* ═══ Themed scrollbars (Firefox: scrollbar-width/-color, not ::-webkit-scrollbar) ═══ */
-      .zenleap-themed-scroll {
-        scrollbar-width: thin;
-        scrollbar-color: var(--zl-border-strong) transparent;
       }
 
       /* ═══ Icons: emoji text or Zen's chrome:// SVG space icons ═══ */
@@ -20849,7 +20798,7 @@
 
   // Logging utility
   function log(message) {
-    if (CONFIG.debug) {
+    if (S['advanced.debug']) {
       console.log(`[ZenLeap] ${message}`);
     }
   }
