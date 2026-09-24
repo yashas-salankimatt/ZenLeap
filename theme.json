@@ -7,7 +7,7 @@
   "version": "3.4.0",
   "tags": ["tabs", "keyboard", "vim", "navigation"],
   "createdAt": "2026-02-05",
-  "updatedAt": "2026-03-23T02:31:36Z",
+  "updatedAt": "2026-03-14T00:00:00Z",
   "fork": ["zen"],
   "scripts": {
     "JS/zenleap.uc.js": {
