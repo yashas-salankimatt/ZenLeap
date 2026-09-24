@@ -1856,7 +1856,7 @@
     if (jumpList.length === 0) return;
     const currentEntry = (jumpListIndex >= 0 && jumpListIndex < jumpList.length)
       ? jumpList[jumpListIndex] : null;
-    jumpList = jumpList.filter(t => t && !t.closing && t.parentNode);
+    jumpList = jumpList.filter(isLiveTab);
     if (currentEntry) {
       const newIndex = jumpList.indexOf(currentEntry);
       jumpListIndex = newIndex >= 0 ? newIndex : Math.min(jumpListIndex, jumpList.length - 1);
@@ -2064,7 +2064,7 @@
     let changed = false;
     for (const char of new Set([...marks.keys(), ..._essentialMarksOwned.keys()])) {
       const tab = marks.get(char);
-      const url = (tab && !tab.closing && tab.parentNode && tab.hasAttribute('zen-essential'))
+      const url = (isLiveTab(tab) && tab.hasAttribute('zen-essential'))
         ? tab.linkedBrowser?.currentURI?.spec : null;
       if (url && url !== 'about:blank') {
         if (saved[char] !== url) { saved[char] = url; changed = true; }
@@ -3364,7 +3364,7 @@
   // ── Scoped Plugin API Factory ──
   // Each plugin gets its own API instance with storage/events scoped to its ID
   function createScopedPluginAPI(pluginId) {
-    const liveTab = (tab) => (tab && !tab.closing && tab.isConnected) ? tab : null;
+    const liveTab = (tab) => isLiveTab(tab) ? tab : null;
     const allTabs = ({ allWorkspaces = false } = {}) => {
       let tabs = null;
       if (allWorkspaces) { try { tabs = window.gZenWorkspaces?.allStoredTabs; } catch (e) { tabs = null; } }
@@ -3373,13 +3373,7 @@
     };
     // Bulk close like Firefox's own "close other/left/right tabs": one undo batch, and the
     // standard warning dialog when that many tabs could not all be restored.
-    const closeTabsWithWarning = (tabs, closingEnum) => {
-      const valid = tabs.filter(t => liveTab(t));
-      if (valid.length === 0) return 0;
-      if (!gBrowser.warnAboutClosingTabs(valid.length, closingEnum)) return 0;
-      gBrowser.removeTabs(valid);
-      return valid.length;
-    };
+    const closeTabsWithWarning = (tabs, closingEnum) => TabOps.close(tabs, { warn: closingEnum });
     const workspaceIdOf = (wsOrId) => typeof wsOrId === 'string' ? wsOrId : wsOrId?.uuid;
     const resolveTheme = () => themes[S['appearance.theme']] || themes.meridian;
     const storage = pluginStore(pluginId, 'storage');
@@ -3447,7 +3441,7 @@
         isMuted: (tab) => (tab || gBrowser.selectedTab).hasAttribute('muted'),
         reload: (tab) => gBrowser.reloadTab(tab || gBrowser.selectedTab),
         // Firefox picks another tab to select first when unloading the selected one
-        unload: (tab) => gBrowser.explicitUnloadTabs([tab || gBrowser.selectedTab]),
+        unload: (tab) => TabOps.unload([tab || gBrowser.selectedTab]),
         getUrl: (tab) => (tab || gBrowser.selectedTab).linkedBrowser?.currentURI?.spec || '',
         getTitle: (tab) => (tab || gBrowser.selectedTab).label || '',
         getLastAccessed: (tab) => getTabLastAccessed(tab || gBrowser.selectedTab),
@@ -3536,7 +3530,7 @@
         moveTabTo: (tab, wsOrId) => {
           const id = workspaceIdOf(wsOrId);
           if (!id || !window.gZenWorkspaces) return false;
-          return moveTabsToWorkspaceOrdered([tab || gBrowser.selectedTab], id) > 0;
+          return TabOps.moveToWorkspace([tab || gBrowser.selectedTab], id) > 0;
         },
       },
 
@@ -4879,6 +4873,15 @@
   // TAB / FOLDER / WORKSPACE HELPERS (commands, sub-flows, sessions)
   // ============================================
 
+  // A tab that still exists (not being closed, still in the document)
+  function isLiveTab(tab) {
+    return !!tab && !tab.closing && tab.isConnected;
+  }
+
+  function liveTabs(tabs) {
+    return Array.from(tabs || []).filter(isLiveTab);
+  }
+
   // Display name of a Zen folder
   function folderName(folder) {
     return folder?.label || 'Unnamed Folder';
@@ -4927,15 +4930,35 @@
     return [...tabs].sort((a, b) => (positionMap.get(a) ?? Infinity) - (positionMap.get(b) ?? Infinity));
   }
 
-  // Move tabs to a workspace in one batch, keeping their sidebar order.
-  // Zen's moveTabsToWorkspace preserves order (and reverses its argument in place when
-  // new tabs go to the top), so always pass a fresh array.
-  function moveTabsToWorkspaceOrdered(tabs, workspaceId) {
-    const valid = sortTabsBySidebarPosition(tabs.filter(t => t && !t.closing && t.isConnected));
-    if (valid.length === 0 || !window.gZenWorkspaces) return 0;
-    gZenWorkspaces.moveTabsToWorkspace([...valid], workspaceId);
-    return valid.length;
-  }
+  // Batch tab operations through Tabbrowser/Zen: one call per batch (one undo entry,
+  // consistent tab caches and events) instead of per-tab loops or raw DOM moves.
+  const TabOps = {
+    // Close as one batch: a single "reopen closed tabs" restores all of them. `warn`
+    // (a gBrowser.closingTabsEnum value) shows Firefox's own "close N tabs?" prompt
+    // where Firefox would; returns the number of tabs closed.
+    close(tabs, { warn } = {}) {
+      const valid = liveTabs(tabs);
+      if (valid.length === 0) return 0;
+      if (warn !== undefined && !gBrowser.warnAboutClosingTabs(valid.length, warn)) return 0;
+      gBrowser.removeTabs(valid);
+      return valid.length;
+    },
+    // Firefox selects another tab first when the current one is unloaded, and handles
+    // split views and beforeunload; resolves to the number of tabs unloaded.
+    unload(tabs) {
+      const valid = liveTabs(tabs).filter(t => !t.hasAttribute('pending'));
+      if (valid.length === 0) return Promise.resolve(0);
+      return gBrowser.explicitUnloadTabs(valid).then(() => valid.length);
+    },
+    // One ordered batch in sidebar order. Zen's moveTabsToWorkspace keeps the order (and
+    // reverses its argument in place when new tabs go to the top): pass a fresh array.
+    moveToWorkspace(tabs, workspaceId) {
+      const valid = sortTabsBySidebarPosition(liveTabs(tabs));
+      if (valid.length === 0 || !window.gZenWorkspaces) return 0;
+      gZenWorkspaces.moveTabsToWorkspace([...valid], workspaceId);
+      return valid.length;
+    },
+  };
 
   // Zen resolves removeWorkspace() only on its next ZenWorkspacesUIUpdate; never wait forever.
   function removeWorkspaceWithTimeout(workspaceId, timeoutMs = 5000) {
@@ -5012,13 +5035,13 @@
       // removeTabs() closes them as one batch (one "Reopen closed tabs" restores them all)
       { key: 'close-other-tabs', label: 'Close Other Tabs', icon: '✕', tags: ['tab', 'close', 'other', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getOtherUnpinnedTabs(), n => `Close ${n} other tabs`),
-        command: () => { closeTabsNow(getOtherUnpinnedTabs()); } },
+        command: () => { TabOps.close(getOtherUnpinnedTabs()); } },
       { key: 'close-tabs-right', label: 'Close Tabs to the Right', icon: '✕→', tags: ['tab', 'close', 'right', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('right'), n => `Close ${n} tabs to the right`),
-        command: () => { closeTabsNow(getUnpinnedTabsBeside('right')); } },
+        command: () => { TabOps.close(getUnpinnedTabsBeside('right')); } },
       { key: 'close-tabs-left', label: 'Close Tabs to the Left', icon: '←✕', tags: ['tab', 'close', 'left', 'del', 'rm', 'cl'],
         confirm: () => bulkCloseConfirmation(getUnpinnedTabsBeside('left'), n => `Close ${n} tabs to the left`),
-        command: () => { closeTabsNow(getUnpinnedTabsBeside('left')); } },
+        command: () => { TabOps.close(getUnpinnedTabsBeside('left')); } },
       // Inserted next to the source tab, like Zen's own duplicate command
       { key: 'duplicate-tab', label: 'Duplicate Tab', icon: '⊕', tags: ['tab', 'duplicate', 'copy', 'clone', 'dup', 'cp'], command: () => {
         const tab = gBrowser.selectedTab;
@@ -5099,14 +5122,14 @@
       },
       // Firefox selects another tab first (and handles split views / beforeunload)
       { key: 'unload-tab', label: 'Unload Tab (Save Memory)', icon: '💤', tags: ['tab', 'unload', 'discard', 'memory', 'suspend'],
-        command: () => gBrowser.explicitUnloadTabs([gBrowser.selectedTab]) },
+        command: () => TabOps.unload([gBrowser.selectedTab]) },
 
       // --- Tab Actions (Context Menu Parity) ---
       { key: 'reload-tab', label: 'Reload Tab', icon: '🔄', tags: ['tab', 'reload', 'refresh', 'r'], command: () => { gBrowser.reloadTab(gBrowser.selectedTab); } },
       { key: 'bookmark-tab', label: 'Bookmark Tab', icon: '🔖', tags: ['tab', 'bookmark', 'save', 'star', 'bm'], command: () => { PlacesCommandHook.bookmarkPage(); } },
       { key: 'reopen-closed-tab', label: 'Reopen Closed Tab', icon: '↩', tags: ['tab', 'reopen', 'undo', 'closed', 'restore', 'undoclose'], command: () => { SessionStore.undoCloseTab(window, 0); } },
       { key: 'select-all-tabs', label: 'Select All Tabs (Browse Mode)', icon: '☑', tags: ['tab', 'select', 'all', 'sel'], command: () => {
-        const allTabs = getVisibleTabs().filter(t => !t.closing && t.parentNode);
+        const allTabs = liveTabs(getVisibleTabs());
         selectTabsInBrowseMode(allTabs);
       }},
       // --- Tab Selection (Multi-Step) ---
@@ -5608,13 +5631,6 @@
       sublabel: 'Closed tabs can be reopened with Reopen Closed Tab',
       cancelLabel: 'Keep all tabs open',
     };
-  }
-
-  // One batch: a single "reopen closed tabs" brings all of them back
-  function closeTabsNow(tabs) {
-    const valid = tabs.filter(t => t && !t.closing && t.isConnected);
-    if (valid.length > 0) gBrowser.removeTabs(valid);
-    return valid.length;
   }
 
   // ============================================
@@ -6257,7 +6273,7 @@
       allTabs = stored?.length > 0 ? Array.from(stored) : Array.from(gBrowser.tabs);
     } catch (e) { allTabs = Array.from(gBrowser.tabs); }
     return allTabs.filter(tab =>
-      tab && !tab.closing && tab.parentNode &&
+      isLiveTab(tab) &&
       !tab.hasAttribute('zen-empty-tab') &&
       tab.hasAttribute('soundplaying')
     );
@@ -6309,7 +6325,7 @@
 
     // Filter to valid, non-essential, non-pinned tabs
     const validTabs = allTabs.filter(t =>
-      t && !t.closing && t.parentNode &&
+      isLiveTab(t) &&
       !t.pinned &&
       !t.hasAttribute('zen-essential') &&
       !t.hasAttribute('zen-glance-tab') &&
@@ -6415,7 +6431,7 @@
 
       case 'dedup-preview': {
         // The preview list is the confirmation; close them as one batch
-        const count = closeTabsNow(dedupTabsToClose);
+        const count = TabOps.close(dedupTabsToClose);
         if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
         dedupTabsToClose = [];
         hidePreviewPanel(true);
@@ -6485,7 +6501,7 @@
           const tabToMove = gBrowser.selectedTab;
           exitSearchMode();
           // Move, then follow the tab into the target workspace
-          moveTabsToWorkspaceOrdered([tabToMove], result.workspaceId);
+          TabOps.moveToWorkspace([tabToMove], result.workspaceId);
           switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
         }
         break;
@@ -6768,7 +6784,7 @@
       // Pre-select the matched tabs
       selectedItems.clear();
       for (const t of tabs) {
-        if (t && !t.closing && t.parentNode) selectedItems.add(t);
+        if (isLiveTab(t)) selectedItems.add(t);
       }
 
       updateHighlight();
@@ -6781,10 +6797,7 @@
   // more tabs than can be reopened would close.
   function closeMatchedTabs(tabs) {
     exitSearchMode();
-    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
-    if (validTabs.length === 0) return;
-    if (!gBrowser.warnAboutClosingTabs(validTabs.length, gBrowser.closingTabsEnum.MULTI_SELECTED)) return;
-    const count = closeTabsNow(validTabs);
+    const count = TabOps.close(tabs, { warn: gBrowser.closingTabsEnum.MULTI_SELECTED });
     log(`Closed ${count} matching tabs`);
   }
 
@@ -6792,27 +6805,20 @@
   // first when the current one is included, and handles split views/beforeunload.
   function unloadMatchedTabs(tabs) {
     exitSearchMode();
-    const validTabs = tabs.filter(t =>
-      t && !t.closing && t.isConnected && !t.hasAttribute('pending')
-    );
-    if (validTabs.length === 0) {
-      log('No tabs to unload (all already unloaded or invalid)');
-      return;
-    }
-    gBrowser.explicitUnloadTabs(validTabs)
-      .then(() => log(`Unloaded ${validTabs.length} matching tabs`))
+    TabOps.unload(tabs)
+      .then(count => log(`Unloaded ${count} matching tabs`))
       .catch(e => reportError('Unloading tabs failed', e));
   }
 
   function reloadMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     for (const t of validTabs) gBrowser.reloadTab(t);
     log(`Reloaded ${validTabs.length} tabs`);
     exitSearchMode();
   }
 
   function bookmarkMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     try {
       // Use bookmarkTabs() which is the same API the context menu uses
       PlacesCommandHook.bookmarkTabs(validTabs);
@@ -6951,13 +6957,13 @@
 
   function moveMatchedTabsToPosition(tabs, position) {
     exitSearchMode();
-    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    const validTabs = liveTabs(tabs);
     if (validTabs.length === 0) return;
 
     // Move tabs from other workspaces into the current workspace first (one ordered batch)
     if (workspacesEnabled()) {
       const currentWsId = gZenWorkspaces.activeWorkspace;
-      moveTabsToWorkspaceOrdered(validTabs.filter(t => {
+      TabOps.moveToWorkspace(validTabs.filter(t => {
         const wsId = t.getAttribute('zen-workspace-id');
         return wsId && wsId !== currentWsId && !t.hasAttribute('zen-essential');
       }), currentWsId);
@@ -6991,7 +6997,7 @@
 
   function moveTabsToWorkspace(tabs, workspaceId) {
     try {
-      const count = moveTabsToWorkspaceOrdered(tabs, workspaceId);
+      const count = TabOps.moveToWorkspace(tabs, workspaceId);
       log(`Moved ${count} tabs to workspace ${workspaceId}`);
     } catch (e) { reportError('Moving tabs to workspace failed', e); }
     exitSearchMode();
@@ -7028,8 +7034,8 @@
         // Move the captured tab to the new (already active) workspace and select it
         const tabToMove = data?.tabToMove;
         exitSearchMode();
-        if (tabToMove && !tabToMove.closing && tabToMove.isConnected) {
-          moveTabsToWorkspaceOrdered([tabToMove], newWsId);
+        if (isLiveTab(tabToMove)) {
+          TabOps.moveToWorkspace([tabToMove], newWsId);
           await switchToTabAcrossWorkspaces(tabToMove);
         }
         return;
@@ -7060,7 +7066,7 @@
 
   function addTabsToFolder(tabs, folderResult) {
     exitSearchMode();
-    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    const validTabs = liveTabs(tabs);
     // Re-fetch folder by ID to avoid stale DOM references
     const targetFolder = folderResult?.folder ? document.getElementById(folderResult.folder.id) : null;
     if (validTabs.length === 0 || !targetFolder) { log('Add to folder: no tabs or folder not found'); return; }
@@ -7071,7 +7077,7 @@
       // Tabs from other workspaces move over first (one ordered batch)
       const targetWorkspaceId = targetFolder.getAttribute('zen-workspace-id');
       if (targetWorkspaceId && workspacesEnabled()) {
-        moveTabsToWorkspaceOrdered(sortedTabs.filter(t => (t.getAttribute('zen-workspace-id') || gZenWorkspaces.activeWorkspace) !== targetWorkspaceId), targetWorkspaceId);
+        TabOps.moveToWorkspace(sortedTabs.filter(t => (t.getAttribute('zen-workspace-id') || gZenWorkspaces.activeWorkspace) !== targetWorkspaceId), targetWorkspaceId);
       }
       // Zen folders hold pinned tabs
       for (const t of sortedTabs) {
@@ -7084,7 +7090,7 @@
 
   function createFolderWithName(tabs, name) {
     exitSearchMode();
-    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected && !t.hasAttribute('zen-essential'));
+    const validTabs = liveTabs(tabs).filter(t => !t.hasAttribute('zen-essential'));
     if (validTabs.length === 0 || !window.gZenFolders) return;
 
     // Sort tabs by sidebar position to preserve relative order
@@ -7099,14 +7105,14 @@
   // Duplicate matched tabs (each copy goes right after its source, like Zen's own duplicate)
   function duplicateMatchedTabs(tabs) {
     exitSearchMode();
-    const validTabs = tabs.filter(t => t && !t.closing && t.isConnected);
+    const validTabs = liveTabs(tabs);
     for (const t of validTabs) gBrowser.duplicateTab(t, true, { tabIndex: t.index + 1 });
     log(`Duplicated ${validTabs.length} tabs`);
   }
 
   // Pin or unpin matched tabs (smart toggle: if any unpinned, pin all; else unpin all)
   function pinUnpinMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     const anyUnpinned = validTabs.some(t => !t.pinned);
     for (const t of validTabs) {
       if (anyUnpinned) { if (!t.pinned) gBrowser.pinTab(t); }
@@ -7118,7 +7124,7 @@
 
   // Mute or unmute matched tabs
   function muteUnmuteMatchedTabs(tabs) {
-    const validTabs = tabs.filter(t => t && !t.closing && t.parentNode);
+    const validTabs = liveTabs(tabs);
     for (const t of validTabs) t.toggleMuteAudio();
     log(`Toggled mute on ${validTabs.length} tabs`);
     exitSearchMode();
@@ -7138,7 +7144,7 @@
     try {
       if (window.gZenViewSplitter && tabs.length >= 2) {
         const validTabs = tabs.filter(t =>
-          t && !t.closing && t.parentNode &&
+          isLiveTab(t) &&
           !t.hidden && !t.hasAttribute('zen-empty-tab') &&
           !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-glance-tab') &&
           !t.splitView
@@ -7349,7 +7355,7 @@
       if (window.gZenViewSplitter?._data) {
         for (const group of gZenViewSplitter._data) {
           const groupTabs = (group.tabs || []).filter(t =>
-            t && !t.closing && t.parentNode &&
+            isLiveTab(t) &&
             (t.getAttribute('zen-workspace-id') === wsId || t.hasAttribute('zen-essential'))
           );
           if (groupTabs.length >= 2) {
@@ -7788,7 +7794,7 @@
       skipRoute: true,
     });
     // Wait for placeholder tab to be in the DOM before selecting it
-    await waitFor(() => placeholder.parentNode && !placeholder.closing);
+    await waitFor(() => isLiveTab(placeholder));
     gBrowser.selectedTab = placeholder;
 
     // delete() closes the folder's tabs as one restorable group
@@ -7798,14 +7804,14 @@
     // Wait for folders to be removed from the DOM
     await waitFor(() => existingFolders.every(f => !f.parentNode));
 
-    const tabsToRemove = existingTabs.filter(t => t !== placeholder && !t.closing && t.parentNode);
+    const tabsToRemove = liveTabs(existingTabs).filter(t => t !== placeholder);
     if (tabsToRemove.length > 0) gBrowser.removeTabs(tabsToRemove);
     // Wait for old tabs to start closing / leave the DOM
     await waitFor(() => tabsToRemove.every(t => t.closing || !t.parentNode));
 
     await restoreLayout(wsData);
 
-    if (!placeholder.closing && placeholder.parentNode) gBrowser.removeTab(placeholder);
+    if (isLiveTab(placeholder)) gBrowser.removeTab(placeholder);
   }
 
   // Space icons read from a session file: emoji text or Zen's own chrome:// SVG icons only
@@ -7842,11 +7848,11 @@
     // position, reversing order). Explicitly move them into correct order.
     if (normalTabRefs.length > 1) {
       // Wait for all normal tabs to be in the DOM before reordering
-      await waitFor(() => normalTabRefs.every(t => t && t.parentNode && !t.closing));
+      await waitFor(() => normalTabRefs.every(isLiveTab));
       const normalContainer = gZenWorkspaces?.activeWorkspaceStrip;
       if (normalContainer) {
         for (const tab of normalTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) moveTabToSectionEnd(normalContainer, tab);
+          if (isLiveTab(tab)) moveTabToSectionEnd(normalContainer, tab);
         }
       }
     }
@@ -7862,7 +7868,7 @@
         const groupTabs = openedTabs
           .filter(o => o.item.splitGroupIndex === i)
           .map(o => o.tab)
-          .filter(t => t && !t.closing && t.parentNode);
+          .filter(isLiveTab);
         if (groupTabs.length >= 2) {
           try {
             gZenViewSplitter.splitTabs(groupTabs, groupInfo.gridType);
@@ -7974,7 +7980,7 @@
     }
 
     // Wait for all folder tabs to be present in the DOM before creating the folder
-    await waitFor(() => directTabRefs.every(t => t.parentNode && !t.closing));
+    await waitFor(() => directTabRefs.every(isLiveTab));
 
     // Phase 2: create folder with its direct tabs
     const folderOpts = {
@@ -8104,7 +8110,7 @@
 
         // Reorder by moving each expected tab to correct position
         for (const tab of expectedTabRefs) {
-          if (tab && tab.parentNode && !tab.closing) moveTabToSectionEnd(normalContainer, tab);
+          if (isLiveTab(tab)) moveTabToSectionEnd(normalContainer, tab);
         }
       }
 
@@ -9478,15 +9484,15 @@
 
     if (entry.type === 'folder-only') {
       // Recreate folder with the tabs that are still alive
-      const liveTabs = entry.tabRefs.filter(t => t && !t.closing && t.isConnected);
-      if (liveTabs.length === 0) {
+      const remaining = liveTabs(entry.tabRefs);
+      if (remaining.length === 0) {
         log('Undo: all tabs from deleted folder are gone');
         return true;
       }
       if (!window.gZenFolders) return false;
       try {
-        gZenFolders.createFolder(liveTabs, { label: entry.folderLabel, renameFolder: false, collapsed: entry.collapsed });
-        log(`Undo: recreated folder "${entry.folderLabel}" with ${liveTabs.length} tabs`);
+        gZenFolders.createFolder(remaining, { label: entry.folderLabel, renameFolder: false, collapsed: entry.collapsed });
+        log(`Undo: recreated folder "${entry.folderLabel}" with ${remaining.length} tabs`);
       } catch (e) { reportError('Undo folder delete failed', e); }
       return true; // We handled it
     }
