@@ -16948,8 +16948,9 @@
   // Enter/Space/Escape cancel: the default is always the non-destructive choice.
   function handleBrowseCloseConfirmKey(event) {
     if (event.repeat) return;
-    if (event.key === '1') confirmBrowseClose(true);
-    else if (event.key === '2') confirmBrowseClose(false);
+    const digit = digitFor(event);
+    if (digit === '1') confirmBrowseClose(true);
+    else if (digit === '2') confirmBrowseClose(false);
     else if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') closeBrowseCloseConfirm();
   }
 
@@ -17476,10 +17477,24 @@
   // Keys that never trigger anything on their own.
   const NON_ACTION_KEYS = new Set([...MODIFIER_KEYS, 'AltGraph', 'OS', 'Fn', 'FnLock', 'Hyper', 'Super', 'Symbol', 'SymbolLock', 'NumLock', 'ScrollLock']);
 
-  // The key a single-key binding is compared against. Layout-aware: on
-  // non-Latin layouts (Cyrillic, Greek, ...) letters and digits fall back to the
-  // physical key, and a dead-key apostrophe/backtick (US-International) still
-  // counts as ' and `. Latin layouts keep their own letters (AZERTY 'a' = a).
+  // US-layout characters (unshifted, shifted) of the punctuation keys.
+  const US_PUNCTUATION_KEYS = {
+    Quote: ["'", '"'], Backquote: ['`', '~'], Slash: ['/', '?'], Semicolon: [';', ':'],
+    Comma: [',', '<'], Period: ['.', '>'], BracketLeft: ['[', '{'], BracketRight: [']', '}'],
+    Backslash: ['\\', '|'], Minus: ['-', '_'], Equal: ['=', '+'],
+  };
+
+  // A letter of a non-Latin script (Cyrillic, Greek, Hebrew, Arabic, ...) or
+  // a non-ASCII digit (Persian ۱): what a layout without Latin letters types.
+  const NON_LATIN_CHAR_RE = /^(?:(?!\p{Script=Latin})\p{L}|(?![0-9])\p{Nd})$/u;
+
+  // The key a single-key binding is compared against. Layout-aware, like
+  // Vim's langmap: on non-Latin layouts (Cyrillic, Greek, ...) letters, digits
+  // and the letters on punctuation keys (Russian э on the ' key, ё on `) fall
+  // back to the physical key's US character; ASCII characters those layouts
+  // type are kept (Russian ? is Shift+7). A dead-key apostrophe/backtick
+  // (US-International) still counts as ' and `. Latin layouts keep their own
+  // characters (AZERTY 'a' = a, é is not 2).
   function navKey(event) {
     const k = event.key;
     const code = event.code || '';
@@ -17487,9 +17502,12 @@
       if (code === 'Quote') return "'";
       if (code === 'Backquote') return '`';
     }
-    if (k.length === 1 && /[^\x00-\x7F]/.test(k)) {
+    if (NON_LATIN_CHAR_RE.test(k)) {
       if (/^Key[A-Z]$/.test(code)) return event.shiftKey ? code.slice(3) : code.slice(3).toLowerCase();
-      if (/^Digit\d$/.test(code)) return code.slice(5);
+      const digit = /^(?:Digit|Numpad)(\d)$/.exec(code);
+      if (digit) return digit[1];
+      const us = US_PUNCTUATION_KEYS[code];
+      if (us) return us[event.shiftKey ? 1 : 0];
     }
     return k;
   }
@@ -17800,11 +17818,12 @@
         return;
       }
       if (event.repeat) return;
-      if (event.key === '1') {
+      const digit = digitFor(event);
+      if (digit === '1') {
         deleteFolderAndContents(folderDeleteTarget);
         return;
       }
-      if (event.key === '2') {
+      if (digit === '2') {
         deleteFolderKeepTabs(folderDeleteTarget);
         return;
       }
