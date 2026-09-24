@@ -20243,25 +20243,17 @@
     }
     if (_relNumRafId) cancelAnimationFrame(_relNumRafId);
 
-    // Plugin system: prefer its own teardown hook when it provides one.
-    if (typeof teardownPluginSystem === 'function') {
-      try { teardownPluginSystem({ windowClosing: !full }); } catch (e) { reportError('Plugin teardown failed', e); }
-    } else {
-      // Flush plugin data — fire-and-forget during unload (I/O still works here)
-      if (_pluginSaveTimer) {
-        clearTimeout(_pluginSaveTimer);
-        _pluginSaveTimer = null;
-      }
-      if (_pluginDataLoaded) {
-        IOUtils.writeJSON(_pluginDataPath, _pluginData).catch(e => {
-          console.error('[ZenLeap] Plugin data flush on shutdown failed:', e);
-        });
-      }
-    }
+    // Plugins (destroy hooks, sandboxes, data flush), the settings/update
+    // observers and the dialog key router of the commands region.
+    try { teardownPluginSystem(); } catch (e) { reportError('Plugin teardown failed', e); }
 
     if (full) {
       try {
-        for (const el of document.querySelectorAll('[id^="zenleap-"]')) el.remove();
+        // ZenLeap's elements, and the id-less ones appended to the root
+        // (plugin dialogs, the settings toast)
+        for (const el of document.querySelectorAll('[id^="zenleap-"], :root > [class^="zenleap-"], :root > [class*=" zenleap-"]')) {
+          el.remove();
+        }
         const attrSelector = ZENLEAP_ATTRS.map(a => `[${a}]`).join(',');
         for (const el of document.querySelectorAll(attrSelector)) {
           for (const a of ZENLEAP_ATTRS) el.removeAttribute(a);
