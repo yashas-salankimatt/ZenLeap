@@ -10,9 +10,10 @@
 # Run it from a ZenLeap checkout (it uses scripts/lib/zen-paths.sh).
 #
 # Options:
-#   --profile <sel>      Profile(s): a number from the list, a profile name, or "all".
-#                        Default: every profile whose userChrome.css has a ZenLeap block
-#   --profile-dir <dir>  Use this profile directory directly
+#   --profile <sel>      Profile(s): a number from the list, a profile name, or "all";
+#                        repeatable. Default: every profile whose userChrome.css has a
+#                        ZenLeap block
+#   --profile-dir <dir>  Use this profile directory directly; repeatable
 #   --yes, -y            Auto-confirm all prompts (non-interactive mode)
 #   --dry-run            Show what would be removed without modifying files
 
@@ -39,8 +40,8 @@ fi
 . "$SCRIPT_DIR/scripts/lib/zen-paths.sh"
 
 # Flags
-PROFILE_SPEC=""
-PROFILE_DIR_ARG=""
+PROFILE_SPECS=()
+PROFILE_DIR_ARGS=()
 AUTO_YES=false
 DRY_RUN=false
 
@@ -76,7 +77,7 @@ css_status() {
 
 # Find Zen profiles and decide which ones to clean (sets ZP_SELECTED)
 find_profiles() {
-    local i suggested=()
+    local i d suggested=()
     case "$(uname -s)" in
         Darwin|Linux) ;;
         *)
@@ -85,19 +86,21 @@ find_profiles() {
             ;;
     esac
 
-    if ! zp_discover native && ! zp_discover flatpak && [ -z "$PROFILE_DIR_ARG" ]; then
+    if ! zp_discover native && ! zp_discover flatpak && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
         zp_discover native || true
         echo -e "${RED}Error: $ZP_ERROR${NC}"
         exit 1
     fi
 
-    if [ -n "$PROFILE_DIR_ARG" ]; then
-        if ! zp_use_profile_dir "$PROFILE_DIR_ARG"; then
-            echo -e "${RED}Error: $ZP_ERROR${NC}"
-            exit 1
-        fi
-    elif [ -n "$PROFILE_SPEC" ]; then
-        if ! zp_select "$PROFILE_SPEC"; then
+    if [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
+        for d in "${PROFILE_DIR_ARGS[@]}"; do
+            if ! zp_use_profile_dir "$d"; then
+                echo -e "${RED}Error: $ZP_ERROR${NC}"
+                exit 1
+            fi
+        done
+    elif [ ${#PROFILE_SPECS[@]} -gt 0 ]; then
+        if ! zp_select_specs "${PROFILE_SPECS[@]}"; then
             echo -e "${RED}Error: $ZP_ERROR${NC}"
             exit 1
         fi
@@ -168,7 +171,7 @@ while [ $# -gt 0 ]; do
                 echo -e "${RED}Error: --profile requires a profile number, name, or \"all\"${NC}"
                 exit 1
             fi
-            PROFILE_SPEC="$1"
+            PROFILE_SPECS+=("$1")
             ;;
         --profile-dir)
             shift
@@ -176,7 +179,7 @@ while [ $# -gt 0 ]; do
                 echo -e "${RED}Error: --profile-dir requires a directory${NC}"
                 exit 1
             fi
-            PROFILE_DIR_ARG="$1"
+            PROFILE_DIR_ARGS+=("$1")
             ;;
         --yes|-y)
             AUTO_YES=true
@@ -191,9 +194,10 @@ while [ $# -gt 0 ]; do
             echo "All other CSS (from other extensions, user customizations) is preserved."
             echo ""
             echo "Options:"
-            echo "  --profile <sel>      Profile(s): number from the list, profile name, or \"all\""
-            echo "                       (default: profiles whose userChrome.css has a ZenLeap block)"
-            echo "  --profile-dir <dir>  Use this profile directory directly"
+            echo "  --profile <sel>      Profile(s): number from the list, profile name, or \"all\";"
+            echo "                       repeatable (default: profiles whose userChrome.css has a"
+            echo "                       ZenLeap block)"
+            echo "  --profile-dir <dir>  Use this profile directory directly; repeatable"
             echo "  --yes, -y            Auto-confirm"
             echo "  --dry-run            Show what would change without modifying files"
             exit 0
@@ -206,7 +210,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ -n "$PROFILE_SPEC" ] && [ -n "$PROFILE_DIR_ARG" ]; then
+if [ ${#PROFILE_SPECS[@]} -gt 0 ] && [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
     echo -e "${RED}Error: Use either --profile or --profile-dir, not both${NC}"
     exit 1
 fi

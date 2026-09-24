@@ -10,9 +10,10 @@
 #                           Must contain manifest.json and plugin.js.
 #
 # Options:
-#   --profile <sel>         Profile(s): a number from the list, a profile name, or "all".
-#                           Default: the profiles that have ZenLeap (else the default profile)
-#   --profile-dir <dir>     Use this profile directory directly
+#   --profile <sel>         Profile(s): a number from the list, a profile name, or "all";
+#                           repeatable. Default: the profiles that have ZenLeap (else the
+#                           default profile)
+#   --profile-dir <dir>     Use this profile directory directly; repeatable
 #   --yes, -y               Auto-confirm all prompts (non-interactive mode)
 #   --list                  List installed plugins for each profile
 #   --uninstall <id>        Uninstall a plugin by its id
@@ -77,8 +78,8 @@ else
 fi
 
 # Flags
-PROFILE_SPEC=""
-PROFILE_DIR_ARG=""
+PROFILE_SPECS=()
+PROFILE_DIR_ARGS=()
 AUTO_YES=false
 LIST_MODE=false
 UNINSTALL_ID=""
@@ -87,7 +88,7 @@ PLUGIN_PATH=""
 # Find Zen profiles and decide which ones to use (sets ZP_SELECTED).
 # Usage: find_profiles <install|uninstall|list>
 find_profiles() {
-    local action="$1" i suggested=()
+    local action="$1" i d suggested=()
     case "$(uname -s)" in
         Darwin|Linux) ;;
         MINGW*|MSYS*|CYGWIN*)
@@ -100,22 +101,25 @@ find_profiles() {
             ;;
     esac
 
-    if ! zp_discover native && ! zp_discover flatpak && [ -z "$PROFILE_DIR_ARG" ]; then
+    if ! zp_discover native && ! zp_discover flatpak && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
         zp_discover native || true
         echo -e "${RED}Error: $ZP_ERROR${NC}"
         echo "Please run Zen Browser at least once to create a profile"
         exit 1
     fi
 
-    if [ -n "$PROFILE_DIR_ARG" ]; then
-        if ! zp_use_profile_dir "$PROFILE_DIR_ARG"; then
-            echo -e "${RED}Error: $ZP_ERROR${NC}"
-            exit 1
-        fi
+    if [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
+        for d in "${PROFILE_DIR_ARGS[@]}"; do
+            if [ "$action" = install ]; then check_profile_dir "$d"; fi
+            if ! zp_use_profile_dir "$d"; then
+                echo -e "${RED}Error: $ZP_ERROR${NC}"
+                exit 1
+            fi
+        done
         return 0
     fi
-    if [ -n "$PROFILE_SPEC" ]; then
-        if ! zp_select "$PROFILE_SPEC"; then
+    if [ ${#PROFILE_SPECS[@]} -gt 0 ]; then
+        if ! zp_select_specs "${PROFILE_SPECS[@]}"; then
             echo -e "${RED}Error: $ZP_ERROR${NC}"
             exit 1
         fi
@@ -149,6 +153,27 @@ find_profiles() {
         fi
         echo ""
     fi
+}
+
+# --profile-dir must name a profile (a typo such as the home directory must not
+# get a chrome/ folder): interactive runs may insist, --yes refuses.
+check_profile_dir() {
+    local ans
+    if [ ! -d "$1" ] || zp_is_profile_dir "$1"; then
+        return 0   # a missing folder is reported by zp_use_profile_dir
+    fi
+    echo -e "${YELLOW}⚠${NC} $1 does not look like a Zen profile (no prefs.js, times.json or compatibility.ini)."
+    if [ "$AUTO_YES" = true ]; then
+        echo -e "${RED}Error: Not installing into it with --yes; run without --yes to confirm.${NC}"
+        exit 1
+    fi
+    echo -n "  Install into it anyway? (y/N): "
+    read -r ans <&3 || ans="n"
+    case "$ans" in
+        y|Y|yes|Yes) return 0 ;;
+    esac
+    echo "Aborted."
+    exit 1
 }
 
 # Status note for the profile list
@@ -323,7 +348,7 @@ while [ $# -gt 0 ]; do
                 echo -e "${RED}Error: --profile requires a profile number, name, or \"all\"${NC}"
                 exit 1
             fi
-            PROFILE_SPEC="$1"
+            PROFILE_SPECS+=("$1")
             ;;
         --profile-dir)
             shift
@@ -331,7 +356,7 @@ while [ $# -gt 0 ]; do
                 echo -e "${RED}Error: --profile-dir requires a directory${NC}"
                 exit 1
             fi
-            PROFILE_DIR_ARG="$1"
+            PROFILE_DIR_ARGS+=("$1")
             ;;
         --yes|-y)
             AUTO_YES=true
@@ -358,9 +383,10 @@ while [ $# -gt 0 ]; do
             echo "  <plugin-path>           Path to plugin directory (must have manifest.json + plugin.js)"
             echo ""
             echo "Options:"
-            echo "  --profile <sel>         Profile(s): number from the list, profile name, or \"all\""
-            echo "                          (default: profiles that have ZenLeap, else the default profile)"
-            echo "  --profile-dir <dir>     Use this profile directory directly"
+            echo "  --profile <sel>         Profile(s): number from the list, profile name, or \"all\";"
+            echo "                          repeatable (default: profiles that have ZenLeap, else the"
+            echo "                          default profile)"
+            echo "  --profile-dir <dir>     Use this profile directory directly; repeatable"
             echo "  --yes, -y               Auto-confirm all prompts"
             echo "  --list                  List installed plugins"
             echo "  --uninstall <id>        Uninstall a plugin by its id"
@@ -390,7 +416,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ -n "$PROFILE_SPEC" ] && [ -n "$PROFILE_DIR_ARG" ]; then
+if [ ${#PROFILE_SPECS[@]} -gt 0 ] && [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
     echo -e "${RED}Error: Use either --profile or --profile-dir, not both${NC}"
     exit 1
 fi

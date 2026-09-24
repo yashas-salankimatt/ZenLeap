@@ -8,14 +8,16 @@
 #   --profile <sel>         Profile(s) to use: a number from the list (1 = the profile Zen opens
 #                           by default), a profile or directory name, or "all"; repeatable
 #   --all-profiles          Same as --profile all
-#   --profile-dir <dir>     Use this profile directory (e.g. one you start with `zen -profile <dir>`)
+#   --profile-dir <dir>     Use this profile directory (e.g. one you start with `zen -profile <dir>`);
+#                           repeatable
 #   --yes, -y               Don't ask questions (non-interactive mode)
 #   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
 #   --zen-path <dir>        Zen Browser installation directory (the folder containing the zen
 #                           binary; on macOS the Zen.app bundle)
 #
-# Without --profile, the installer uses the profile Zen opens by default plus every profile
-# that already has ZenLeap; interactive runs show the list and let you change the choice.
+# Without --profile, the installer updates the profiles that already have ZenLeap, or else
+# installs into the profile Zen opens by default; interactive runs show the list and let you
+# change the choice.
 #
 # Environment (optional):
 #   FX_AUTOCONFIG_DIR       use this local fx-autoconfig checkout instead of downloading it
@@ -100,8 +102,8 @@ fi
 
 # Flags
 USE_REMOTE=false
-PROFILE_SPEC=""
-PROFILE_DIR_ARG=""
+PROFILE_SPECS=()
+PROFILE_DIR_ARGS=()
 AUTO_YES=false
 REMOVE_FXAUTOCONFIG=false
 IS_FLATPAK=false
@@ -488,12 +490,12 @@ zp_discover() {
     return 0
 }
 
-# Select one explicit profile directory (e.g. one started with
-# `zen -profile <dir>`). A directory that zp_discover already found keeps its
-# name and local dir; any other directory is added with itself as local dir,
-# which is what Firefox does for -profile. Sets ZP_SELECTED.
+# Add one explicit profile directory (e.g. one started with
+# `zen -profile <dir>`) to ZP_SELECTED. A directory that zp_discover already
+# found keeps its name and local dir; any other directory is added with itself
+# as local dir, which is what Firefox does for -profile.
 zp_use_profile_dir() {
-    local want i
+    local want i pick=""
     want=$(zp__physical_dir "$1")
     if [ -z "$want" ]; then
         ZP_ERROR="Profile directory not found: $1"
@@ -501,12 +503,22 @@ zp_use_profile_dir() {
     fi
     for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
         if [ "$(zp__physical_dir "${ZP_PROFILE_DIRS[$i]}")" = "$want" ]; then
-            ZP_SELECTED=("$i")
-            return 0
+            pick=$i
+            break
         fi
     done
-    zp__add_profile "$want" "${want##*/}" "$want" ""
-    ZP_SELECTED=("$(( ${#ZP_PROFILE_DIRS[@]} - 1 ))")
+    if [ -z "$pick" ]; then
+        zp__add_profile "$want" "${want##*/}" "$want" ""
+        pick=$(( ${#ZP_PROFILE_DIRS[@]} - 1 ))
+    fi
+    if ! zp__in_list "$pick" "${ZP_SELECTED[@]}"; then ZP_SELECTED+=("$pick"); fi
+    return 0
+}
+
+# True if <dir> looks like a profile Zen has used (a typo such as the home
+# directory must not get a chrome/ folder).
+zp_is_profile_dir() {
+    [ -f "$1/prefs.js" ] || [ -f "$1/times.json" ] || [ -f "$1/compatibility.ini" ]
 }
 
 # One-line description of profile <i> for lists: name, directory when it
@@ -569,6 +581,21 @@ zp_select() {
         ZP_ERROR="No profile named \"$spec\" (use a number from the list, a profile name, or \"all\")"
     fi
     return 1
+}
+
+# The union of several selections, each resolved like zp_select (e.g. from
+# repeated --profile options: a name, "2,3" and "all" can be mixed).
+# Sets ZP_SELECTED; returns 1 with ZP_ERROR.
+zp_select_specs() {
+    local spec i acc=()
+    for spec in "$@"; do
+        zp_select "$spec" || return 1
+        for i in "${ZP_SELECTED[@]}"; do
+            if ! zp__in_list "$i" "${acc[@]}"; then acc+=("$i"); fi
+        done
+    done
+    ZP_SELECTED=("${acc[@]}")
+    return 0
 }
 
 # Interactive profile picker. Prints the numbered list, then reads the answer
@@ -1000,7 +1027,51 @@ backup_user_chrome() {
 
 # Is $1 a Zen installation directory?
 is_zen_dir() {
-    [ -f "$1/application.ini" ] || [ -f "$1/zen" ] || [ -f "$1/zen-bin" ]
+    [ -f "$1/application.ini" ] || [ -f "$1/omni.ja" ] || [ -f "$1/zen" ] || [ -f "$1/zen-bin" ]
+}
+
+# --zen-path must name a Zen installation directory: fx-autoconfig's config.js
+# goes there. Interactive runs may insist; --yes refuses.
+check_zen_path() {
+    local ans
+    if is_zen_dir "$1"; then
+        return 0
+    fi
+    warn "$1 does not look like a Zen installation directory (no application.ini, omni.ja or zen binary)."
+    echo "  It is the folder that contains the zen binary: about:support > Application Binary shows it."
+    if [ "$AUTO_YES" = true ]; then
+        die "Not putting fx-autoconfig into it; check --zen-path."
+    fi
+    echo -n "  Use it anyway? (y/N): "
+    read -r ans <&3 || ans="n"
+    case "$ans" in
+        y|Y|yes|Yes) return 0 ;;
+    esac
+    echo "Cancelled."
+    exit 1
+}
+
+# --profile-dir must name a profile: a typo such as the home directory must not
+# get a chrome/ folder. Interactive runs may insist; --yes refuses.
+check_profile_dir() {
+    local ans
+    if [ ! -d "$1" ]; then
+        die "Profile directory not found: $1"
+    fi
+    if zp_is_profile_dir "$1"; then
+        return 0
+    fi
+    warn "$1 does not look like a Zen profile (no prefs.js, times.json or compatibility.ini)."
+    if [ "$AUTO_YES" = true ]; then
+        die "Not installing into it with --yes. Start Zen with that profile once (zen -profile <dir>), or run without --yes to confirm."
+    fi
+    echo -n "  Install into it anyway? (y/N): "
+    read -r ans <&3 || ans="n"
+    case "$ans" in
+        y|Y|yes|Yes) return 0 ;;
+    esac
+    echo "Cancelled."
+    exit 1
 }
 
 # Prompt user for Zen Browser installation path
@@ -1055,6 +1126,10 @@ prompt_zen_path() {
             user_path="$user_path/Contents/Resources"
             ok "Resolved to: $user_path"
         fi
+        if ! is_zen_dir "$user_path"; then
+            echo -e "${RED}Not a Zen installation directory (no application.ini, omni.ja or zen binary): $user_path${NC}"
+            continue
+        fi
         ok "Using Zen installation at: $user_path"
         ZEN_RESOURCES="$user_path"
         return 0
@@ -1080,6 +1155,7 @@ detect_os() {
                 else
                     ZEN_RESOURCES="$CUSTOM_ZEN_PATH"
                 fi
+                check_zen_path "$ZEN_RESOURCES"
             else
                 local app
                 for app in "/Applications/Zen.app" "/Applications/Zen Browser.app" \
@@ -1103,6 +1179,7 @@ detect_os() {
                     die "Directory not found: $CUSTOM_ZEN_PATH"
                 fi
                 ZEN_RESOURCES="$(cd "$CUSTOM_ZEN_PATH" && pwd)"
+                check_zen_path "$ZEN_RESOURCES"
             fi
 
             # Auto-detect if no custom path provided
@@ -1200,19 +1277,24 @@ zenleap_status() {
 # Find the profiles and decide which ones to work on (sets ZP_SELECTED).
 # Usage: choose_profiles <install|uninstall|check>
 choose_profiles() {
-    local action="$1" i mode=native suggested=()
+    local action="$1" i d mode=native suggested=() existing=()
     [ "$IS_FLATPAK" = true ] && mode=flatpak
 
-    if ! zp_discover "$mode" "$ZEN_RESOURCES" && [ -z "$PROFILE_DIR_ARG" ]; then
+    if ! zp_discover "$mode" "$ZEN_RESOURCES" && [ ${#PROFILE_DIR_ARGS[@]} -eq 0 ]; then
         echo -e "${RED}Error: $ZP_ERROR${NC}"
         echo "Start Zen Browser once to create a profile (or check about:profiles), then run this again."
         exit 1
     fi
 
-    if [ -n "$PROFILE_DIR_ARG" ]; then
-        zp_use_profile_dir "$PROFILE_DIR_ARG" || die "$ZP_ERROR"
-    elif [ -n "$PROFILE_SPEC" ]; then
-        if ! zp_select "$PROFILE_SPEC"; then
+    if [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
+        for d in "${PROFILE_DIR_ARGS[@]}"; do
+            if [ "$action" = install ]; then
+                check_profile_dir "$d"
+            fi
+            zp_use_profile_dir "$d" || die "$ZP_ERROR"
+        done
+    elif [ ${#PROFILE_SPECS[@]} -gt 0 ]; then
+        if ! zp_select_specs "${PROFILE_SPECS[@]}"; then
             echo -e "${RED}Error: $ZP_ERROR${NC}"
             echo "Zen profiles:"
             zp_menu_list
@@ -1221,14 +1303,18 @@ choose_profiles() {
     elif [ "$action" = "check" ]; then
         zp_select all
     else
-        # Suggest the profile Zen opens by default (install only) plus every
-        # profile that already has ZenLeap.
+        # Profiles that already have ZenLeap; a first install goes into the
+        # profile Zen opens by default.
         for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
-            if [ -n "$(zp_zenleap_version "${ZP_PROFILE_DIRS[$i]}")" ] || \
-               { [ "$action" = "install" ] && [ "$i" = "$ZP_DEFAULT" ]; }; then
-                suggested+=("$i")
+            if [ -n "$(zp_zenleap_version "${ZP_PROFILE_DIRS[$i]}")" ]; then
+                existing+=("$i")
             fi
         done
+        if [ ${#existing[@]} -gt 0 ]; then
+            suggested=("${existing[@]}")
+        elif [ "$action" = "install" ] && [ "$ZP_DEFAULT" -ge 0 ]; then
+            suggested=("$ZP_DEFAULT")
+        fi
         if [ "$action" = "install" ] && [ ${#ZP_PROFILE_DIRS[@]} -eq 1 ]; then
             ZP_SELECTED=(0)
         elif [ "$action" = "uninstall" ] && [ ${#suggested[@]} -eq 0 ]; then
@@ -1945,10 +2031,10 @@ show_help() {
     echo "                          instead of the files next to this script"
     echo "  --profile <sel>         Profile(s): number from the list (1 = the profile Zen opens"
     echo "                          by default), profile or directory name, or \"all\"; repeatable."
-    echo "                          Default: the profile Zen opens by default plus every"
-    echo "                          profile that already has ZenLeap"
+    echo "                          Default: the profiles that already have ZenLeap, else the"
+    echo "                          profile Zen opens by default"
     echo "  --all-profiles          Same as --profile all"
-    echo "  --profile-dir <dir>     Use this profile directory directly"
+    echo "  --profile-dir <dir>     Use this profile directory directly; repeatable"
     echo "  --yes, -y               Don't ask questions (non-interactive mode)"
     echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
     echo "  --zen-path <dir>        Zen Browser installation directory (default: the one that last"
@@ -1986,17 +2072,17 @@ while [ $# -gt 0 ]; do
             if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
                 die "--profile requires a profile number, name, or \"all\""
             fi
-            PROFILE_SPEC="${PROFILE_SPEC:+$PROFILE_SPEC,}$1"
+            PROFILE_SPECS+=("$1")
             ;;
         --all-profiles)
-            PROFILE_SPEC="all"
+            PROFILE_SPECS+=("all")
             ;;
         --profile-dir)
             shift
             if [ -z "${1:-}" ] || [[ "$1" == --* ]]; then
                 die "--profile-dir requires a directory argument"
             fi
-            PROFILE_DIR_ARG="$1"
+            PROFILE_DIR_ARGS+=("$1")
             ;;
         --yes|-y)
             AUTO_YES=true
@@ -2024,7 +2110,7 @@ while [ $# -gt 0 ]; do
     shift || true
 done
 
-if [ -n "$PROFILE_SPEC" ] && [ -n "$PROFILE_DIR_ARG" ]; then
+if [ ${#PROFILE_SPECS[@]} -gt 0 ] && [ ${#PROFILE_DIR_ARGS[@]} -gt 0 ]; then
     die "Use either --profile or --profile-dir, not both"
 fi
 

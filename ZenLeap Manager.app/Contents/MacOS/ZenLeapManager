@@ -371,12 +371,12 @@ zp_discover() {
     return 0
 }
 
-# Select one explicit profile directory (e.g. one started with
-# `zen -profile <dir>`). A directory that zp_discover already found keeps its
-# name and local dir; any other directory is added with itself as local dir,
-# which is what Firefox does for -profile. Sets ZP_SELECTED.
+# Add one explicit profile directory (e.g. one started with
+# `zen -profile <dir>`) to ZP_SELECTED. A directory that zp_discover already
+# found keeps its name and local dir; any other directory is added with itself
+# as local dir, which is what Firefox does for -profile.
 zp_use_profile_dir() {
-    local want i
+    local want i pick=""
     want=$(zp__physical_dir "$1")
     if [ -z "$want" ]; then
         ZP_ERROR="Profile directory not found: $1"
@@ -384,12 +384,22 @@ zp_use_profile_dir() {
     fi
     for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
         if [ "$(zp__physical_dir "${ZP_PROFILE_DIRS[$i]}")" = "$want" ]; then
-            ZP_SELECTED=("$i")
-            return 0
+            pick=$i
+            break
         fi
     done
-    zp__add_profile "$want" "${want##*/}" "$want" ""
-    ZP_SELECTED=("$(( ${#ZP_PROFILE_DIRS[@]} - 1 ))")
+    if [ -z "$pick" ]; then
+        zp__add_profile "$want" "${want##*/}" "$want" ""
+        pick=$(( ${#ZP_PROFILE_DIRS[@]} - 1 ))
+    fi
+    if ! zp__in_list "$pick" "${ZP_SELECTED[@]}"; then ZP_SELECTED+=("$pick"); fi
+    return 0
+}
+
+# True if <dir> looks like a profile Zen has used (a typo such as the home
+# directory must not get a chrome/ folder).
+zp_is_profile_dir() {
+    [ -f "$1/prefs.js" ] || [ -f "$1/times.json" ] || [ -f "$1/compatibility.ini" ]
 }
 
 # One-line description of profile <i> for lists: name, directory when it
@@ -452,6 +462,21 @@ zp_select() {
         ZP_ERROR="No profile named \"$spec\" (use a number from the list, a profile name, or \"all\")"
     fi
     return 1
+}
+
+# The union of several selections, each resolved like zp_select (e.g. from
+# repeated --profile options: a name, "2,3" and "all" can be mixed).
+# Sets ZP_SELECTED; returns 1 with ZP_ERROR.
+zp_select_specs() {
+    local spec i acc=()
+    for spec in "$@"; do
+        zp_select "$spec" || return 1
+        for i in "${ZP_SELECTED[@]}"; do
+            if ! zp__in_list "$i" "${acc[@]}"; then acc+=("$i"); fi
+        done
+    done
+    ZP_SELECTED=("${acc[@]}")
+    return 0
 }
 
 # Interactive profile picker. Prints the numbered list, then reads the answer

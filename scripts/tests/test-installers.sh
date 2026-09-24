@@ -61,7 +61,7 @@ FAKE_TAG=v99.0.0 run install.sh check
 check "check: exit 1 when outdated" rc_is 1
 check "check: reports OUTDATED" has "$OUT" "OUTDATED:$VERSION:99.0.0"
 
-# 3. --yes without --profile also updates profiles that already have ZenLeap
+# 3. --yes without --profile updates every profile that already has ZenLeap
 mkdir -p "$O/chrome/JS"
 printf '// @version 3.3.0\n' > "$O/chrome/JS/zenleap.uc.js"
 run install.sh install --yes --zen-path "$APP"
@@ -514,6 +514,29 @@ EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh instal
 check "FX_AUTOCONFIG_DIR + loader already there: reported as up to date" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
 check "FX_AUTOCONFIG_DIR + loader already there: not called outdated" lacks "$OUT" "older than the tested one"
 
+# 28. --profile is repeatable and its kinds can be mixed; --profile-dir is repeatable  [REV-LINST-07]
+new_home mixsel
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+O="$R/0sczwvfb.default-release"
+run install.sh install --yes --profile "Default (release)" --profile 2 --zen-path "$APP"
+check "--profile <name> --profile <n>: exit 0" rc_is 0
+check "--profile <name> --profile <n>: the named profile" exists "$P/chrome/JS/zenleap.uc.js"
+check "--profile <name> --profile <n>: the numbered one" exists "$O/chrome/JS/zenleap.uc.js"
+rm -rf "$R"/*/chrome/JS
+run install.sh install --yes --profile all --profile 1 --zen-path "$APP"
+check "--profile all --profile 1: every profile" exists "$O/chrome/JS/zenleap.uc.js"
+mk_profile "$R" "cccc.Work, personal"
+printf '\n[Profile2]\nName=Work, personal\nIsRelative=1\nPath=cccc.Work, personal\n' >> "$R/profiles.ini"
+run install.sh install --yes --profile "Work, personal" --zen-path "$APP"
+check "--profile <name with a comma>: works" exists "$R/cccc.Work, personal/chrome/JS/zenleap.uc.js"
+mk_profile "$H" "adhoc1"
+mk_profile "$H" "adhoc2"
+run install.sh install --yes --profile-dir "$H/adhoc1" --profile-dir "$H/adhoc2" --zen-path "$APP"
+check "--profile-dir twice: the first" exists "$H/adhoc1/chrome/JS/zenleap.uc.js"
+check "--profile-dir twice: the second" exists "$H/adhoc2/chrome/JS/zenleap.uc.js"
+
 # 29. profiles.ini the way Firefox reads it: a UTF-8 BOM, "[Section] " with a
 #     trailing blank, indented keys and comments work; the keys under a
 #     malformed header ("[Profile1]x") are ignored  [REV-LINST-10]
@@ -538,6 +561,47 @@ printf '[Profile0]\n  Name=one\n\tIsRelative=1\n  Path=aaaa.one\n; Path=bbbb.two
 run install.sh install --yes --all-profiles --zen-path "$APP"
 check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
+
+# 32. --yes without --profile: update where ZenLeap is, else install into the default  [REV-LINST-08]
+new_home onlyother
+R="$H/.config/zen"
+mk_two_profiles "$R"
+O="$R/0sczwvfb.default-release"
+P="$R/gdgcari8.Default (release)"
+mkdir -p "$O/chrome/JS"
+printf '// @version 3.3.0\n' > "$O/chrome/JS/zenleap.uc.js"
+run install.sh install --yes --zen-path "$APP"
+check "update --yes: the profile with ZenLeap is updated" same "$REPO/JS/zenleap.uc.js" "$O/chrome/JS/zenleap.uc.js"
+check "update --yes: not added to the default profile" missing "$P/chrome/JS/zenleap.uc.js"
+if $HAVE_SCRIPT; then
+    printf '// @version 3.3.0\n' > "$O/chrome/JS/zenleap.uc.js"
+    run_tty '\nn\n' install.sh install --zen-path "$APP"
+    check "interactive: Enter picks the profile with ZenLeap" same "$REPO/JS/zenleap.uc.js" "$O/chrome/JS/zenleap.uc.js"
+    check "interactive: the default profile untouched" missing "$P/chrome/JS/zenleap.uc.js"
+fi
+
+# 33. --zen-path and --profile-dir must point to Zen and to a profile  [REV-LINST-11]
+new_home badpaths
+R="$H/.config/zen"
+mk_two_profiles "$R"
+mkdir -p "$T/badpaths/notzen"
+run install.sh install --yes --zen-path "$T/badpaths/notzen"
+check "--zen-path to a folder without Zen, --yes: refused" rc_is 1
+check "... explains" has "$OUT" "does not look like a Zen installation directory"
+check "... no config.js there" missing "$T/badpaths/notzen/config.js"
+check "... nothing installed" missing "$R/gdgcari8.Default (release)/chrome"
+run install.sh install --yes --profile-dir "$H" --zen-path "$APP"
+check "--profile-dir \$HOME, --yes: refused" rc_is 1
+check "... explains" has "$OUT" "does not look like a Zen profile"
+check "... no \$HOME/chrome" missing "$H/chrome"
+if $HAVE_SCRIPT; then
+    mkdir -p "$T/badpaths/newprofile"
+    run_tty 'y\nn\n' install.sh install --profile-dir "$T/badpaths/newprofile" --zen-path "$APP"
+    check "--profile-dir without profile files, interactive 'y': installs" exists "$T/badpaths/newprofile/chrome/JS/zenleap.uc.js"
+    run_tty 'n\n' install.sh install --zen-path "$T/badpaths/notzen"
+    check "--zen-path without Zen, interactive 'n': cancelled" rc_is 1
+    check "--zen-path without Zen, interactive 'n': no config.js" missing "$T/badpaths/notzen/config.js"
+fi
 
 # 35. fx-autoconfig verification counts every entry of chrome/utils (hidden ones
 #     too, by exact name), and exactly the verified files are copied  [REV-LINST-13]
@@ -658,6 +722,12 @@ if $HAVE_SCRIPT; then
     run_tty 'y\n' install-plugin.sh "$REPO/examples/plugins/tab-timer" --profile 1
     check "plugin interactive overwrite 'y': exit 0" rc_is 0
 fi
+run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile 1 --profile 2
+check "plugin --profile 1 --profile 2: both" exists "$P/chrome/zenleap-plugins/tab-stats/plugin.js"
+mkdir -p "$T/plugin-notprofile"
+run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile-dir "$T/plugin-notprofile"
+check "plugin --profile-dir to a non-profile, --yes: refused" rc_is 1
+check "... no chrome/ created there" missing "$T/plugin-notprofile/chrome"
 
 # ---------------------------------------------------------------- clean-legacy-css.sh
 
