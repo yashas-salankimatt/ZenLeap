@@ -1454,26 +1454,49 @@
   // real characters there (Option+L is @ on German, ł on Polish).
   const MAC_US_OPTION_KEYS = { KeyH: '\u02D9', KeyJ: '\u2206', KeyK: '\u02DA', KeyL: '\u00AC', Space: '\u00A0' };
 
+  // `key` values that don't identify a key: a combo recorded with one must
+  // match by physical key (else Option+E, stored as 'Dead', matched every dead key).
+  const OPAQUE_KEY_NAMES = new Set(['Dead', 'Unidentified', 'Process']);
+  const isPrintableAscii = k => typeof k === 'string' && k.length === 1 && k >= ' ' && k <= '~';
+
+  let _macOptionHintShown = false;
+
   // Helper: check if a keyboard event matches a combo-type setting
   function matchCombo(event, combo) {
     if (!combo || typeof combo !== 'object') return false;
     if (!!event.ctrlKey !== !!combo.ctrl || !!event.shiftKey !== !!combo.shift ||
         !!event.altKey !== !!combo.alt || !!event.metaKey !== !!combo.meta) return false;
-    if (event.key === combo.key) return true;
-    // Letters: Shift (or Caps Lock) changes the case of event.key; the
-    // modifiers were compared above (Meta+Shift+T arrives as key 'T').
-    if (event.key.length === 1 && typeof combo.key === 'string' && combo.key.length === 1 &&
-        event.key.toLowerCase() === combo.key.toLowerCase()) return true;
-    if (!combo.code || event.code !== combo.code) return false;
-    // Physical-key fallback: needed for non-Latin layouts (Alt+J on Cyrillic).
-    // On macOS, Option changes `key` to the layout's Option character; only
-    // fall back when that is not a real character, unless the user opted in
-    // (LEAP-B-01). Elsewhere Alt doesn't change `key` (AltGr isn't altKey).
-    if (typeof AppConstants !== 'undefined' && AppConstants.platform === 'macosx' &&
-        event.altKey && !S['keys.physicalAltFallback']) {
-      return event.key === 'Dead' || event.key === 'Unidentified' || MAC_US_OPTION_KEYS[event.code] === event.key;
+    // AltGr types characters (€, ę, @; Windows reports it as Ctrl+Alt): never
+    // a shortcut. (macOS: Option is handled below.)
+    if (!IS_MACOS && event.getModifierState?.('AltGraph')) return false;
+    const want = combo.key;
+    if (typeof want === 'string' && !OPAQUE_KEY_NAMES.has(want)) {
+      // navKey: layout-aware (Ctrl+' on a Russian layout, Ctrl+dead ' on US-Intl)
+      const keys = [event.key, navKey(event)];
+      if (keys.includes(want)) return true;
+      // Letters: Shift (or Caps Lock) changes the case of event.key; the
+      // modifiers were compared above (Meta+Shift+T arrives as key 'T').
+      if (want.length === 1 && keys.some(k => k.length === 1 && k.toLowerCase() === want.toLowerCase())) return true;
     }
-    return true;
+    if (!combo.code || event.code !== combo.code) return false;
+    // Physical-key fallback. On macOS, Option changes `key` to the layout's
+    // Option character; only fall back when that is not a real character,
+    // unless the user opted in (LEAP-B-01). Elsewhere Alt doesn't change `key`
+    // (AltGr isn't altKey).
+    if (IS_MACOS && event.altKey) {
+      if (S['keys.physicalAltFallback'] || event.key === 'Dead' || event.key === 'Unidentified' ||
+          MAC_US_OPTION_KEYS[event.code] === event.key) return true;
+      if (!_macOptionHintShown) {
+        _macOptionHintShown = true;
+        console.info(`[ZenLeap] Option+${event.code.replace(/^Key/, '')} typed "${event.key}" on this keyboard layout, so the ZenLeap shortcut ${formatKeyDisplay(combo, { type: 'combo' })} did not run. To use Option shortcuts by physical key, turn on Settings > Keybindings > "Match Option Shortcuts by Physical Key (macOS)".`);
+      }
+      return false;
+    }
+    // Otherwise only for keys that type no ASCII character here (Alt+J on
+    // Cyrillic, dead keys) or bindings recorded as one. A different ASCII
+    // character is a different key on this layout: Ctrl+/ recorded on US must
+    // not fire on German's Ctrl+- (same physical key).
+    return !(isPrintableAscii(event.key) && isPrintableAscii(want));
   }
 
   // Helper: format a key setting for display
@@ -13232,8 +13255,14 @@
           setSettingsRowNote(row, 'Global shortcuts need Ctrl, Alt or Cmd (or an F-key). Press another combination or Esc.', 'error');
           return;
         }
+        // AltGr (Ctrl+Alt on Windows) types characters; matchCombo ignores it.
+        if (!IS_MACOS && event.getModifierState?.('AltGraph')) {
+          setSettingsRowNote(row, 'AltGr types characters and can’t be part of a shortcut. Press another combination or Esc.', 'error');
+          return;
+        }
         value = {
-          key: event.key,
+          // Layout-independent (Latin letter on a Cyrillic layout), like single keys
+          key: navKey(event),
           code: event.code,
           ctrl: event.ctrlKey,
           shift: event.shiftKey,
@@ -13249,6 +13278,11 @@
         // letter keys record as their Latin letters, so the binding works on
         // every layout (the raw character matched nothing: REV-LCORE-01).
         const key = navKey(event);
+        if (OPAQUE_KEY_NAMES.has(key)) {
+          // A dead (accent) key reports only 'Dead': it would match every dead key
+          setSettingsRowNote(row, 'This key types an accent and can’t be told apart from others. Press another key or Esc.', 'error');
+          return;
+        }
         value = schema.caseSensitive ? key : key.toLowerCase();
       }
 
