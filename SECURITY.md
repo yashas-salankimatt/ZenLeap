@@ -14,7 +14,7 @@ ZenLeap supports Zen Browser 1.21.7b and newer (tested on 1.22.3b).
 If you discover a security vulnerability in ZenLeap, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities
-2. Email the maintainer or send a private message via GitHub
+2. Contact the maintainer privately by email, at the address the maintainer's commits in this repository are made with (see `git log main`)
 3. Include a description of the vulnerability and steps to reproduce it
 4. Allow reasonable time for a fix before public disclosure
 
@@ -48,7 +48,7 @@ ZenLeap itself only contacts GitHub, and sends no data:
 - **Changelog**: `CHANGELOG.md` from the repository, shown in the update dialog.
 - **Self-update** (fx-autoconfig installs, only when you confirm): `JS/zenleap.uc.js` and `CHECKSUMS.sha256` of that release tag from `raw.githubusercontent.com`. The file is installed only if its SHA-256 matches the release's `CHECKSUMS.sha256` and its version matches the tag; it is written atomically and the previous version is kept as a backup. Installs managed by Sine are updated by Sine instead.
 
-The installers (`install.sh`, `install.ps1`, ZenLeap Manager) download the same verified release files, and fx-autoconfig from a pinned commit whose files are checked against SHA-256 hashes in the installer. They never run `sudo` by themselves, never close or kill Zen, and only change files in the profiles you select (plus fx-autoconfig's two files in Zen's installation directory, when they are missing).
+The installers (`install.sh`, `install.ps1`, ZenLeap Manager) download the same verified release files, and fx-autoconfig from a pinned commit whose files are checked against SHA-256 hashes in the installer. If a release fails the check they install nothing and say how to install from a clone of the repository instead (which uses the clone's own files). They never run `sudo` by themselves and never kill Zen (the macOS Manager can quit it normally if you ask it to), and they only change files in the profiles you select (plus fx-autoconfig's two files in Zen's installation directory, when they are missing). They never replace another loader's files (Sine's, or an organisation's autoconfig setup).
 
 **Limitation:** the checksum is published in the same GitHub repository as the code. It protects against corrupted, truncated or mismatched downloads, but not against a compromise of the repository or the maintainer's GitHub account. Signed releases are planned.
 

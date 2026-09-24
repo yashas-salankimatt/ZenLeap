@@ -296,20 +296,33 @@ Options go after `bash -s --`, for example `... | bash -s -- --yes` (no question
 irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 | iex
 ```
 
-With options, download the script first:
+With options:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1))) -Profile 2 -Yes
+```
+
+or download the script first:
 
 ```powershell
 irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1 -Profile 2 -Yes
 ```
 
-**From a clone** (installs the checkout's files instead of the latest release):
+These one-liners install the **latest release**, and only after checking it against the release's `CHECKSUMS.sha256`. If that check fails, they install nothing and print the commands for the next option instead.
+
+**From a clone** (installs the checkout's own files; no release is downloaded or checked):
 
 ```bash
-git clone https://github.com/yashas-salankimatt/ZenLeap.git
+git clone --depth 1 https://github.com/yashas-salankimatt/ZenLeap.git
 cd ZenLeap
-./install.sh                                            # macOS / Linux
-# powershell -ExecutionPolicy Bypass -File install.ps1  # Windows
+./install.sh                                              # macOS / Linux
+```
+
+```powershell
+git clone --depth 1 https://github.com/yashas-salankimatt/ZenLeap.git
+cd ZenLeap
+powershell -ExecutionPolicy Bypass -File .\install.ps1   # Windows
 ```
 
 What the installer does:
@@ -319,12 +332,14 @@ What the installer does:
   - macOS: `~/Library/Application Support/zen`
   - Windows: `%APPDATA%\zen`
 
-  Without `--profile` it uses the profile Zen opens by default plus every profile that already has ZenLeap; interactive runs show the list first. `--profile` takes a number from that list (1 is the default profile), a profile name, or `all`; `--profile-dir <dir>` targets a profile you start with `zen -profile <dir>`.
+  Without `--profile` it updates the profiles that already have ZenLeap, or else installs into the profile Zen opens by default; interactive runs show the list first. `--profile` takes a number from that list (1 is the default profile, then the order of `profiles.ini`), a profile name, or `all`, and can be repeated (`--profile Work --profile 3`); in scripts, prefer names to numbers. `--profile-dir <dir>` (repeatable) targets a profile you start with `zen -profile <dir>`; a folder Zen has never used as a profile is refused with `--yes` (interactive runs ask).
 - **Installs fx-autoconfig if it is missing**: its loader goes into `<profile>/chrome/utils`, and `config.js` + `defaults/pref/config-prefs.js` go into Zen's installation directory. It uses a tested fx-autoconfig version and checks every file's SHA-256. An existing fx-autoconfig (for example one installed by ZenRipple) is left as it is; interactive runs offer to update a loader older than the tested one.
 - **Never uses `sudo` by itself.** If Zen's installation directory is not writable (for example under `/opt` or `C:\Program Files`), it prints the exact commands to run (on Windows it can ask for administrator rights for just those two files). ZenLeap is still installed in the profile and loads once those files are in place.
-- **Installs the latest release** (`curl | bash`, `irm | iex`, or `--remote`), verified against the release's `CHECKSUMS.sha256`, and copies `zenleap.uc.js` to `<profile>/chrome/JS/`.
+- **Installs the latest release** (`curl | bash`, `irm | iex`, or `--remote`), verified against the release's `CHECKSUMS.sha256`, and copies `zenleap.uc.js` to `<profile>/chrome/JS/`. It no longer writes `userChrome.css` or sets `toolkit.legacyUserProfileCustomizations.stylesheets` (ZenLeap injects its styles itself); an old ZenLeap block in `userChrome.css` is removed, with a backup.
 - **Never closes Zen.** Zen loads ZenLeap when it starts: quit Zen first, or restart it afterwards. The installer asks Zen to clear its startup cache on the next start.
-- If the profile runs Sine, it points you to Sine instead (Sine does not run scripts from `chrome/JS`).
+- **Leaves Sine's copy to Sine.** Where Sine manages ZenLeap, `--yes` skips that profile and interactive runs ask first (`--loader sine` updates Sine's copy anyway). If Zen runs Sine's bootloader, which does not run scripts from `chrome/JS`, it points you to Sine instead. A leftover `chrome/sine-mods` folder from a Sine you no longer use does not count. `--loader fx-autoconfig` installs into `chrome/JS` regardless.
+- **Tells you when ZenLeap can't load yet**: if Zen's installation runs another autoconfig file (an organisation's `mozilla.cfg`, an old fx-autoconfig), ZenLeap is still copied, but the summary says what is missing instead of "Installation Complete!".
+- **Offers to remove what older installers left behind**: fx-autoconfig's example scripts (`test.uc.js` logs "Hi mom, I'm loaded!" in every window; only unmodified copies) and ZenLeap files in folders next to your profiles that are not profiles (`Profile Groups`, `Crash Reports`, ...). With `--yes` it only lists them.
 
 If Zen isn't found automatically, pass its installation directory (the folder with the `zen` binary; on macOS the `.app`):
 
@@ -332,9 +347,11 @@ If Zen isn't found automatically, pass its installation directory (the folder wi
 ./install.sh install --zen-path /opt/zen-browser-bin
 ```
 
-`./install.sh --help` lists all options; `./install.sh check` compares the installed version with the latest release.
+`./install.sh --help` lists all options. `./install.sh check` compares the installed versions with the latest release and prints one line per profile, `<name> [<profile folder>]: STATUS` (`about:support` → **Profile Folder** shows which folder your Zen uses).
 
-**Flatpak** support is experimental: fx-autoconfig goes into the Flatpak's system-config extension (`~/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/…`), which Zen reads from `/app/etc/zen`; this has not been tested with current Zen releases. **Snap** and **AppImage** builds are not supported (their installation directory is read-only).
+Exit status of an install: `0` installed (the summary says if a step is left for you), `1` error, cancelled or no Zen profile found, `2` nothing installed (every selected profile was skipped, for example because Sine manages ZenLeap there).
+
+**Flatpak** support is experimental: fx-autoconfig goes into the Flatpak's system-config extension (`~/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/…`), which Zen reads from `/app/etc/zen`; this has not been tested with current Zen releases. The installer uses the Flatpak only when it is installed (`flatpak info app.zen_browser.zen`) and no Zen installed on the system itself is found; a data folder left behind in `~/.var/app` does not count. `--profile-dir` with a profile inside the Flatpak's folder selects it explicitly. **Snap** and **AppImage** builds are not supported (their installation directory is read-only).
 
 ### ZenLeap Manager (macOS)
 
@@ -387,7 +404,7 @@ In `about:support`, click **Clear startup cache…** (Zen restarts and loads Zen
 
 ### Updating
 
-- **Installer script or Manager:** ZenLeap checks for new releases (Settings > Advanced > Updates, or the "Check for Updates" command) and can install them itself. Every download is checked against the release's SHA-256 and version before it is written. Running the installer again also updates.
+- **Installer script or Manager:** ZenLeap checks for new releases (Settings > Advanced > Updates, or the "Check for Updates" command) and can install them itself. Every download is checked against the release's SHA-256 and version before it is written. Running the installer again also updates (the profiles that already have ZenLeap).
 - **Sine:** Sine updates ZenLeap.
 
 ## Uninstallation
@@ -407,7 +424,7 @@ In `about:support`, click **Clear startup cache…** (Zen restarts and loads Zen
 
 Windows: `powershell -ExecutionPolicy Bypass -File install.ps1 -Action uninstall`.
 
-Your ZenLeap data is kept: settings in `about:config` (`uc.zenleap.*`), and `chrome/zenleap-themes.json`, `chrome/zenleap-plugins/` and `zenleap-sessions/` in the profile. fx-autoconfig is only removed when you ask (other scripts, such as ZenRipple, may use it). ZenLeap installed through Sine is removed from Sine's mods page.
+Uninstalling also removes the backup the in-browser updater keeps (`zenleap.uc.js.bak`). Your ZenLeap data is kept: settings in `about:config` (`uc.zenleap.*`), and `chrome/zenleap-themes.json`, `chrome/zenleap-plugins/` and `zenleap-sessions/` in the profile. fx-autoconfig is only removed when you ask, and even then it stays where other scripts (such as ZenRipple) or other profiles of the same Zen installation still use it. ZenLeap installed through Sine is removed from Sine's mods page.
 
 ### Clean Legacy CSS
 Installers up to 3.4 appended ZenLeap's CSS to `userChrome.css`; the installer removes that block when you update. To remove it on its own (a backup is saved as `userChrome.css.zenleap-backup`):
@@ -595,11 +612,15 @@ Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages; "Tog
 
 **Nothing happens / numbers not showing:**
 - Restart Zen: ZenLeap loads when Zen starts
-- Run `./install.sh check` to see which profiles have ZenLeap, and check `about:support` → **Profile Folder** is one of them
+- Run `./install.sh check` to see which profiles have ZenLeap, and check that the folder `about:support` → **Profile Folder** shows is one of them
 - Make sure `zenleap.uc.js` is in `<profile>/chrome/JS/` (not just `chrome/`) and that fx-autoconfig is installed (`<profile>/chrome/utils/boot.sys.mjs`, and `config.js` next to the Zen binary); run the installer again to repair both
 - If the installer printed `sudo` or administrator commands for fx-autoconfig, run them
 - Clear the startup cache: `about:support` → **Clear startup cache…**
 - Installed through Sine? Check that the mod is enabled on Sine's mods page
+
+**The installer says the latest release "could not be verified":**
+- The release's files on GitHub don't match its `CHECKSUMS.sha256` (or it has none). Nothing was installed, and your system is not at fault.
+- Install from a clone instead (see [Installer Script](#installer-script), "From a clone"); the message prints the exact commands, with the options you used.
 
 **Keyboard shortcuts not working:**
 - Check no extension is capturing `Ctrl+Space`
@@ -615,7 +636,7 @@ Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages; "Tog
 - [Zen Browser](https://zen-browser.app/) **1.21.7b or newer** (tested on 1.22.3b)
 - A script loader: [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) (installed by the installer script and the macOS app) or [Sine](https://github.com/CosmoCreeper/Sine)
 - macOS, Linux, or Windows
-- Installer script: bash 3.2 or newer, `curl` (or `wget`) and `unzip`; Windows installer: PowerShell 5.1 or newer
+- Installer script: bash 3.2 or newer, `curl`, and `unzip` (or `python3`); from a clone, `wget` can replace `curl`. Windows installer: PowerShell 5.1 or newer
 
 ## License
 
