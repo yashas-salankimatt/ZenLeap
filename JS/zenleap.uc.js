@@ -2013,8 +2013,36 @@
       if (Object.keys(unmatched).length > 0 && retriesLeft > 0) {
         log(`${Object.keys(unmatched).length} essential mark(s) unmatched, retrying in 1s (${retriesLeft} left)`);
         setTimeout(() => restoreEssentialMarks(retriesLeft - 1), 1000);
+      } else if (Object.keys(unmatched).length > 0) {
+        dropStaleEssentialMarks(unmatched);
       }
     } catch (e) { reportError('Restoring essential tab marks failed', e); }
+  }
+
+  // Restoring gave up: no Essential has these URLs any more (removed while the
+  // browser was closed). Drop their entries, which no window can ever claim,
+  // unless the pref changed meanwhile. Essentials are the same in every window;
+  // a pending one is matched by its session URL too (REV-LCMDS-12).
+  function dropStaleEssentialMarks(unmatched) {
+    if (isPrivateWindow()) return;
+    const urls = new Set();
+    for (const tab of gBrowser.tabs) {
+      if (!tab.hasAttribute('zen-essential')) continue;
+      urls.add(tab.linkedBrowser?.currentURI?.spec);
+      try {
+        const state = JSON.parse(SessionStore.getTabState(tab));
+        const entry = state.entries?.[(state.index || state.entries.length) - 1];
+        if (entry?.url) urls.add(entry.url);
+      } catch (e) { /* not tracked */ }
+    }
+    const saved = readEssentialMarksPref();
+    const stale = Object.keys(unmatched).filter(char => saved[char] === unmatched[char] && !urls.has(unmatched[char]) && !marks.has(char));
+    if (!stale.length) return;
+    for (const char of stale) delete saved[char];
+    try {
+      Services.prefs.setStringPref(ESSENTIAL_MARKS_PREF, JSON.stringify(saved));
+      log(`Dropped essential mark(s) ${stale.join(', ')}: their Essentials no longer exist`);
+    } catch (e) { reportError('Saving essential tab marks failed', e); }
   }
 
   // Go to a marked tab
