@@ -24,6 +24,13 @@
   // SETTINGS SYSTEM
   // ============================================
 
+  const IS_MACOS = Services.appinfo.OS === 'Darwin';
+
+  // Private windows must never persist URLs (sessions, marks, plugin data).
+  function isPrivateWindow() {
+    try { return PrivateBrowsingUtils.isWindowPrivate(window); } catch (e) { return false; }
+  }
+
   const SETTINGS_SCHEMA = {
     // --- Keybindings: Global Triggers (combo type — key + modifiers) ---
     'keys.global.leapMode':        { default: { key: ' ', ctrl: true, shift: false, alt: false, meta: false }, type: 'combo', label: 'Leap Mode Toggle', description: 'Toggle leap mode on/off', category: 'Keybindings', group: 'Global Triggers' },
@@ -35,7 +42,9 @@
     'keys.global.splitFocusUp':    { default: { key: 'k', code: 'KeyK', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Up',    description: 'Focus split pane above, or switch to previous tab up',    category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Right', description: 'Focus split pane right, or switch to next workspace',     category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitResize':     { default: { key: ' ', code: 'Space', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Resize (gTile)', description: 'Open gTile-like grid overlay to resize/move tabs in split view (Alt+Space)', category: 'Keybindings', group: 'Global Triggers' },
-    'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
+    // Shadows the native "reopen closed tab" shortcut (Cmd+Shift+T on macOS, Ctrl+Shift+T elsewhere);
+    // falls through to it when there is no recent folder deletion to undo.
+    'keys.global.undoFolderDelete': { default: { key: 't', code: 'KeyT', ctrl: !IS_MACOS, shift: true, alt: false, meta: IS_MACOS }, type: 'combo', label: 'Undo Folder Delete', description: `Undo the last folder deletion (${IS_MACOS ? 'Cmd' : 'Ctrl'}+Shift+T)`, category: 'Keybindings', group: 'Global Triggers' },
 
     // --- Keybindings: Leap Mode ---
     'keys.leap.browseDown':     { default: 'j', type: 'key', label: 'Browse Down', description: 'Enter browse mode downward', category: 'Keybindings', group: 'Leap Mode' },
@@ -1005,57 +1014,183 @@
   // Current settings (defaults + saved overrides)
   const S = {};
 
-  function loadSettings() {
-    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
-    }
-    try {
-      if (Services?.prefs?.getPrefType('uc.zenleap.settings') === Services.prefs.PREF_STRING) {
-        try {
-          const saved = JSON.parse(Services.prefs.getStringPref('uc.zenleap.settings'));
-          for (const [id, value] of Object.entries(saved)) {
-            if (SETTINGS_SCHEMA[id]) S[id] = value;
-          }
-        } catch (parseErr) { /* corrupt JSON in saved settings, using defaults */ }
-      }
-      // Migrate legacy prefs
-      if (Services?.prefs?.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
-        S['advanced.debug'] = Services.prefs.getBoolPref('uc.zenleap.debug');
-      }
-      if (Services?.prefs?.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
-        const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
-        if (ind) S['display.currentTabIndicator'] = ind;
-      }
-      // Migrate showRelativeNumbers from boolean to select string
-      if (typeof S['display.showRelativeNumbers'] === 'boolean') {
-        S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
-        saveSettings();
-      }
-      // Clear dismissed version when installed version changes (e.g. fresh install)
-      if (S['updates.lastInstalledVersion'] !== VERSION) {
-        S['updates.dismissedVersion'] = '';
-        S['updates.lastInstalledVersion'] = VERSION;
-        saveSettings();
-      }
-    } catch (e) { /* Services not available */ }
+  // The pref is the single source of truth for settings shared by every window.
+  // Writes are key-level read-merge-write (only keys this window changed), so two
+  // windows never revert each other's changes; the other windows pick changes up
+  // through a pref observer. NOTE: loadSettings() runs before CONFIG/log() exist,
+  // so nothing on the load path may call log() or saveSettings().
+  const SETTINGS_PREF = 'uc.zenleap.settings';
+  const _settingsSynced = {};     // id -> JSON of the value last read from / written to the pref
+  let _settingsSelfWrite = false;
+  let _settingsCorruptBackedUp = false;
+
+  function cloneSettingValue(value) {
+    return (value && typeof value === 'object') ? JSON.parse(JSON.stringify(value)) : value;
   }
 
-  function saveSettings() {
-    const overrides = {};
-    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      if (JSON.stringify(S[id]) !== JSON.stringify(schema.default)) {
-        overrides[id] = S[id];
+  // Parse the settings pref. Returns {} when unset; on corrupt JSON keeps a copy of the
+  // raw string in a sibling pref (once per session) instead of silently discarding it.
+  function readSettingsOverrides() {
+    let raw = '';
+    try {
+      if (Services.prefs.getPrefType(SETTINGS_PREF) !== Services.prefs.PREF_STRING) return {};
+      raw = Services.prefs.getStringPref(SETTINGS_PREF, '');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+      throw new Error('settings pref is not a JSON object');
+    } catch (e) {
+      if (!_settingsCorruptBackedUp && raw) {
+        _settingsCorruptBackedUp = true;
+        const backup = `${SETTINGS_PREF}.corrupt-${Date.now()}`;
+        try { Services.prefs.setStringPref(backup, raw); } catch (_) {}
+        console.warn(`[ZenLeap] Saved settings are corrupt; using defaults. The original value was copied to about:config "${backup}".`, e);
       }
+      return {};
     }
-    try { Services.prefs.setStringPref('uc.zenleap.settings', JSON.stringify(overrides)); } catch (e) {}
+  }
+
+  // Resolve one setting from saved overrides: migrate old formats, validate against
+  // the schema, fall back to the default per key.
+  function resolveSettingValue(id, schema, overrides, invalidIds) {
+    if (Object.prototype.hasOwnProperty.call(overrides, id)) {
+      let value = overrides[id];
+      // Migrate showRelativeNumbers from boolean to select string (pre-3.x format)
+      if (id === 'display.showRelativeNumbers' && typeof value === 'boolean') value = value ? 'always' : 'off';
+      if (isValidSettingValue(value, schema)) return cloneSettingValue(value);
+      console.warn(`[ZenLeap] Ignoring invalid saved value for setting "${id}":`, overrides[id]);
+      invalidIds?.push(id);
+    }
+    return cloneSettingValue(schema.default);
+  }
+
+  // Persist the given keys from S (read-merge-write; keys equal to their default are removed).
+  function writeSettingsKeys(ids) {
+    if (!ids.length) return;
+    const overrides = readSettingsOverrides();
+    for (const id of ids) {
+      const schema = SETTINGS_SCHEMA[id];
+      if (!schema) continue;
+      const json = JSON.stringify(S[id]);
+      if (json === JSON.stringify(schema.default)) delete overrides[id];
+      else overrides[id] = cloneSettingValue(S[id]);
+      _settingsSynced[id] = json;
+    }
+    _settingsSelfWrite = true;
+    try { Services.prefs.setStringPref(SETTINGS_PREF, JSON.stringify(overrides)); }
+    catch (e) { reportError('Saving settings failed', e); }
+    finally { _settingsSelfWrite = false; }
+  }
+
+  // Legacy prefs (pre-settings-modal, also exposed by old Sine preferences.json):
+  // migrate once into the settings pref, then clear them so they stop overriding it.
+  // A legacy pref holding its default value carries no user intent and is just cleared.
+  function migrateLegacyPrefs() {
+    const changed = [];
+    try {
+      if (Services.prefs.getPrefType('uc.zenleap.debug') === Services.prefs.PREF_BOOL) {
+        if (Services.prefs.getBoolPref('uc.zenleap.debug')) { S['advanced.debug'] = true; changed.push('advanced.debug'); }
+        Services.prefs.clearUserPref('uc.zenleap.debug');
+      }
+      if (Services.prefs.getPrefType('uc.zenleap.current_indicator') === Services.prefs.PREF_STRING) {
+        const ind = Services.prefs.getStringPref('uc.zenleap.current_indicator');
+        const schema = SETTINGS_SCHEMA['display.currentTabIndicator'];
+        if (ind && ind !== schema.default && isValidSettingValue(ind, schema)) {
+          S['display.currentTabIndicator'] = ind;
+          changed.push('display.currentTabIndicator');
+        }
+        Services.prefs.clearUserPref('uc.zenleap.current_indicator');
+      }
+    } catch (e) { console.warn('[ZenLeap] Legacy pref migration failed:', e); }
+    return changed;
+  }
+
+  function loadSettings() {
+    const overrides = readSettingsOverrides();
+    const invalidIds = [];
+    const toWrite = [];
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      S[id] = resolveSettingValue(id, schema, overrides, invalidIds);
+      _settingsSynced[id] = JSON.stringify(Object.prototype.hasOwnProperty.call(overrides, id) && !invalidIds.includes(id) ? overrides[id] : schema.default);
+      // Rewrite migrated values (e.g. boolean showRelativeNumbers) in their current format
+      if (JSON.stringify(S[id]) !== _settingsSynced[id]) toWrite.push(id);
+    }
+    toWrite.push(...invalidIds, ...migrateLegacyPrefs());
+    // Clear dismissed version when installed version changes (e.g. fresh install)
+    if (S['updates.lastInstalledVersion'] !== VERSION) {
+      S['updates.dismissedVersion'] = '';
+      S['updates.lastInstalledVersion'] = VERSION;
+      toWrite.push('updates.dismissedVersion', 'updates.lastInstalledVersion');
+    }
+    try { writeSettingsKeys([...new Set(toWrite)]); } catch (e) { console.warn('[ZenLeap] Could not persist migrated settings:', e); }
+  }
+
+  // Persist every setting this window changed since it last synced with the pref.
+  // Callers keep the "mutate S, then saveSettings()" pattern; only changed keys are written.
+  function saveSettings() {
+    const changed = [];
+    for (const id of Object.keys(SETTINGS_SCHEMA)) {
+      // The theme picker's live preview mutates S['appearance.theme'] transiently; never persist it
+      if (id === 'appearance.theme' && _themePreviewOriginal !== null) continue;
+      if (JSON.stringify(S[id]) !== _settingsSynced[id]) changed.push(id);
+    }
+    writeSettingsKeys(changed);
+  }
+
+  // Another window (or about:config) changed the settings pref: adopt the changed keys.
+  function reloadSettingsFromPref() {
+    const overrides = readSettingsOverrides();
+    const changed = [];
+    for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
+      const value = resolveSettingValue(id, schema, overrides);
+      const json = JSON.stringify(value);
+      if (json === _settingsSynced[id]) continue;
+      _settingsSynced[id] = json;
+      if (id === 'appearance.theme' && _themePreviewOriginal !== null) {
+        _themePreviewOriginal = value; // keep previewing; Escape restores the new value
+        continue;
+      }
+      S[id] = value;
+      changed.push(id);
+    }
+    if (changed.length === 0) return;
+    log(`Settings changed in another window: ${changed.join(', ')}`);
+    try {
+      if (changed.some(id => id.startsWith('appearance.'))) applyTheme();
+      if (changed.some(id => id.startsWith('display.') || id.startsWith('keys.'))) updateRelativeNumbers();
+      if (changed.includes('display.browsePreview') && !S['display.browsePreview']) hidePreviewPanel(true);
+      if (changed.includes('display.searchAllWorkspaces')) {
+        const wsBtn = document.getElementById('zenleap-search-ws-toggle');
+        if (wsBtn) {
+          wsBtn.textContent = S['display.searchAllWorkspaces'] ? 'All' : 'WS';
+          wsBtn.classList.toggle('active', S['display.searchAllWorkspaces']);
+        }
+      }
+      if (settingsMode && !settingsRecordingId) renderSettingsContent();
+    } catch (e) { reportError('Applying settings changed in another window failed', e); }
+  }
+
+  const _settingsPrefObserver = {
+    observe() {
+      if (_settingsSelfWrite) return;
+      reloadSettingsFromPref();
+    },
+  };
+
+  // Follow settings changes made by other windows (registered at script load, removed on unload).
+  function watchSettingsPref() {
+    Services.prefs.addObserver(SETTINGS_PREF, _settingsPrefObserver);
+    window.addEventListener('unload', () => {
+      Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver);
+    }, { once: true });
   }
 
   function resetSetting(id) {
     const schema = SETTINGS_SCHEMA[id];
     if (!schema) return;
-    S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+    S[id] = cloneSettingValue(schema.default);
     saveSettings();
-    if (id === 'appearance.theme') applyTheme();
+    if (id === 'appearance.theme' || id === 'appearance.applyToBrowser') applyTheme();
     if (id === 'display.showRelativeNumbers') updateRelativeNumbers();
     if (id === 'display.persistEssentialMarks') {
       if (S[id]) saveEssentialMarks();
@@ -1065,7 +1200,7 @@
 
   function resetAllSettings() {
     for (const [id, schema] of Object.entries(SETTINGS_SCHEMA)) {
-      S[id] = typeof schema.default === 'object' ? JSON.parse(JSON.stringify(schema.default)) : schema.default;
+      S[id] = cloneSettingValue(schema.default);
     }
     saveSettings();
     applyTheme();
@@ -1112,7 +1247,7 @@
         await IOUtils.write(filePath, new TextEncoder().encode(json));
         showSettingsToast('success', 'Settings exported to Downloads');
       } catch (e) {
-        log(`Export failed: ${e}`);
+        reportError('Exporting settings failed', e);
         showSettingsToast('error', 'Export failed');
       }
     })();
@@ -1138,7 +1273,7 @@
             const text = new TextDecoder().decode(bytes);
             processImportedJSON(text);
           } catch (e) {
-            log(`Import read failed: ${e}`);
+            reportError('Reading the settings file failed', e);
             showSettingsToast('error', 'Failed to read file');
           }
         }
@@ -1172,13 +1307,18 @@
     switch (schema.type) {
       case 'toggle': return typeof value === 'boolean';
       case 'number':
-        if (typeof value !== 'number' || isNaN(value)) return false;
+        if (typeof value !== 'number' || !Number.isFinite(value)) return false;
         if (schema.min !== undefined && value < schema.min) return false;
         if (schema.max !== undefined && value > schema.max) return false;
         return true;
-      case 'text': case 'color': case 'key': return typeof value === 'string';
+      case 'text': case 'color': return typeof value === 'string';
+      case 'key': return typeof value === 'string' && value.length > 0;
       case 'select': return typeof value === 'string' && (!schema.options || schema.options.some(o => o.value === value));
-      case 'combo': return typeof value === 'object' && value !== null && typeof value.key === 'string';
+      case 'combo':
+        return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+          typeof value.key === 'string' && value.key.length > 0 &&
+          (value.code === undefined || typeof value.code === 'string') &&
+          ['ctrl', 'shift', 'alt', 'meta'].every(m => value[m] === undefined || typeof value[m] === 'boolean');
       default: return true;
     }
   }
@@ -1205,9 +1345,11 @@
     // Build diff of changes (only valid values)
     const changes = [];
     const validIncoming = {};
-    for (const [id, newVal] of Object.entries(incoming)) {
+    for (let [id, newVal] of Object.entries(incoming)) {
       const schema = SETTINGS_SCHEMA[id];
       if (!schema || schema.hidden) continue;
+      // Old exports stored showRelativeNumbers as a boolean
+      if (id === 'display.showRelativeNumbers' && typeof newVal === 'boolean') newVal = newVal ? 'always' : 'off';
       if (!isValidSettingValue(newVal, schema)) continue;
       validIncoming[id] = newVal;
       if (JSON.stringify(S[id]) !== JSON.stringify(newVal)) {
@@ -1227,14 +1369,10 @@
     for (const [id, value] of Object.entries(incoming)) {
       const schema = SETTINGS_SCHEMA[id];
       if (!schema || schema.hidden) continue;
-      S[id] = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
-    }
-    // Migrate boolean showRelativeNumbers from old exports
-    if (typeof S['display.showRelativeNumbers'] === 'boolean') {
-      S['display.showRelativeNumbers'] = S['display.showRelativeNumbers'] ? 'always' : 'off';
+      S[id] = cloneSettingValue(value);
     }
     saveSettings();
-    applyThemeColors();
+    applyTheme();
     updateRelativeNumbers();
     if (S['display.persistEssentialMarks']) saveEssentialMarks();
     else try { Services.prefs.clearUserPref('uc.zenleap.essentialMarks'); } catch(e) {}
@@ -1471,10 +1609,11 @@
 
   function formatSingleKey(key) {
     const map = { ' ': 'Space', 'arrowdown': '↓', 'arrowup': '↑', 'arrowleft': '←', 'arrowright': '→', 'enter': 'Enter', 'escape': 'Esc', 'tab': 'Tab', 'backspace': '⌫', "'": "'", '`': '`' };
-    return map[key] || (key?.length === 1 ? key : key);
+    return map[key] || key;
   }
 
   loadSettings();
+  watchSettingsPref();
 
   // Legacy CONFIG compat — thin wrapper around S for any remaining references
   const CONFIG = {
