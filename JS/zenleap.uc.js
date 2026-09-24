@@ -3868,7 +3868,8 @@
   }
 
   // ── Confirm Dialog ── (Enter = confirm, Escape = cancel)
-  function _pluginShowConfirm(title, message) {
+  // defaultCancel: Enter means Cancel unless Confirm has focus (Tab moves there)
+  function _pluginShowConfirm(title, message, { defaultCancel = false } = {}) {
     return new Promise((resolve) => {
       const { modal, backdrop, card } = buildPluginDialog({ title });
       const p = document.createElement('p');
@@ -3890,9 +3891,10 @@
       document.documentElement.appendChild(modal);
       popDialog = pushDialog(modal, (e) => {
         if (e.key === 'Escape') { close(false); return true; }
-        if (e.key === 'Enter') { close(document.activeElement !== cancel); return true; }
+        if (e.key === 'Enter') { close(defaultCancel ? document.activeElement === confirm : document.activeElement !== cancel); return true; }
         return false;
       });
+      if (defaultCancel) cancel.focus();
     });
   }
 
@@ -4459,7 +4461,8 @@
   }
 
   async function confirmAndUninstallPlugin(plugin) {
-    const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`);
+    // Deletes files and data: Enter cancels (REV-LCMDS-09)
+    const confirmed = await _pluginShowConfirm('Uninstall Plugin', `Uninstall "${plugin.name}"? This will remove all plugin files and data.`, { defaultCancel: true });
     if (!confirmed) return;
     await uninstallExternalPlugin(plugin.id);
     _pluginManagerView = 'list';
@@ -5976,8 +5979,15 @@
     }
 
     dedupTabsToClose = tabsToClose;
+    if (tabsToClose.length === 0) return [];
 
-    return tabsToClose.map(tab => ({
+    // Cancel first and preselected; the duplicates below are the preview (REV-LCMDS-09)
+    const n = tabsToClose.length;
+    const actions = [
+      { key: 'dedup:cancel', label: 'Cancel', icon: '↩', sublabel: 'Close nothing', tags: [] },
+      { key: 'dedup:close', label: `Close ${n} duplicate tab${n !== 1 ? 's' : ''}`, icon: '🧹', sublabel: 'The most recently used copy of each page stays open', tags: [] },
+    ];
+    return actions.concat(tabsToClose.map(tab => ({
       key: `dedup-tab:${tab.index}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
@@ -5987,7 +5997,7 @@
       titleIndices: [],
       urlIndices: [],
       workspaceName: getTabWorkspaceName(tab),
-    }));
+    })));
   }
 
   // ── Selection helpers shared by several flows ──
@@ -6069,12 +6079,13 @@
       },
     },
     'dedup-preview': {
-      placeholder: 'Duplicates to close — Enter to confirm',
+      placeholder: 'Duplicates to close — choose with ↓ and Enter',
       readOnly: true,
       onExit: () => { hidePreviewPanel(true); dedupTabsToClose = []; },
       results: () => getDedupPreviewResults(),
-      select: () => {
-        // The preview list is the confirmation; close them as one batch
+      select: (r) => {
+        if (r?.key === 'dedup:cancel') { exitSubFlow(); return; }
+        // "Close N" (or a previewed duplicate): close them as one batch
         const count = TabOps.close(dedupTabsToClose);
         if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
         dedupTabsToClose = [];
@@ -6377,7 +6388,7 @@
       select: (r, data) => { if (data?.session) enterSubFlow('restore-session-mode', 'Restore Mode', { session: data.session }); },
     },
     'delete-session-confirm': {
-      placeholder: 'Press Enter to confirm deletion...',
+      placeholder: 'Delete session? Choose with ↓ and Enter',
       readOnly: true,
       results: () => getDeleteSessionConfirmResults(),
       select: (r, data) => {
@@ -7948,11 +7959,12 @@
     return 0;
   }
 
+  // Cancel first and preselected, like every destructive confirmation (REV-LCMDS-09)
   function getDeleteSessionConfirmResults() {
     const sessionId = commandSubFlow?.data?.sessionId;
     return [
-      { key: 'delete-session:confirm', label: 'Delete this session permanently? Press Enter.', icon: '🗑', sublabel: sessionId || '', tags: [] },
-      { key: 'delete-session:cancel', label: 'Press Esc to cancel', icon: '↩', tags: [] },
+      { key: 'delete-session:cancel', label: 'Cancel', icon: '↩', sublabel: 'Keep this session', tags: [] },
+      { key: 'delete-session:confirm', label: 'Delete this session permanently', icon: '🗑', sublabel: sessionId || '', tags: [] },
     ];
   }
 
@@ -10985,7 +10997,7 @@
       if (count === 0) {
         html += `<div class="zenleap-command-count">No duplicate tabs found</div>`;
       } else {
-        html += `<div class="zenleap-command-count">${count} duplicate${count !== 1 ? 's' : ''} will be closed — press Enter to confirm</div>`;
+        html += `<div class="zenleap-command-count">${count} duplicate${count !== 1 ? 's' : ''} found — choose "Close" to close them</div>`;
       }
     }
 
