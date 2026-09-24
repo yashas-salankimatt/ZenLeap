@@ -289,7 +289,7 @@ zp__parse_root() {
 #       ZP_DEFAULT (index of the profile Zen opens by default, -1 if unknown).
 # Returns 1 and sets ZP_ERROR when nothing is found.
 zp_discover() {
-    local mode="${1:-native}" app_dir="${2:-}" root d base found=()
+    local mode="${1:-native}" app_dir="${2:-}" root d base scan_hits=()
     zp_reset
     zp_candidate_roots "$mode"
     for root in "${ZP_ROOT_CANDIDATES[@]}"; do
@@ -305,17 +305,17 @@ zp_discover() {
             if [ ! -d "$root" ]; then continue; fi
             base=$root
             if [ "$(uname -s)" = "Darwin" ]; then base="$root/Profiles"; fi
-            found=()
+            scan_hits=()
             for d in "$base"/*/; do
                 d=${d%/}
-                if [ -f "$d/prefs.js" ] || [ -f "$d/times.json" ]; then found+=("$d"); fi
+                if [ -f "$d/prefs.js" ] || [ -f "$d/times.json" ]; then scan_hits+=("$d"); fi
             done
-            if [ ${#found[@]} -gt 0 ]; then
-                for d in "${found[@]}"; do
+            if [ ${#scan_hits[@]} -gt 0 ]; then
+                for d in "${scan_hits[@]}"; do
                     zp__add_profile "$d" "${d##*/}" "$ZP_CACHE_ROOT/${d#"$root"/}" "$root"
                 done
                 ZP_ROOT=$root
-                ZP_DEFAULT=$(zp__newest "${found[@]}")
+                ZP_DEFAULT=$(zp__newest "${scan_hits[@]}")
                 break
             fi
         done
