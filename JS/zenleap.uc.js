@@ -9009,7 +9009,7 @@
   // state) is recreated at its old position. Firefox's closed-group entry for it is
   // dropped: restoring that would bring back a plain tab group, not a Zen folder.
   async function restoreDeletedFolder(entry) {
-    if (!window.gZenFolders || !entry.tree) return;
+    if (!window.gZenFolders) return;
     if (entry.workspaceId && workspacesEnabled() && entry.workspaceId !== gZenWorkspaces.activeWorkspace &&
         gZenWorkspaces.getWorkspaces().some(w => w.uuid === entry.workspaceId)) {
       await gZenWorkspaces.changeWorkspaceWithID(entry.workspaceId);
@@ -9044,6 +9044,9 @@
     folderUndoStack.pop();
 
     if (entry.type === 'folder-and-contents') {
+      // Entries without a snapshot (pushed by code that deleted the folder itself):
+      // let the native shortcut reopen the closed tab group.
+      if (!entry.tree) return false;
       restoreDeletedFolder(entry).catch(e => reportError('Undo folder delete failed', e));
       return true;
     }
