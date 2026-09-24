@@ -12867,6 +12867,7 @@
         transition: border-color 0.15s;
       }
       .zenleap-color-hex:focus { border-color: var(--zl-accent); }
+      .zenleap-color-hex.invalid { border-color: var(--zl-error); }
       .zenleap-select {
         background: var(--zl-bg-raised); border: 1px solid var(--zl-border-strong);
         color: var(--zl-text-primary); padding: 5px 28px 5px 10px; border-radius: var(--zl-r-sm); font-size: 13px;
@@ -14440,11 +14441,17 @@
         clearBtn.style.visibility = 'visible';
         applyThemeEditorPreview();
       });
+      // Any CSS color is fine (#abc, red, rgb(), hsl(), ...), as in the themes file;
+      // the swatch shows it as #rrggbb. Anything else is marked instead of dropped silently.
       hexInput.addEventListener('change', () => {
         const val = hexInput.value.trim();
-        if (/^#[0-9a-fA-F]{6}$/i.test(val)) {
+        let valid = false;
+        try { valid = !!val && InspectorUtils.isValidCSSColor(val); } catch (e) { valid = false; }
+        hexInput.classList.toggle('invalid', !!val && !valid);
+        hexInput.title = val && !valid ? 'Not a CSS color' : '';
+        if (valid) {
           themeEditorDraft[prop] = val;
-          colorInput.value = val;
+          colorInput.value = toHex6(val, colorInput.value);
           row.classList.add('overridden');
           clearBtn.style.visibility = 'visible';
           applyThemeEditorPreview();
@@ -14542,7 +14549,12 @@
   async function saveThemeFromEditor() {
     if (!themeEditorName.trim()) {
       const nameInput = settingsModal?.querySelector('.zenleap-theme-editor-name');
-      if (nameInput) { nameInput.style.borderColor = 'var(--zl-error)'; nameInput.placeholder = 'Name required'; setTimeout(() => { nameInput.style.borderColor = ''; nameInput.placeholder = 'Theme name'; }, 2000); }
+      if (nameInput) {
+        const placeholder = nameInput.placeholder;
+        nameInput.style.borderColor = 'var(--zl-error)';
+        nameInput.placeholder = 'Name required';
+        setTimeout(() => { nameInput.style.borderColor = ''; nameInput.placeholder = placeholder; }, 2000);
+      }
       return;
     }
 
