@@ -18553,14 +18553,42 @@
   // (e.g. the Space keyup after Ctrl+Space, or j/k keyups in browse mode).
   // Keyups of keys the page did receive must pass, or web apps see stuck keys.
   const _consumedKeyCodes = new Set();
+  // Modifiers held down (code -> element focused when they went down), and
+  // those held through a chord ZenLeap consumed. When that chord moved focus
+  // (Alt+J lands on another tab or split pane), the modifier's keyup would
+  // reach a page that never saw its keydown (REV-LCORE-03).
+  const _heldModifiers = new Map();
+  const _chordModifiers = new Map();
+  const MODIFIER_CODE_RE = /^(?:Alt|Control|Shift|Meta|OS)(?:Left|Right)$/;
+
+  function clearKeyTracking() {
+    _consumedKeyCodes.clear();
+    _heldModifiers.clear();
+    _chordModifiers.clear();
+  }
+
+  // Where a key event is delivered: the focused element. (A keyup that races a
+  // tab switch keeps the old <browser> as event.target in chrome, but Firefox
+  // forwards it to the newly focused page.)
+  function keyFocusTarget(event) {
+    return document.commandDispatcher?.focusedElement || event.target;
+  }
+
+  // Web content: a remote <browser>, or an element of an in-process page.
+  function isContentKeyTarget(target) {
+    return target?.localName === 'browser' || (!!target?.ownerDocument && target.ownerDocument !== document);
+  }
 
   function handleKeyUp(event) {
     const code = event.code || event.key;
     const consumed = _consumedKeyCodes.delete(code);
-    if (consumed || (urlbarVimActive && urlbarVimMode === 'normal' && gURLBar?.focused)) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    const chordTarget = _chordModifiers.get(code);
+    _chordModifiers.delete(code);
+    _heldModifiers.delete(code);
+    const target = chordTarget === undefined ? null : keyFocusTarget(event);
+    const orphan = !!target && target !== chordTarget && isContentKeyTarget(target);
+    if (consumed || orphan || (urlbarVimActive && urlbarVimMode === 'normal' && gURLBar?.focused)) {
+      consumeEvent(event);
     }
   }
 
@@ -18570,16 +18598,26 @@
     const code = event.code || event.key;
     const wasPrevented = event.defaultPrevented;
     handleKeyDown(event);
-    if (!wasPrevented && event.defaultPrevented) _consumedKeyCodes.add(code);
-    else _consumedKeyCodes.delete(code);
+    if (!wasPrevented && event.defaultPrevented) {
+      _consumedKeyCodes.add(code);
+      for (const [mod, target] of _heldModifiers) _chordModifiers.set(mod, target);
+    } else {
+      _consumedKeyCodes.delete(code);
+      if (MODIFIER_CODE_RE.test(code) && !event.repeat) {
+        _heldModifiers.set(code, keyFocusTarget(event));
+        _chordModifiers.delete(code);
+      }
+    }
   }
 
   // Set up keyboard listener
   function setupKeyboardListener() {
     listen(window, 'keydown', onWindowKeyDown, true);
     listen(window, 'keyup', handleKeyUp, true);
-    // A window losing focus never delivers the pending keyups.
-    listen(window, 'blur', () => _consumedKeyCodes.clear());
+    // A deactivated window never gets the pending keyups. (Not 'blur': moving
+    // focus between chrome and a page, as a tab switch does, blurs the window
+    // too, between Alt+J's keydown and its keyup.)
+    listen(window, 'deactivate', clearKeyTracking);
 
     // Close gTile overlay if split view is deactivated externally
     listen(window, 'ZenViewSplitter:SplitViewDeactivated', () => {
