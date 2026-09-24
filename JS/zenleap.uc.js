@@ -19446,11 +19446,9 @@
     '--toolbar-color',
   ];
 
-  // Apply or revert Zen Browser chrome theme colors.
-  // New Zen (1.19+) sets --zen-main-browser-background on #zen-browser-background
-  // and --zen-main-browser-background-toolbar on #zen-toolbar-background instead
-  // of on :root. We target both for backwards compatibility with older Zen.
-  // Element-level properties that we manage on the dedicated background elements.
+  // Zen sets the space gradient on #zen-browser-background / #zen-toolbar-background
+  // (--zen-main-browser-background[-toolbar], their -old copies and the cross-fade
+  // opacity), not on :root. These are the element-level properties ZenLeap overrides.
   const _zenBgElProps = [
     '--zen-main-browser-background',
     '--zen-main-browser-background-old',
@@ -19473,15 +19471,18 @@
       || document.getElementById('zen-toolbar-background');
   }
 
-  // Remove ZenLeap's browser-chrome overrides so Zen's own theme takes over.
+  // True while ZenLeap's colors are on Zen's variables (Apply Theme to Browser).
+  let _browserThemeApplied = false;
+
+  // Remove ZenLeap's browser-chrome overrides so Zen's own theme takes over. The
+  // variables are Zen's own (space gradient, accent): they are only touched when
+  // ZenLeap did set them, and Zen then repaints the space's colors itself.
   function revertBrowserTheme() {
-    const root = document.documentElement;
     document.getElementById('zenleap-browser-theme')?.remove();
+    if (!_browserThemeApplied) return;
+    _browserThemeApplied = false;
+    const root = document.documentElement;
     for (const prop of _zenBrowserProps) root.style.removeProperty(prop);
-    // Clean up -old and opacity from :root too (defensive, for legacy Zen)
-    root.style.removeProperty('--zen-main-browser-background-old');
-    root.style.removeProperty('--zen-main-browser-background-toolbar-old');
-    root.style.removeProperty('--zen-background-opacity');
     const zenBgEl = _getZenBgEl();
     const zenToolbarBgEl = _getZenToolbarBgEl();
     if (zenBgEl) {
@@ -19490,6 +19491,10 @@
     if (zenToolbarBgEl) {
       for (const prop of _zenToolbarBgElProps) zenToolbarBgEl.style.removeProperty(prop);
     }
+    try {
+      const space = window.gZenWorkspaces?.getActiveWorkspaceFromCache?.();
+      if (space && typeof window.gZenThemePicker?.onWorkspaceChange === 'function') gZenThemePicker.onWorkspaceChange(space);
+    } catch (e) { reportError("Restoring Zen's space colors failed", e); }
   }
 
   // applyBrowserTheme accepts an options object:
@@ -19497,8 +19502,8 @@
   //   duringAnimation: true when called from the workspace-change wrapper, so we
   //     avoid clobbering --zen-background-opacity and -old variants mid-transition.
   function applyBrowserTheme(opts) {
-    // Support legacy call signature: applyBrowserTheme(themeObj)
-    // Discriminate by checking for 'duringAnimation' key (never present on theme objects).
+    // Also accepts a bare theme object, as applyTheme() passes it: tell the two apart by
+    // the 'duringAnimation' key (never present on theme objects).
     let t, duringAnimation = false;
     if (opts && typeof opts === 'object' && 'duringAnimation' in opts) {
       t = opts.t;
@@ -19537,8 +19542,8 @@
     const bgGradient = `linear-gradient(135deg, ${bgDeep} 0%, ${bgBase} 100%)`;
     const toolbarGradient = `linear-gradient(135deg, ${bgBase} 0%, ${bgDeep} 100%)`;
 
-    // Core browser chrome properties — always set on :root for properties that
-    // remain there in all Zen versions
+    _browserThemeApplied = true;
+    // Zen reads the accent from :root
     root.style.setProperty('--zen-primary-color', accent);
 
     // Background gradients: Zen reads these from its dedicated background
