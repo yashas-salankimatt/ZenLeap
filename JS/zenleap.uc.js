@@ -14706,6 +14706,8 @@
     leapMode = false;
     browseMode = false;
     disarmModeGuards('leap');
+    // Plugins see leap mode end here and start again if the user comes back (Escape)
+    _pluginEventBus.emit('leapMode:exit', {});
 
     // Open the full command bar (browse commands injected via getDynamicCommands)
     enterSearchMode(true);
@@ -14724,6 +14726,8 @@
     disarmModeGuards('search');
     _overlayFocus = null;
     if (searchModal) searchModal.classList.remove('active');
+    cancelPendingJJ();
+    clearTimeout(_searchInputDebounceTimer);
 
     // Reset vim mode for next search open
     searchVimMode = 'insert';
@@ -14778,6 +14782,8 @@
     armLeapGuards();
     updateHighlight();
     updateLeapOverlayState();
+    _pluginEventBus.emit('searchMode:exit', {});
+    _pluginEventBus.emit('leapMode:enter', {});
     log('Returned to browse mode from command bar');
   }
 
