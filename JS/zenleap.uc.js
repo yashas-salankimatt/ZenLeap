@@ -2522,9 +2522,7 @@
     searchModal.appendChild(container);
 
     // Inject styles
-    const style = document.createElement('style');
-    style.id = 'zenleap-search-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-search-styles', `
       #zenleap-search-modal {
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
         z-index: 100000; display: none; justify-content: center;
@@ -2828,9 +2826,8 @@
       .zenleap-command-result.zenleap-session-header .zenleap-command-sublabel {
         color: var(--zl-text-muted);
       }
-    `;
+    `);
 
-    document.head.appendChild(style);
     document.documentElement.appendChild(searchModal);
 
     // Add input event listener
@@ -3831,10 +3828,7 @@
 
   // ── Plugin dialog styles (themed; injected once) ──
   function ensurePluginUiStyles() {
-    if (document.getElementById('zenleap-plugin-ui-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'zenleap-plugin-ui-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-plugin-ui-styles', `
       @keyframes zenleap-pm-appear {
         from { opacity: 0; transform: scale(0.97) translateY(-6px); }
         to { opacity: 1; transform: scale(1) translateY(0); }
@@ -3885,8 +3879,7 @@
       .zenleap-plugin-btn.primary { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); color: var(--zl-accent-bright); font-weight: 600; }
       .zenleap-plugin-btn.icon { background: none; border: none; color: var(--zl-text-muted); font-size: 16px; padding: 4px 8px; }
       .zenleap-plugin-btn.icon:hover { color: var(--zl-text-primary); background: var(--zl-bg-hover); }
-    `;
-    document.head.appendChild(style);
+    `);
   }
 
   function buildPluginDialog({ title, wide = false }) {
@@ -4417,9 +4410,7 @@
     modal.appendChild(backdrop);
     modal.appendChild(container);
 
-    const style = document.createElement('style');
-    style.id = 'zenleap-plugin-manager-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-plugin-manager-styles', `
       #zenleap-plugin-manager-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 100003; display: none; justify-content: center; align-items: center; padding: 20px; box-sizing: border-box; }
       #zenleap-plugin-manager-modal.active { display: flex; }
       #zenleap-plugin-manager-backdrop { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--zl-backdrop); backdrop-filter: var(--zl-blur); }
@@ -4488,8 +4479,7 @@
       .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider { background: var(--zl-accent-mid); border-color: var(--zl-accent-border); }
       .zenleap-pm-switch input:checked + .zenleap-pm-switch-slider::before { transform: translateX(16px); background: var(--zl-accent); }
       .zenleap-pm-path-info { font-size: 11px; color: var(--zl-text-tertiary); font-family: var(--zl-font-mono); word-break: break-all; background: var(--zl-bg-raised); padding: 8px 12px; border-radius: var(--zl-r-sm); margin-top: 8px; }
-    `;
-    document.head.appendChild(style);
+    `);
     document.documentElement.appendChild(modal);
     _pluginManagerModal = modal;
   }
@@ -4989,10 +4979,7 @@
   // Small transient message at the bottom of the window (command results, plugins).
   let _toastTimer = null;
   function showZenLeapToast(message, duration = 3000) {
-    if (!document.getElementById('zenleap-toast-styles')) {
-      const style = document.createElement('style');
-      style.id = 'zenleap-toast-styles';
-      style.textContent = `
+    injectStyleBlock('zenleap-toast-styles', `
         @keyframes zenleap-toast-rise {
           from { opacity: 0; transform: translateX(-50%) translateY(8px); }
           to { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -5004,9 +4991,7 @@
           border: 1px solid var(--zl-accent-border); box-shadow: var(--zl-shadow-elevated);
           animation: zenleap-toast-rise 0.2s ease-out; font-family: var(--zl-font-ui);
         }
-      `;
-      document.head.appendChild(style);
-    }
+      `);
     let toast = document.getElementById('zenleap-toast');
     if (!toast) {
       toast = document.createElement('div');
@@ -8354,9 +8339,7 @@
     if (updateStylesInjected) return;
     updateStylesInjected = true;
 
-    const style = document.createElement('style');
-    style.id = 'zenleap-update-styles';
-    style.textContent = `
+    injectStyleBlock('zenleap-update-styles', `
       #zenleap-update-modal {
         position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
         z-index: 100002; display: none; justify-content: center; align-items: center; padding: 20px;
@@ -8554,8 +8537,7 @@
         background: var(--zl-accent-dim); color: var(--zl-accent); border-color: var(--zl-accent-border);
       }
       .zenleap-toast-btn.primary:hover { background: var(--zl-accent-mid); }
-    `;
-    document.head.appendChild(style);
+    `);
   }
 
   // Build an element with class and children (strings become text nodes). The chrome
