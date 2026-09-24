@@ -17636,6 +17636,17 @@
     return !!viewData?.tabs && viewData.tabs.length >= 2;
   }
 
+  // Escape that closes a <select> dropdown (Firefox's #ContentSelectDropdown,
+  // used for chrome documents too) hides it before the keydown reaches the
+  // DOM, in the same task: remember that until the task ends.
+  let _selectPopupJustClosed = false;
+
+  function onPopupHiding(event) {
+    if (event.target?.id !== 'ContentSelectDropdownPopup') return;
+    _selectPopupJustClosed = true;
+    setTimeout(() => { _selectPopupJustClosed = false; }, 0);
+  }
+
   // Key events that belong to a window-/tab-modal dialog (prompt(), close-tabs
   // warning, ...) hosted in a sub-document of this window. ZenLeap must never
   // swallow Enter/Escape meant for those.
@@ -17767,7 +17778,8 @@
 
     // Handle settings mode - Escape to close, Enter to update from About tab
     if (settingsMode) {
-      if (event.key === 'Escape' && !settingsRecordingId) {
+      // Escape that just closed a <select> dropdown was the dropdown's
+      if (event.key === 'Escape' && !settingsRecordingId && !_selectPopupJustClosed) {
         event.preventDefault();
         event.stopPropagation();
         // Dismiss import confirmation first if open, otherwise close settings
@@ -18683,6 +18695,7 @@
   function setupKeyboardListener() {
     listen(window, 'keydown', onWindowKeyDown, true);
     listen(window, 'keyup', handleKeyUp, true);
+    listen(window, 'popuphiding', onPopupHiding, true);
     // A deactivated window never gets the pending keyups. (Not 'blur': moving
     // focus between chrome and a page, as a tab switch does, blurs the window
     // too, between Alt+J's keydown and its keyup.)
