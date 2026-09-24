@@ -5,6 +5,121 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and installers that find today's profile folders, safer destructive commands, and a keyboard layer that behaves next to web pages and next to ZenRipple's AI agents. The plugin API changes in ways plugin authors need to know about (see Breaking changes).
+
+### Highlights
+- **Works on Zen 1.22.3b / Firefox 156** — plugins load again (Firefox 155 blocked the old loader), split-view, folder and workspace commands follow Zen's current APIs, and the CSS works with Firefox 156
+- **Safer destructive actions** — every bulk close, workspace/folder delete, session Replace and plugin uninstall asks first with Cancel preselected; Replace saves a backup session first; Undo Folder Delete rebuilds the real Zen folder with each tab's history
+- **Verified updates and installers** — the self-updater and the one-line installers install only release tags whose `JS/zenleap.uc.js` matches the release's `CHECKSUMS.sha256`; the installers find profiles the way Zen does (including `~/.config/zen`) and never kill Zen
+- **Plugins are opt-in** — newly found plugins stay disabled until enabled in Manage Plugins, and each plugin runs in its own sandbox so disabling it removes it cleanly
+- **Multi-window and private windows** — settings changed in one window apply in all of them, plugin data is merged instead of overwritten, and nothing from a private window is written to disk
+- **Keyboard you can trust** — layout-aware keys, no swallowed macOS Option characters, modes end when you click into a page, browse mode acts on the tab you see highlighted even while other tabs open and close
+- **Plays well with ZenRipple** — bulk commands, deduplication and session saves leave AI agents' tabs alone
+
+### Breaking changes
+
+#### For plugin authors
+- **New plugins start disabled** — a plugin ZenLeap has not seen before is registered disabled and marked "New"; its `plugin.js` is not read or run until the user enables it in Manage Plugins. Plugins enabled under 3.4.0 stay enabled (see Upgrade notes)
+- **`plugin.js` runs in its own sandbox** — window globals (`gBrowser`, `document`, `Services`, timers) still resolve, but `ZenLeapPlugin` must be a property of the plugin's global: declare it with `var ZenLeapPlugin = { … }` (all four examples do). `const`, `let` or `class` declarations are not visible outside `plugin.js`, and the plugin then fails to load with an error saying so
+  - The top level of `plugin.js` runs when the plugin is enabled, once per window, and again (re-read from disk) on every re-enable
+  - Disabling a plugin nukes its sandbox: functions it left registered elsewhere become dead. Timers started with the plugin's own `setTimeout`/`setInterval` are cleared for it
+- **Exactly one destroy hook runs** — the object returned by `init()`, if it has its own `destroy()` (called without arguments), otherwise `ZenLeapPlugin.destroy(api)`; none if `init()` threw. 3.4.0 called both
+- **`api.browser.getSelectedText()` is async** — it returns a Promise of the whole selection (with line breaks). Inside a page's text field only the first 150 characters can be read; the new `api.browser.getSelection()` resolves to `{ text, truncated }` to tell
+- **Events are delivered asynchronously** — handlers run in a later task, never in the middle of a tab switch; a handler removed in the meantime is skipped. `workspace:changed` now actually fires, once per change, with `{ workspaceId, workspace }` (3.4.0 listened for a DOM event Zen no longer sends)
+- **While a Glance is open, `tabs.getCurrent()` is the Glance's parent tab** — and so is the default tab of every `tabs.*` method; `browser.*` still acts on the page on screen
+- **Return values**
+  - `tabs.closeTabs/closeOthers/closeToLeft/closeToRight` close as one reopenable batch and return how many closed (0 if the user cancels Firefox's "close N tabs?" prompt); `closeOthers/closeToLeft/closeToRight` leave pinned tabs and ZenRipple's agent tabs open
+  - `tabs.select()` switches workspace when needed and resolves to a boolean; `tabs.unload()` resolves to the number unloaded; `tabs.addToEssentials()` returns `false` when Zen refuses; `tabs.bookmark(tab)` bookmarks that tab (3.4.0 always bookmarked the current page)
+  - `workspaces.create(name, { icon, switchTo })` returns Zen's workspace object (with `uuid`) or `null` and no longer switches to the new workspace unless `switchTo: true`; `workspaces.switchTo/rename` resolve to booleans; `workspaces.delete(ws, { timeoutMs })` resolves `false` when Zen doesn't confirm in time
+  - `folders.create()` returns the folder element; `folders.delete()` resolves to a boolean
+  - `commands.execute(key)` returns `false` for an unknown key; commands that need input open the palette at that step, and commands that ask for confirmation in the palette run directly
+  - `browser.zoomIn/zoomOut/zoomReset` use Firefox's page zoom (remembered per site) and resolve once applied
+- **`storage.get()/getAll()` and `settings.get()` return copies** — change stored data with `set()`
+- **Private windows** — `storage` writes stay in that window's memory and are never saved; plugin `settings` are saved
+- **Manifests are checked before any plugin code runs** — `id` must match `[A-Za-z0-9_-]+`, `name` must be set, command keys must match `[\w.:-]+`, and only `toggle`, `number` and `text` settings are kept; the manifest's `builtIn` flag is ignored
+- **Plugin data and the enabled state are shared by all windows** — enabling, disabling or uninstalling in one window applies to all
+
+#### For users
+- **Zen 1.21.7b or newer** — tested on 1.22.3b. Older builds still load ZenLeap but log a warning; `install.sh` and `install.ps1` warn too
+- **Installers: `--yes` no longer means "every profile"** — without `--profile`, they update the profiles that already have ZenLeap, or else install into the profile Zen opens by default. `--profile` takes a number (1 is the default profile, then `profiles.ini` order), a profile or folder name, or `all`, and can be repeated; `--profile-dir` targets profiles started with `-profile`. Exit status: 0 installed, 1 error, 2 nothing installed
+- **Updates install release tags only** — the self-updater and `curl | bash` / `irm | iex` / ZenLeap Manager install the latest release only if its `JS/zenleap.uc.js` matches the release's `CHECKSUMS.sha256` and its version matches the tag; otherwise they install nothing (the installers print how to install from a clone)
+- **`userChrome.css` is no longer used** — the installers stop appending to it and remove the old ZenLeap block (keeping a backup); the updater no longer downloads `chrome.css`
+- **Undo Folder Delete defaults to Ctrl+Shift+T on Linux and Windows** (Cmd+Shift+T on macOS, unchanged) — 3.4.0's Meta+Shift+T default never matched. It only takes over Firefox's "Reopen Closed Tab" while a folder deleted in the last 30 seconds can be restored
+- **macOS, non-US keyboard layouts** — an Option shortcut whose key types a character on your layout (for example `@` or `ł`) no longer fires, so you can type that character; this can include the default Option+H/J/K/L. A one-time hint names Settings > Keybindings > **Match Option Shortcuts by Physical Key (macOS)**, which brings the old behaviour back
+- **Legacy prefs** `uc.zenleap.debug` and `uc.zenleap.current_indicator` are moved into Settings once and then cleared; Sine's settings page no longer offers them
+- **Two Timing settings were removed** — "Workspace Switch Delay" and "Unload Tab Delay" no longer did anything
+
+### Added
+- **Confirmations for destructive actions** (Cancel first and preselected) — Close Other/Left/Right Tabs (more than one tab), Delete Workspace (with tab, pinned and folder counts; the current workspace is listed last), Delete Folder, Deduplicate Tabs, delete session, Restore > Replace Current Workspace, plugin uninstall, and browse-mode `x` on a selection that contains folders (`1` everything, `2` folders only; Enter, Space or Escape cancel)
+- **Backup before Replace** — "Replace Current Workspace" first saves the current tabs as a backup session (the 5 newest are kept) and cancels if that fails
+- **Undo Folder Delete rebuilds the Zen folder** — subfolders, order, position, workspace and collapsed state, with each tab's history, scroll position and form data; up to 10 deletions, each for 30 seconds, from browse mode or the palette. A toast after each delete says which shortcut brings it back
+- **Settings > Display > Vim Mode in URL Bar** — turn URL-bar vim off while keeping it in the search and command bars
+- **Settings > Keybindings > Match Option Shortcuts by Physical Key (macOS)**
+- **Key conflict warnings** — the key recorder refuses global shortcuts without Ctrl/Alt/Cmd (or an F-key), AltGr and dead keys, and shows "Also used by …" for other ZenLeap bindings, Zen shortcuts and ZenRipple's spawn shortcut; a console warning at startup lists global bindings that collide
+- **Help and the leap/browse hints follow your key bindings** — the help also lists all 24 themes and has a URL-bar vim section
+- **Plugin Manager** — keyboard control (`j`/`k`, Enter/`l` details, Space/`e` enable, `u` uninstall, `h`/Backspace back, Escape), "New" and "Error" badges with the load error, and a full-privileges warning
+- **Plugin API** — `browser.isPrivate()`, `browser.getSelection()`, `tabs.getAll/findByUrl/findByTitle({ allWorkspaces: true })`, `tabs.create(url, { skipRoute })` and `browser.openUrl(url, { skipRoute })`, `workspaces.create(name, { icon, switchTo })`, `workspaces.delete(ws, { timeoutMs })`, `ui.showPrompt(title, placeholder, value, { password })`, and `fs` paths with sub-folders (`'notes/today.txt'`, built with `fs.joinPath()`)
+- **Update toast** with Update (Details on Sine) and Dismiss buttons; it hides after 15 seconds (hovering pauses it) and when leap mode opens; only Dismiss or Escape skips that version
+- **Reorganize Workspaces** has Cancel and Apply Order buttons
+- **Sine hot-unload** — with Sine versions that support it, disabling or updating ZenLeap in Sine removes it completely without a restart
+- **ZenRipple coexistence** (detected at runtime, never required) — Deduplicate, Close Other/Left/Right, Sort Tabs, Group by Domain and session save leave ZenRipple's agent tabs and pages alone and say so; restoring a session never creates a second "ZenRipple" space; moving your own tabs into the ZenRipple space notes that its agents can see and use them
+- **Feedback for commands with nothing to do** — "No tab is playing audio", "No duplicate tabs found", Reload Themes reports how many custom themes loaded (or that the file has an error), one toast for several newly found plugins
+- **Installers** — `--loader auto|fx-autoconfig|sine`, `--all-profiles`, repeatable `--profile-dir`; `check` prints `name [profile folder]: STATUS`; leftovers of older installers are offered for removal (listed only with `--yes`); experimental Flatpak support
+
+### Changed
+- **Modes end on click-away** — clicking outside ZenLeap's UI, the window losing focus, or focus moving to the URL bar or find bar ends leap mode, browse mode, search and the other overlays; focus goes back where it was (the update dialog included)
+- **Browse mode follows the highlighted tab** — tabs opened, closed or moved above the highlight (by a page, window sync or an AI agent) no longer change what Enter, `x`, Space, `y`, `p` and `m` act on; if the highlighted tab itself goes away, the highlight moves to its neighbour, the overlay says so, and that key press does nothing
+- **Closing pinned tabs and Essentials** — browse-mode `x` and Tab Search's Ctrl+X / `x` follow Zen's close-shortcut setting (by default reset and unload, not close); several tabs close as one reopenable batch
+- **Relative numbering follows Zen's visibility rules** — collapsed pinned sections, split views inside collapsed folders, Glance, and Zen's empty tab in a new space (numbering then counts from above the first unpinned tab); after `h`/`l`, digits count from the new space's current tab
+- **Keyboard layouts** — on non-Latin layouts, letters, digits and punctuation work by key position (like Vim's langmap), including marks and the Reorganize dialog; AltGr never triggers a shortcut outside macOS; holding a mode chord no longer toggles it repeatedly (Alt+J/K still repeat); g/z/mark sub-modes time out after 60 seconds; Alt+Space is only taken while a split view is open
+- **URL bar Escape** — with nothing typed, one Escape closes the URL bar; after typing (autofill included) it switches to NORMAL mode
+- **Palette** — an exact or prefix command-name match ranks first; failing commands show a toast and log to the Browser Console; "Find Playing Tab" searches every workspace; "New Tab" opens a real, selected tab; "Duplicate Tab" places the copy next to the source; Zoom In/Out/Reset use Firefox's per-site zoom; Rename Tab and Edit Tab Icon are only offered where Zen has them (not in private windows)
+- **Settings sync across windows** — each window writes only the keys it changed; invalid saved values are dropped per key with a warning; reopening Settings shows current values; "Reset All to Defaults" asks for a second click and leaves internal state alone; keyboard focus stays inside Settings; the import confirmation works from the keyboard
+- **Sessions** — restored tabs load lazily and ignore Space Routing; Essentials are restored through Zen; custom tab icons are saved; Replace no longer waits 2.5 s re-checking the tab order
+- **Update checks** read a few KB from the GitHub releases API instead of downloading the whole script, run in one window only, and "On Startup" means once per browser session; Retry after a failed check checks again
+- **Browse previews** use Firefox's `drawSnapshot`; nothing is injected into pages. Unloaded tabs show "Tab not loaded"
+- **Themes** — user themes always start from Meridian; named and `hsl()` colors are normalized; invalid colors fall back to Meridian's
+- **Tab switches are faster with many tabs** — badge attributes are written only when they change, and the close-button rule no longer uses `:has()`
+- **Installers** find profiles like Zen (`profiles.ini`/`installs.ini`, `~/.config/zen`, `$XDG_CONFIG_HOME`, `MOZ_LEGACY_HOME`, legacy `~/.zen`), never touch non-profile folders, never run `sudo` themselves, never replace an existing `config.js`, copy only fx-autoconfig's `chrome/utils` from a pinned, hash-checked commit, and clear the startup cache with `InvalidateCaches`. ZenLeap Manager (macOS) is released as `ZenLeap-Manager-vX.Y.Z-macos.zip` and has a profile picker
+
+### Fixed
+- **Plugins didn't load on Zen 1.22 / Firefox 155+** — Firefox blocks `loadSubScript` of `file://` URLs; plugins now run in sandboxes
+- **Zen 1.22 compatibility** — "Remove Tab from Split View" works again; "Convert Folder to Workspace" keeps every tab and subfolder in the new workspace after a restart; moving several tabs to another workspace keeps their order; SVG space icons show as icons; the update dialog's success and Sine screens were blank; compact mode was detected when it was off; `ui.getAccentColor()`/`getThemeColors()` returned `undefined`
+- **Typing into a page after clicking it ran ZenLeap commands** — typing "fox" in browse mode could close a tab
+- **macOS Option characters** (`@`, `ł`, non-breaking space) were swallowed
+- **Keys** meant for prompts, tab-modal dialogs and input methods are left alone; pages no longer get keyups for keys ZenLeap consumed; the URL-bar vim no longer swallows the first character after `i`/`a`/`A`; the update toast no longer takes Enter/Escape from pages
+- **Data between windows** — plugin data and settings are merged instead of overwritten; a corrupt plugin data file or settings value is kept aside instead of being replaced; Essential marks from two windows no longer overwrite each other
+- **Hand-edited `zenleap-themes.json`** — the theme editor overwrote a file with a syntax error (losing every theme in it) and the startup template could replace a file that couldn't be read; both now leave it alone and say so
+- **Themes wiped Zen's space colors** — with "Apply Theme to Browser" off, previewing or switching a ZenLeap theme (or disabling ZenLeap in Sine) removed Zen's own gradient and accent until the next space switch
+- **A tab title with a control character blanked Tab Search**
+- **Switch Theme** kept a previewed theme after stepping back into the picker; the caret jumped to the start of the query after going back a step
+- **`getSelectedText()`** returned at most 150 characters with whitespace collapsed
+- **Plugin API** — `fs` paths with a `/` failed; `folders.addTab()` refused tabs from deeply nested folders; `commands.execute()` used command conditions from its first call
+- **Settings** — a key recorder interrupted by a click outside stayed on "Press key…"; the browse preview covered the delete-confirm dialogs; Settings reopened with stale values; the theme editor's color fields ignored valid CSS colors such as `#abc`, `red` or `rgb()`
+- **Sessions** — damaged or old session files no longer break the pickers and are reported in the console; a failure while saving a folder or split view is reported instead of silently dropping its tabs
+- **Installers** — profiles in `~/.config/zen` (current Zen on Linux) are found; `Profile Groups`, `Crash Reports` and `Pending Pings` are no longer treated as profiles; startup-cache paths are right on every platform; `install.ps1` under `irm | iex` no longer closes the PowerShell window, writes no profile files as Administrator and enables TLS 1.2 on Windows PowerShell 5.1; ZenLeap Manager's dialogs no longer show a literal `\n`
+- **Tab-timer example** no longer rewrites plugin data every 5 seconds in every window
+
+### Security
+- **Verified self-update** — release tag only, SHA-256 against the tag's `CHECKSUMS.sha256`, `@version` must equal the tag, at most 10 MB, written atomically over the file ZenLeap was loaded from, with the previous version kept as `.bak` and restored if the written file doesn't verify; a release without a checksum is refused
+- **Installers** apply the same verification, take fx-autoconfig from a pinned commit with hash-checked files, never kill Zen and never run `sudo`
+- **Plugins are opt-in** — a disabled plugin's code is never evaluated, and the manifest is validated first. The sandbox is for clean unloading, not isolation: plugins still run with full browser privileges, as the Plugin Manager says
+- **Private windows** — sessions, Essential marks and plugin storage from private windows are never written to disk
+- **Fewer privileged loads** — the URL-bar fallback, palette "New Tab" and the About page's GitHub link no longer load with the system principal; session restores refuse `javascript:` URLs
+- **Untrusted text** (titles, URLs, space names and icons, plugin manifests, session files) is escaped or built with DOM calls, including characters XML forbids; ZenLeap injects nothing into web pages
+
+### Upgrade notes (from 3.4.0)
+- **Your last update from 3.4.0 runs 3.4.0's updater** — it downloads the script unverified and re-adds an empty ZenLeap block to `userChrome.css`; running the installer or `clean-legacy-css.sh` removes it. Later updates are verified
+- **Plugins** — plugins enabled under 3.4.0 stay enabled and run at startup; plugins ZenLeap never registered (for example ones added while 3.4.0 couldn't load plugins on Zen 1.22) appear disabled with a "New" badge. `zenleap-plugin-data.json` keeps its format. Update plugins that call `getSelectedText()` synchronously, declare `const ZenLeapPlugin`, or rely on both destroy hooks
+- **Settings, marks, sessions and themes** keep their formats — settings stay in `uc.zenleap.settings` (only new keys were added), Essential marks in `uc.zenleap.essentialMarks`, sessions in `zenleap-sessions/` (older files load too), themes in `chrome/zenleap-themes.json`
+- **One-liners** (`curl | bash`, `irm | iex`, ZenLeap Manager) install the latest verified release tag or nothing, and print how to install from a clone
+- **`--yes` without `--profile`** updates the profiles that already have ZenLeap (or installs into Zen's default profile); profile numbers changed (1 is the default profile), so use names in scripts
+- **fx-autoconfig** — an existing installation is left as it is (interactive runs offer to update an old loader); its example files are no longer copied and old copies are offered for removal; `--remove-fxautoconfig` keeps it where other scripts still need it
+- **Sine** — where Sine manages ZenLeap, `--yes` leaves Sine's copy alone (`--loader sine` updates it); profiles that only run Sine are skipped
+- **The installers never close Zen** — restart Zen after installing
+
 ## [3.4.0] - 2026-03-22
 
 ### Fixed
