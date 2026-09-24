@@ -7297,7 +7297,7 @@
       for (const item of items) {
         if (item.isZenFolder) {
           children.push(collectFolderTree(item, splitGroupMap, options));
-        } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab')) {
+        } else if (gBrowser.isTab(item) && !item.hasAttribute('zen-empty-tab') && !(options.skipManaged && isExternallyManagedTab(item))) {
           children.push(collectTabItem(item, splitGroupMap, options));
         }
       }
@@ -7310,9 +7310,12 @@
     };
   }
 
+  // Session save. ZenRipple's agent tabs and pages are left out: they belong to agent
+  // sessions (restored they would be ownerless copies) and ZenRipple recreates its pages.
   function collectWorkspaceLayout(wsData, { includeEssentials = true } = {}) {
     const wsId = wsData?.uuid;
     const layout = [];
+    const addTab = (tab) => { if (!isExternallyManagedTab(tab)) layout.push(collectTabItem(tab, splitGroupMap)); };
 
     // Build split group map: tab -> groupIndex
     const splitGroupMap = new Map();
@@ -7321,7 +7324,7 @@
       if (window.gZenViewSplitter?._data) {
         for (const group of gZenViewSplitter._data) {
           const groupTabs = (group.tabs || []).filter(t =>
-            isLiveTab(t) &&
+            isLiveTab(t) && !isExternallyManagedTab(t) &&
             (t.getAttribute('zen-workspace-id') === wsId || t.hasAttribute('zen-essential'))
           );
           if (groupTabs.length >= 2) {
@@ -7340,7 +7343,7 @@
         t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab')
       );
       for (const tab of essentialTabs) {
-        layout.push(collectTabItem(tab, splitGroupMap));
+        addTab(tab);
       }
     }
 
@@ -7357,18 +7360,18 @@
           if (child.classList?.contains('space-fake-collapsible-start')) continue;
           if (child.id === 'tabbrowser-arrowscrollbox-periphery') continue;
           if (child.isZenFolder) {
-            layout.push(collectFolderTree(child, splitGroupMap));
+            layout.push(collectFolderTree(child, splitGroupMap, { skipManaged: true }));
           } else if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
             if (child.hasAttribute('zen-essential')) continue; // already collected above
-            layout.push(collectTabItem(child, splitGroupMap));
+            addTab(child);
           } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
               if (groupChild.hasAttribute('zen-empty-tab') || groupChild.hasAttribute('zen-glance-tab')) continue;
               if (groupChild.hasAttribute('zen-essential')) continue;
-              layout.push(collectTabItem(groupChild, splitGroupMap));
+              addTab(groupChild);
             }
           }
         }
@@ -7380,13 +7383,13 @@
         for (const child of normalContainer.children) {
           if (gBrowser.isTab(child)) {
             if (child.hasAttribute('zen-empty-tab') || child.hasAttribute('zen-glance-tab')) continue;
-            layout.push(collectTabItem(child, splitGroupMap));
+            addTab(child);
           } else if (gBrowser.isTabGroup(child)) {
             // Split view groups are tab-group elements (not folders) — flatten their tabs
             for (const groupChild of (child.tabs || child.children || [])) {
               if (!gBrowser.isTab(groupChild)) continue;
               if (groupChild.hasAttribute('zen-empty-tab') || groupChild.hasAttribute('zen-glance-tab')) continue;
-              layout.push(collectTabItem(groupChild, splitGroupMap));
+              addTab(groupChild);
             }
           }
         }
@@ -7398,12 +7401,12 @@
         ? allTabs.filter(t => t.getAttribute('zen-workspace-id') === wsId && !t.hasAttribute('zen-empty-tab') && !t.hasAttribute('zen-glance-tab') && !t.hasAttribute('zen-essential'))
         : getVisibleTabs().filter(t => !t.hasAttribute('zen-essential'));
       for (const tab of wsTabs) {
-        layout.push(collectTabItem(tab, splitGroupMap));
+        addTab(tab);
       }
     }
 
     const activeTab = currentTab();
-    const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId)
+    const activeTabUrl = (activeTab && activeTab.getAttribute('zen-workspace-id') === wsId && !isExternallyManagedTab(activeTab))
       ? (activeTab.linkedBrowser?.currentURI?.spec || '') : '';
 
     const result = {
@@ -7641,25 +7644,27 @@
     return fuzzyFilterAndSort(results, query);
   }
 
-  // What "Replace Current Workspace" would close: folders and non-essential tabs of the active workspace.
+  // What "Replace Current Workspace" would close: folders and non-essential tabs of the
+  // active workspace, except ZenRipple's agent tabs and pages (kept: the agents' work).
   function getActiveWorkspaceContents() {
     const activeWsId = window.gZenWorkspaces?.activeWorkspace;
     const folders = Array.from(gBrowser.tabContainer.querySelectorAll('zen-folder')).filter(f => {
       const fWsId = f.getAttribute('zen-workspace-id');
       return !activeWsId || !fWsId || fWsId === activeWsId;
     });
-    const tabs = getVisibleTabs().filter(t =>
+    const all = getVisibleTabs().filter(t =>
       !t.hasAttribute('zen-essential') && !t.hasAttribute('zen-empty-tab') &&
       (!activeWsId || t.getAttribute('zen-workspace-id') === activeWsId)
     );
-    return { folders, tabs };
+    const tabs = all.filter(t => !isExternallyManagedTab(t));
+    return { folders, tabs, kept: all.length - tabs.length };
   }
 
   function getRestoreReplaceConfirmResults() {
     const session = commandSubFlow?.data?.session;
-    const { folders, tabs } = getActiveWorkspaceContents();
+    const { folders, tabs, kept } = getActiveWorkspaceContents();
     const wsName = getWorkspaceName(window.gZenWorkspaces?.activeWorkspace) || 'current workspace';
-    const restoreCount = countLayoutStats(getWorkspaceLayout(session?.workspaces?.[0])).tabs;
+    const restoreCount = countLayoutStats(withoutZenRipplePages(getWorkspaceLayout(session?.workspaces?.[0]))).tabs;
     const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
     return [
       { key: 'restore-replace:cancel', label: 'Cancel', icon: '↩', sublabel: 'Keep the current workspace as it is', tags: [] },
@@ -7667,7 +7672,7 @@
         key: 'restore-replace:confirm',
         label: `Replace "${wsName}": close ${plural(tabs.length, 'tab')}${folders.length ? ` and ${plural(folders.length, 'folder')}` : ''}`,
         icon: '🔄',
-        sublabel: `Then restores ${plural(restoreCount, 'tab')}. The current tabs are saved as a backup session first.`,
+        sublabel: `Then restores ${plural(restoreCount, 'tab')}. The current tabs are saved as a backup session first.${kept ? ` ${zenRippleTabsKeptNote(kept)}.` : ''}`,
         tags: [],
       },
     ];
@@ -7740,11 +7745,19 @@
     }
 
     const prevWsId = gZenWorkspaces.activeWorkspace;
+    let name = (typeof wsData.name === 'string' && wsData.name.trim()) ? wsData.name.trim().slice(0, 100) : 'Restored';
+    let icon = sanitizeSessionIcon(wsData.icon);
+    // ZenRipple adopts the space with its name as its agents' space: a restored copy of
+    // it gets its own name (and the default icon), never a second "ZenRipple" space.
+    if (name.toLowerCase() === ZENRIPPLE_SPACE_NAME.toLowerCase()) {
+      name = `${name} (restored)`;
+      icon = undefined;
+    }
 
     try {
       await gZenWorkspaces.createAndSaveWorkspace(
-        (typeof wsData.name === 'string' && wsData.name.trim()) ? wsData.name.trim().slice(0, 100) : 'Restored',
-        sanitizeSessionIcon(wsData.icon),
+        name,
+        icon,
         false, // dontChange = false, so it switches to the new workspace
         0      // containerTabId
       );
@@ -7796,7 +7809,7 @@
   // --- Restore: tree-based layout restoration ---
 
   async function restoreLayout(wsData) {
-    const layout = getWorkspaceLayout(wsData);
+    const layout = withoutZenRipplePages(getWorkspaceLayout(wsData));
     if (!layout || layout.length === 0) return;
 
     const openedTabs = []; // [{ item, tab }]
@@ -8005,6 +8018,17 @@
     }
 
     return folder;
+  }
+
+  // Sessions saved by older versions can hold ZenRipple's pages (dashboard, session
+  // pages): ZenRipple recreates those itself, a restored copy would be a duplicate.
+  function withoutZenRipplePages(items) {
+    const out = [];
+    for (const item of items || []) {
+      if (item?.type === 'tab' && typeof item.url === 'string' && item.url.startsWith(ZENRIPPLE_PAGES_PREFIX)) continue;
+      out.push(item?.type === 'folder' ? { ...item, children: withoutZenRipplePages(item.children) } : item);
+    }
+    return out;
   }
 
   function flattenLayoutTabs(item) {
