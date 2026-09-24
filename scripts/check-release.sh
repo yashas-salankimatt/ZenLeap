@@ -13,10 +13,12 @@
 #     the file (and the committed blob, so CRLF checkouts are caught)
 #   - theme.json / preferences.json are valid, reference existing files, have
 #     ISO-8601 UTC dates, and preferences.json has no legacy uc.zenleap.* prefs
+#   - theme.json updatedAt never goes back from the last release tag's, and is
+#     later than it for a new version (Sine only offers a later updatedAt)
 #   - CHANGELOG.md has a section for the version
 #   - the updater and installers fetch release tags, not the main branch
 #   - embedded copies of scripts/lib/zen-paths.sh are in sync, and install.ps1
-#     pins the same fx-autoconfig commit and file hashes
+#     pins the same fx-autoconfig commit, file hashes and example-file hashes
 #   - every shell script passes `bash -n` (and shellcheck, when installed)
 
 set -u
@@ -161,6 +163,24 @@ if out=$(json_tool type theme.json 2>&1); then
         fail "theme.json updatedAt must be ISO-8601 UTC like 2026-03-23T02:31:36Z (got '$updated')"
     fi
     if ! [[ $created =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then fail "theme.json createdAt is not a date ('$created')"; fi
+    # Sine offers an update only when updatedAt is later than the installed copy's
+    last_tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
+    if [ -n "$last_tag" ] && [[ $updated =~ ^[0-9]{4}- ]]; then
+        last_updated=$(git show "$last_tag:theme.json" 2>/dev/null | sed -n 's|^[[:space:]]*"updatedAt":[[:space:]]*"\([^"]*\)".*|\1|p' | head -n 1)
+        # As numbers (20260323023136); a date without a time is midnight UTC, as for Sine
+        now_n="${updated//[!0-9]/}000000"; now_n=${now_n:0:14}
+        last_n=""
+        if [ -n "${last_updated//[!0-9]/}" ]; then last_n="${last_updated//[!0-9]/}000000"; last_n=${last_n:0:14}; fi
+        if [ -z "$last_n" ]; then
+            :
+        elif [ "$now_n" -lt "$last_n" ]; then
+            fail "theme.json updatedAt $updated is earlier than $last_tag's $last_updated"
+        elif [ "$VERSION" != "${last_tag#v}" ] && [ "$now_n" -le "$last_n" ]; then
+            fail "theme.json updatedAt $updated is not later than $last_tag's $last_updated: Sine would not offer $VERSION (scripts/release.sh sets it)"
+        else
+            pass "theme.json updatedAt is not earlier than $last_tag's"
+        fi
+    fi
     while IFS= read -r f; do
         if [ -n "$f" ] && [ ! -f "$f" ]; then fail "theme.json references missing file $f"; fi
     done < <(json_tool theme-files theme.json)
@@ -215,6 +235,14 @@ if [ "$sh_pin" = "$ps_pin" ]; then
     pass "install.ps1 pins the same fx-autoconfig commit ($ZP_FXAC_PINNED_REF) and hashes"
 else
     fail "fx-autoconfig pin differs between scripts/lib/zen-paths.sh and install.ps1"
+fi
+sh_examples=$(printf '%s\n' "$ZP_FXAC_EXAMPLES_SHA256" | grep -E '^[0-9a-f]{64}  ')
+# shellcheck disable=SC2016
+ps_examples=$(sed -n '/^\$FxExamplesSha256/,/^"@/p' install.ps1 | grep -E '^[0-9a-f]{64}  ')
+if [ -n "$sh_examples" ] && [ "$sh_examples" = "$ps_examples" ]; then
+    pass "install.ps1 lists the same fx-autoconfig example files"
+else
+    fail "fx-autoconfig example hashes differ between scripts/lib/zen-paths.sh and install.ps1"
 fi
 
 # --- shell scripts --------------------------------------------------------
