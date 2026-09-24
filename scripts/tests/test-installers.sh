@@ -945,6 +945,47 @@ if $HAVE_SCRIPT; then
 fi
 run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile 1 --profile 2
 check "plugin --profile 1 --profile 2: both" exists "$P/chrome/zenleap-plugins/tab-stats/plugin.js"
+# REV-LINST-04: the installed folder (or a folder around it) as the source
+DEST="$P/chrome/zenleap-plugins/tab-stats"
+echo '// edited in place' >> "$DEST/plugin.js"
+run install-plugin.sh "$DEST" --yes --profile 1
+check "plugin from its installed folder: exit 0" rc_is 0
+check "plugin from its installed folder: kept as it is" has "$DEST/plugin.js" "edited in place"
+check "plugin from its installed folder: nothing to copy" has "$OUT" "nothing to copy"
+ln -s "$DEST" "$T/plugin-link"
+run install-plugin.sh "$T/plugin-link" --yes --profile 1
+check "plugin through a symlink to its installed folder: kept" has "$DEST/plugin.js" "edited in place"
+PLX="$P/chrome/zenleap-plugins"
+printf '{"id": "nested", "name": "n"}' > "$PLX/manifest.json"
+: > "$PLX/plugin.js"
+run install-plugin.sh "$PLX" --yes --profile 1
+check "plugin folder around the destination: refused" rc_is 1
+check "... nothing copied into itself" missing "$PLX/nested"
+rm -f "$PLX/manifest.json" "$PLX/plugin.js"
+mkdir -p "$T/v2"
+cp -R "$REPO/examples/plugins/tab-stats" "$T/v2/"
+printf 'x\n' > "$T/v2/tab-stats/unreadable"
+chmod 000 "$T/v2/tab-stats/unreadable"
+run install-plugin.sh "$T/v2/tab-stats" --yes --profile 1
+chmod 644 "$T/v2/tab-stats/unreadable"
+check "plugin copy fails: exit 1" rc_is 1
+check "... the installed copy survives" has "$DEST/plugin.js" "edited in place"
+check "... no temporary folder left" missing "$P/chrome/.zenleap-plugin-tab-stats.new"
+run install-plugin.sh "$T/v2/tab-stats" --yes --profile 1
+check "plugin replaced: the new copy" exists "$DEST/unreadable"
+check "plugin replaced: the old files gone" lacks "$DEST/plugin.js" "edited in place"
+check "plugin replaced: no backup folder left" missing "$P/chrome/.zenleap-plugin-tab-stats.old"
+check "plugin replaced: nothing temporary ever in zenleap-plugins (ZenLeap would load it)" test -z "$(find "$PLX" -mindepth 1 -maxdepth 1 -name '.*')"
+# REV-LINST-14: ids are checked as a whole (a newline must not slip through)
+mkdir -p "$T/nlplugin"
+echo '// x' > "$T/nlplugin/plugin.js"
+printf '{"id": "ok\\n..", "name": "Bad"}\n' > "$T/nlplugin/manifest.json"
+run install-plugin.sh "$T/nlplugin" --yes --profile 1
+check "plugin id with a newline: rejected" rc_is 1
+check "plugin id with a newline: no folder created" test -z "$(find "$PLX" -maxdepth 1 -name 'ok*')"
+run install-plugin.sh --uninstall "$(printf 'tab-stats\nx')" --yes
+check "plugin --uninstall with a newline in the id: rejected" rc_is 1
+check "plugin --uninstall with a newline in the id: nothing removed" exists "$DEST/plugin.js"
 mkdir -p "$T/plugin-notprofile"
 run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile-dir "$T/plugin-notprofile"
 check "plugin --profile-dir to a non-profile, --yes: refused" rc_is 1

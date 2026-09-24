@@ -178,6 +178,16 @@ check_profile_dir() {
     exit 1
 }
 
+# Plugin ids become folder names: ASCII letters, digits, "_" and "-" only.
+# Checked character by character (independent of the locale; an id with a
+# newline fails too).
+valid_plugin_id() {
+    case "$1" in
+        ""|*[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-]*) return 1 ;;
+    esac
+    return 0
+}
+
 # Status note for the profile list
 plugin_profile_status() {
     local dir="${ZP_PROFILE_DIRS[$1]}" v
@@ -244,7 +254,7 @@ validate_plugin() {
     fi
 
     # Validate id is a safe directory name (alphanumeric, hyphens, underscores)
-    if ! echo "$id" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+    if ! valid_plugin_id "$id"; then
         echo -e "${RED}Error: Plugin id '$id' contains invalid characters (only a-z, 0-9, hyphens, underscores allowed)${NC}"
         return 1
     fi
@@ -263,10 +273,33 @@ install_to_profile() {
 
     local plugins_dir="$profile_dir/chrome/zenleap-plugins"
     local dest_dir="$plugins_dir/$PLUGIN_ID"
+    local src_phys dest_phys new old
 
     if [ -z "$(zp_zenleap_version "$profile_dir")" ]; then
         echo -e "  ${YELLOW}⚠${NC} ZenLeap is not installed in $pname; the plugin will load once it is"
     fi
+
+    # The plugin folder given may be the installed copy itself (e.g. a plugin
+    # edited in place), or contain it: never delete or copy into the source.
+    mkdir -p "$plugins_dir"
+    src_phys=$(zp__physical_dir "$source_dir")
+    dest_phys="$(zp__physical_dir "$plugins_dir")/$PLUGIN_ID"
+    if [ "$src_phys" = "$dest_phys" ]; then
+        echo -e "  ${GREEN}✓${NC} $pname: that folder is the installed plugin already; nothing to copy"
+        return 0
+    fi
+    case "$dest_phys/" in
+        "$src_phys"/*)
+            echo -e "  ${RED}Error: the plugin folder contains $pname's plugin folder; not copying it into itself${NC}"
+            return 1
+            ;;
+    esac
+    case "$src_phys/" in
+        "$dest_phys"/*)
+            echo -e "  ${RED}Error: the plugin folder is inside the installed copy in $pname; copy it somewhere else first${NC}"
+            return 1
+            ;;
+    esac
 
     # Check if already installed
     if [ -d "$dest_dir" ]; then
@@ -281,14 +314,32 @@ install_to_profile() {
                 return 0
             fi
         fi
-        rm -rf "$dest_dir"
     fi
 
-    # Create plugins directory if needed
-    mkdir -p "$plugins_dir"
-
-    # Copy the plugin directory
-    cp -R "$source_dir" "$dest_dir"
+    # Copy next to the destination first, then swap it in, so a failed copy
+    # never leaves the plugin half-copied or deleted. The temporary folders sit
+    # in chrome/, not in zenleap-plugins/: ZenLeap loads every folder there that
+    # has a manifest, so a leftover copy would load as a second plugin.
+    new="$profile_dir/chrome/.zenleap-plugin-$PLUGIN_ID.new"
+    old="$profile_dir/chrome/.zenleap-plugin-$PLUGIN_ID.old"
+    rm -rf "$new" "$old"
+    if ! cp -R "$source_dir" "$new"; then
+        rm -rf "$new"
+        echo -e "  ${RED}Error: could not copy the plugin into $pname${NC}"
+        return 1
+    fi
+    if [ -d "$dest_dir" ] && ! mv "$dest_dir" "$old"; then
+        rm -rf "$new"
+        echo -e "  ${RED}Error: could not replace the installed copy in $pname${NC}"
+        return 1
+    fi
+    if ! mv "$new" "$dest_dir"; then
+        if [ -d "$old" ]; then mv "$old" "$dest_dir"; fi
+        rm -rf "$new"
+        echo -e "  ${RED}Error: could not install the plugin into $pname${NC}"
+        return 1
+    fi
+    rm -rf "$old"
 
     echo -e "  ${GREEN}✓${NC} Installed to $pname"
 }
@@ -441,7 +492,7 @@ fi
 
 # Uninstall mode
 if [ -n "$UNINSTALL_ID" ]; then
-    if ! echo "$UNINSTALL_ID" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+    if ! valid_plugin_id "$UNINSTALL_ID"; then
         echo -e "${RED}Error: Invalid plugin id '$UNINSTALL_ID' (only a-z, 0-9, hyphens, underscores allowed)${NC}"
         exit 1
     fi
@@ -511,9 +562,13 @@ if [ "$AUTO_YES" != true ]; then
 fi
 
 # Install to each profile
+failed=false
 for i in "${ZP_SELECTED[@]}"; do
-    install_to_profile "$i" "$PLUGIN_PATH"
+    install_to_profile "$i" "$PLUGIN_PATH" || failed=true
 done
+if [ "$failed" = true ]; then
+    exit 1
+fi
 
 echo ""
 echo -e "${GREEN}Done.${NC} Restart Zen Browser, then enable the plugin in ZenLeap's Plugin Manager"
