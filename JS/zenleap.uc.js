@@ -14823,7 +14823,10 @@
   }
 
   // Close the selected search result tab
-  function closeSelectedSearchResult() {
+  // Like browse-mode x and Zen's own close shortcut: a pinned tab or Essential follows
+  // zen.pinned-tab-manager.close-shortcut-behavior (by default reset and unload, not
+  // close); other tabs close. Then the search re-runs (it clamps the selection).
+  function closeSelectedSearchResult(event) {
     if (searchSelectedIndex < 0 || searchSelectedIndex >= searchResults.length) return;
 
     const result = searchResults[searchSelectedIndex];
@@ -14832,10 +14835,13 @@
     const tabToClose = result.tab;
     const tabLabel = tabToClose.label;
 
-    // Close the tab, then re-run the search (it clamps the selection)
-    gBrowser.removeTab(tabToClose, { animate: false });
+    if (tabToClose.pinned) {
+      closeTabsLikeZen([tabToClose], event).then(() => { if (searchMode) renderSearchResults(); });
+    } else {
+      gBrowser.removeTab(tabToClose, { animate: false });
+      renderSearchResults();
+    }
     log(`Closed tab from search: ${tabLabel}`);
-    renderSearchResults();
   }
 
   // Move search selection (lightweight — no DOM rebuild or re-search)
@@ -15169,7 +15175,7 @@
     if (event.ctrlKey && key === 'x') {
       event.preventDefault();
       event.stopPropagation();
-      closeSelectedSearchResult();
+      closeSelectedSearchResult(event);
       return true;
     }
 
@@ -15284,7 +15290,7 @@
       // Editing
       case 'x':
         // Tab search: x closes the selected tab; command bar: delete character
-        if (!commandMode) { closeSelectedSearchResult(); break; }
+        if (!commandMode) { closeSelectedSearchResult(event); break; }
         // falls through
       case 'd': // Delete character (like x)
         if (searchCursorPos < len) {
