@@ -1016,6 +1016,28 @@
     } catch (e) { reportError('Applying settings changed in another window failed', e); }
   }
 
+  // Window-lifetime resources of the settings / plugins / updater code (pref and
+  // observer-service observers, the dialog key router, the plugin system). They are
+  // released once: on window unload, or earlier when the core teardown() (Sine
+  // hot-unload) calls teardownPluginSystem(). Registrations happen at script load,
+  // before the core's teardown registry is initialized, hence this separate list.
+  const _regionTeardown = [];
+  let _regionTornDown = false;
+
+  function onRegionTeardown(fn) {
+    _regionTeardown.push(fn);
+  }
+
+  function teardownCommandsRegion() {
+    if (_regionTornDown) return;
+    _regionTornDown = true;
+    window.removeEventListener('unload', teardownCommandsRegion);
+    for (const fn of _regionTeardown.splice(0).reverse()) {
+      try { fn(); } catch (e) { reportError('Teardown step failed', e); }
+    }
+  }
+  window.addEventListener('unload', teardownCommandsRegion, { once: true });
+
   const _settingsPrefObserver = {
     observe() {
       if (_settingsSelfWrite) return;
@@ -1023,12 +1045,10 @@
     },
   };
 
-  // Follow settings changes made by other windows (registered at script load, removed on unload).
+  // Follow settings changes made by other windows (registered at script load).
   function watchSettingsPref() {
     Services.prefs.addObserver(SETTINGS_PREF, _settingsPrefObserver);
-    window.addEventListener('unload', () => {
-      Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver);
-    }, { once: true });
+    onRegionTeardown(() => Services.prefs.removeObserver(SETTINGS_PREF, _settingsPrefObserver));
   }
 
   function resetSetting(id) {
@@ -2892,7 +2912,16 @@
       };
       this.on(event, wrapper, pluginId);
     },
+    _lastWorkspaceId: null,
     emit(event, data) {
+      if (event === 'workspace:changed') {
+        // More than one part of ZenLeap may listen to Zen's workspace changes; plugins
+        // get one event per actual change, always with workspaceId.
+        const workspaceId = data?.workspaceId || data?.workspace?.uuid || null;
+        if (workspaceId && workspaceId === this._lastWorkspaceId) return;
+        this._lastWorkspaceId = workspaceId;
+        data = { workspaceId, workspace: data?.workspace || null };
+      }
       const set = this._listeners.get(event);
       if (!set || set.size === 0) return;
       const entries = [...set];
@@ -3680,7 +3709,7 @@
   }
 
   window.addEventListener('keydown', _routeDialogKeys, true);
-  window.addEventListener('unload', () => window.removeEventListener('keydown', _routeDialogKeys, true), { once: true });
+  onRegionTeardown(() => window.removeEventListener('keydown', _routeDialogKeys, true));
 
   // ── Plugin dialog styles (themed; injected once) ──
   function ensurePluginUiStyles() {
@@ -4651,9 +4680,9 @@
     _pluginEventBus.emit('workspace:changed', { workspaceId: workspace?.uuid || null, workspace: workspace || null });
   }
 
-  // Window unload: stop plugins (destroy hooks, sandboxes) and flush pending data. Runs
-  // before destroy() (registered at script load); clearing the flags below makes
-  // destroy()'s legacy full-file flush a no-op so it cannot overwrite newer data.
+  // Window unload / hot-unload: stop plugins (destroy hooks, sandboxes) and flush pending
+  // data. Runs before destroy() (registered at script load); clearing the flags below
+  // makes destroy()'s legacy full-file flush a no-op so it cannot overwrite newer data.
   function _pluginSystemUnload() {
     try { Services.obs.removeObserver(_onPluginDataBroadcast, PLUGIN_DATA_TOPIC); } catch (e) {}
     try { window.gZenWorkspaces?.removeChangeListeners?.(_onWorkspaceChangedForPlugins); } catch (e) {}
@@ -4663,7 +4692,14 @@
     flushPluginData();
     _pluginDataLoaded = false;
   }
-  window.addEventListener('unload', _pluginSystemUnload, { once: true });
+  onRegionTeardown(_pluginSystemUnload);
+
+  // Hook called by the core teardown() on window unload and on Sine hot-unload. It
+  // releases everything registered through onRegionTeardown (plugins, the settings and
+  // update observers, the dialog key router); calling it more than once is harmless.
+  function teardownPluginSystem() {
+    teardownCommandsRegion();
+  }
 
   async function initPluginSystem() {
     // Listen before reading the file, so changes broadcast meanwhile are not lost
@@ -8717,9 +8753,7 @@
     showUpdateToast(version);
   }
   Services.obs.addObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
-  window.addEventListener('unload', () => {
-    Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC);
-  }, { once: true });
+  onRegionTeardown(() => Services.obs.removeObserver(_onUpdateAvailableBroadcast, UPDATE_AVAILABLE_TOPIC));
 
   // ============================================
   // FOLDER DELETE MODAL (browse mode)
