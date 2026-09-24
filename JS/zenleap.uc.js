@@ -3712,9 +3712,10 @@
         goForward: () => { try { gBrowser.selectedBrowser.goForward(); } catch (e) {} },
         reload: () => { try { gBrowser.reloadTab(gBrowser.selectedTab); } catch (e) {} },
         forceReload: () => { try { gBrowser.selectedBrowser.reloadWithFlags(Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE); } catch (e) {} },
-        zoomIn: () => { try { ZoomManager.enlarge(); } catch (e) {} },
-        zoomOut: () => { try { ZoomManager.reduce(); } catch (e) {} },
-        zoomReset: () => { try { ZoomManager.reset(); } catch (e) {} },
+        // Firefox's page zoom (remembered per site, like Ctrl+=); resolve when applied
+        zoomIn: () => Promise.resolve().then(() => FullZoom.enlarge()).catch(e => reportError(`Plugin "${pluginId}": zoomIn failed`, e)),
+        zoomOut: () => Promise.resolve().then(() => FullZoom.reduce()).catch(e => reportError(`Plugin "${pluginId}": zoomOut failed`, e)),
+        zoomReset: () => Promise.resolve().then(() => FullZoom.reset()).catch(e => reportError(`Plugin "${pluginId}": zoomReset failed`, e)),
         getZoom: () => { try { return ZoomManager.zoom; } catch (e) { return 1; } },
         copyToClipboard: (text) => {
           try {
@@ -5278,9 +5279,10 @@
       { key: 'toggle-sidebar', label: 'Toggle Sidebar Expanded/Compact', icon: '◫', tags: ['sidebar', 'compact', 'expand', 'toggle', 'tog', 'sb'], command: () => {
         document.getElementById('cmd_zenToggleSidebar').doCommand();
       }},
-      { key: 'zoom-in', label: 'Zoom In', icon: '🔍+', tags: ['zoom', 'in', 'bigger'], command: () => { ZoomManager.enlarge(); } },
-      { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => { ZoomManager.reduce(); } },
-      { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => { ZoomManager.reset(); } },
+      // Firefox's page zoom (Ctrl+= / Ctrl+- / Ctrl+0): remembered per site, reader view and PDFs included
+      { key: 'zoom-in', label: 'Zoom In', icon: '🔍+', tags: ['zoom', 'in', 'bigger'], command: () => FullZoom.enlarge() },
+      { key: 'zoom-out', label: 'Zoom Out', icon: '🔍-', tags: ['zoom', 'out', 'smaller'], command: () => FullZoom.reduce() },
+      { key: 'zoom-reset', label: 'Reset Zoom', icon: '🔍=', tags: ['zoom', 'reset', 'default'], command: () => FullZoom.reset() },
 
       'split',
       // --- Split View ---
