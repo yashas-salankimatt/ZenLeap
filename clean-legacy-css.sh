@@ -2,7 +2,7 @@
 # ZenLeap Legacy CSS Cleaner
 # Usage: ./clean-legacy-css.sh [OPTIONS]
 #
-# Removes the ZenLeap block that installers before 3.5 appended to
+# Removes the ZenLeap block that installers up to 3.4 appended to
 # userChrome.css (the pre-3.1 CSS in it conflicts with the runtime theme
 # engine). Only the content between the ZenLeap marker comments is removed;
 # all other CSS (from other mods, user customizations) is preserved, and the

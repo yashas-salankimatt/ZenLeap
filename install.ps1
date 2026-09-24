@@ -932,7 +932,7 @@ function Uninstall-FxAutoconfigProgram {
 }
 
 # --- userChrome.css ---
-# Installers before 3.5 appended chrome.css to userChrome.css between these
+# Installers up to 3.4 appended chrome.css to userChrome.css between these
 # markers. ZenLeap injects its styles at runtime, so the block is only removed.
 function Remove-ZenLeapCss {
     param([string]$ChromeDir)

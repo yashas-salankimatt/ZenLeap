@@ -1518,7 +1518,7 @@ install_zenleap() {
     zp_copy_file "$SOURCE_DIR/JS/zenleap.uc.js" "$JS_DIR/zenleap.uc.js" || die "Could not write $JS_DIR/zenleap.uc.js"
     ok "Installed zenleap.uc.js (v$version)"
 
-    # Installers before 3.5 appended chrome.css to userChrome.css. ZenLeap
+    # Installers up to 3.4 appended chrome.css to userChrome.css. ZenLeap
     # injects its styles at runtime, so only remove such old blocks.
     if [ -f "$CHROME_DIR/userChrome.css" ] && grep -qF '/* === ZenLeap Styles === */' "$CHROME_DIR/userChrome.css"; then
         backup_user_chrome

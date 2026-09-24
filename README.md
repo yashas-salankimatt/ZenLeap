@@ -19,19 +19,23 @@ A comprehensive vim-style navigation, command palette, and session management mo
   - [Tab Sorting](#tab-sorting)
   - [Quick Navigation (Alt+HJKL)](#quick-navigation-althjkl)
   - [Split View Layout (gTile)](#split-view-layout-gtile)
+  - [URL Bar Vim Mode](#url-bar-vim-mode)
+  - [Folders](#folders)
+  - [Plugins](#plugins)
   - [Help & Settings](#help--settings)
   - [Settings Modal](#settings-modal)
   - [Compact Mode Support](#compact-mode-support)
 - [Visual Demo](#visual-demo)
 - [Installation](#installation)
-  - [Install via Sine (Recommended)](#install-via-sine-recommended)
-  - [ZenLeap Manager App (macOS)](#option-1-zenleap-manager-app-macos)
-  - [Command Line](#option-2-command-line)
+  - [Install via Sine](#install-via-sine)
+  - [Installer Script](#installer-script)
+  - [ZenLeap Manager (macOS)](#zenleap-manager-macos)
   - [Manual Installation](#manual-installation)
+  - [Updating](#updating)
 - [Uninstallation](#uninstallation)
 - [Usage Examples](#usage-examples)
 - [Customization](#customization) (Themes, Appearance)
-- [Debugging](#debugging)
+- [Troubleshooting](#troubleshooting)
 - [Requirements](#requirements)
 - [License](#license)
 
@@ -139,7 +143,7 @@ Quickly find and switch to any tab with fuzzy search:
 **Vim Mode in Search:**
 - Starts in INSERT mode for typing
 - `Escape` toggles to NORMAL mode
-- `jj` (typed rapidly) escapes to NORMAL mode from INSERT mode
+- `jj` (typed rapidly) escapes to NORMAL mode from INSERT mode, if enabled (Settings > Timing > jj Escape to Normal Mode; off by default)
 - Movement: `h`, `l`, `w`, `b`, `e`, `0`, `$`, `j`, `k`
 - Editing: `x`, `s`, `S`, `D`, `C`
 - Insert switches: `i`, `a`, `I`, `A`
@@ -197,18 +201,43 @@ Keyboard-driven grid overlay for resizing and rearranging split view tabs:
 - `Escape` — close the overlay
 - Also available via command palette: "Split View: Resize (gTile)"
 
+### URL Bar Vim Mode
+With vim mode on (Settings > Display), the URL bar gets it too:
+- `Escape` switches to NORMAL mode (a badge shows the mode); `Escape` again closes the URL bar
+- Movement and editing: `h`, `l`, `w`, `b`, `e`, `0`, `$`, `x`, `d`, `D`, `s`, `S`, `C`, `p`, `u`
+- `j` / `k` move through the suggestions, `g` / `G` jump to the first / last one
+- `i`, `a`, `I`, `A` go back to INSERT mode; `Enter` navigates as usual
+
+### Folders
+- In browse mode, `x` on a folder asks what to delete: `1` the folder and all its tabs, `2` the folder only (tabs stay), `Escape` cancels
+- The command palette has create, rename, delete, unpack, change-icon, unload and move-to-workspace commands for folders, plus "Create Subfolder" and "Convert Folder to Workspace"
+- "Undo Folder Delete" (Settings > Keybindings > Global Triggers) restores the last deleted folder
+
+### Plugins
+Plugins add commands to the palette. A plugin is a folder with `manifest.json` and `plugin.js` in `<profile>/chrome/zenleap-plugins/<id>/`; four examples live in [`examples/plugins/`](examples/plugins) (tab stats, tab timer, quick notes, Readwise Reader).
+
+```bash
+./install-plugin.sh ./examples/plugins/tab-stats   # install (into the profiles that have ZenLeap)
+./install-plugin.sh --list                         # list installed plugins
+./install-plugin.sh --uninstall tab-stats          # remove
+```
+
+Restart Zen, then open the command palette and run **Manage Plugins** to enable the plugin: newly found plugins stay disabled until you enable them.
+
+> **Plugins run with full browser privileges**, like ZenLeap itself: they can read your tabs, files and network traffic. Only install plugins you trust.
+
 ### Help & Settings
 - `Ctrl+Space` → `?` — Open help modal with all keybindings
 - Click the gear icon in the help modal to open **Settings**
-- Or use the command palette: type `> settings`
+- Or use the command palette (`Ctrl+Shift+/`) and run **Open Settings**
 
 ### Settings Modal
 Customize every keybinding, delay, and display option:
 - **Keybindings** — Rebind all keys with an intuitive key recorder (leap mode, browse mode, global triggers including Alt+HJKL and gTile overlay)
 - **Timing** — Adjust timeouts and delays (leap timeout, gg timeout, browse number timeout, jj escape threshold, preview delay, sidebar peek duration)
-- **Appearance** — Color pickers for all tab badge, highlight, mark, and selection colors
+- **Appearance** — Theme picker (24 built-in themes), visual editor for custom themes, optional theming of the Zen browser itself
 - **Display** — Customize indicators, limits, cross-workspace search, essential-tab search scope, vim mode toggle, tab-as-enter
-- **Advanced** — Debug mode, recency tuning
+- **Advanced** — Debug mode, recency tuning, update checks
 - Search bar to filter settings
 - Per-setting reset buttons
 - Settings persist across browser restarts
@@ -237,9 +266,11 @@ To jump far: Ctrl+Space → j → 1 → 0   (jump 10 tabs down)
 
 ## Installation
 
-### Install via Sine (Recommended)
+ZenLeap is a script for Zen's browser UI, so it needs a script loader: [Sine](https://github.com/CosmoCreeper/Sine) or [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig). The installer script and the macOS app set up fx-autoconfig for you.
 
-> **Note:** ZenLeap is pending approval on the official Sine store. Until then, you need to temporarily enable unofficial JS sources to install. Once approved, it will be available directly in Sine's built-in marketplace and this step will no longer be needed.
+### Install via Sine
+
+> ZenLeap is not listed in Sine's built-in marketplace yet, so Sine must be allowed to install JavaScript mods from other sources first.
 
 1. Open Zen Browser and go to the **Sine mods settings page**
 2. Click the **settings gear icon** (top right of the Sine panel)
@@ -247,53 +278,72 @@ To jump far: Ctrl+Space → j → 1 → 0   (jump 10 tabs down)
 4. In the install field, enter: `yashas-salankimatt/ZenLeap`
 5. Click **Install** and restart Zen Browser
 
-### Alternative Install Methods
+Sine keeps ZenLeap up to date (ZenLeap's own updater is off for Sine installs).
 
-<details>
-<summary>Click to expand alternative installation methods</summary>
-
-#### Option 1: ZenLeap Manager App (macOS)
-
-1. Download `ZenLeap.Manager.app.zip` from the [latest release](https://github.com/yashas-salankimatt/ZenLeap/releases)
-2. Extract and run `ZenLeap Manager.app`
-3. Click **Install** and follow the prompts
-4. Enter your admin password when asked (needed for fx-autoconfig)
-5. Restart Zen Browser when prompted
-
-The Manager app will:
-- Automatically download and install fx-autoconfig
-- Install the latest ZenLeap
-- Set required preferences
-- Notify you when updates are available
-
-#### Option 2: Command Line
+### Installer Script
 
 **macOS / Linux:**
 
 ```bash
-curl -sfL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash -s -- install --remote
+curl -fsSL https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.sh | bash
 ```
+
+Options go after `bash -s --`, for example `... | bash -s -- --yes` (no questions) or `... | bash -s -- --profile 2`.
 
 **Windows (PowerShell):**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 | iex"
+irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 | iex
 ```
 
-Or clone the repo and run locally:
+With options, download the script first:
+
+```powershell
+irm https://raw.githubusercontent.com/yashas-salankimatt/ZenLeap/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Profile 2 -Yes
+```
+
+**From a clone** (installs the checkout's files instead of the latest release):
 
 ```bash
 git clone https://github.com/yashas-salankimatt/ZenLeap.git
 cd ZenLeap
-./install.sh          # macOS/Linux
-# powershell -ExecutionPolicy Bypass -File install.ps1   # Windows
+./install.sh                                            # macOS / Linux
+# powershell -ExecutionPolicy Bypass -File install.ps1  # Windows
 ```
 
-If Zen Browser isn't found automatically (e.g. CachyOS `zen-browser-bin`), the installer will prompt you for the path. You can also specify it directly:
+What the installer does:
+
+- **Finds your profiles the way Zen does**, from `profiles.ini`:
+  - Linux: `~/.config/zen` on current Zen (or `$XDG_CONFIG_HOME/zen`); `~/.zen` for installs that already have it, or with `MOZ_LEGACY_HOME=1`
+  - macOS: `~/Library/Application Support/zen`
+  - Windows: `%APPDATA%\zen`
+
+  Without `--profile` it uses the profile Zen opens by default plus every profile that already has ZenLeap; interactive runs show the list first. `--profile` takes a number from that list (1 is the default profile), a profile name, or `all`; `--profile-dir <dir>` targets a profile you start with `zen -profile <dir>`.
+- **Installs fx-autoconfig if it is missing**: its loader goes into `<profile>/chrome/utils`, and `config.js` + `defaults/pref/config-prefs.js` go into Zen's installation directory. It uses a tested fx-autoconfig version and checks every file's SHA-256. An existing fx-autoconfig (for example one installed by ZenRipple) is left as it is; interactive runs offer to update a loader older than the tested one.
+- **Never uses `sudo` by itself.** If Zen's installation directory is not writable (for example under `/opt` or `C:\Program Files`), it prints the exact commands to run (on Windows it can ask for administrator rights for just those two files). ZenLeap is still installed in the profile and loads once those files are in place.
+- **Installs the latest release** (`curl | bash`, `irm | iex`, or `--remote`), verified against the release's `CHECKSUMS.sha256`, and copies `zenleap.uc.js` to `<profile>/chrome/JS/`.
+- **Never closes Zen.** Zen loads ZenLeap when it starts: quit Zen first, or restart it afterwards. The installer asks Zen to clear its startup cache on the next start.
+- If the profile runs Sine, it points you to Sine instead (Sine does not run scripts from `chrome/JS`).
+
+If Zen isn't found automatically, pass its installation directory (the folder with the `zen` binary; on macOS the `.app`):
 
 ```bash
 ./install.sh install --zen-path /opt/zen-browser-bin
 ```
+
+`./install.sh --help` lists all options; `./install.sh check` compares the installed version with the latest release.
+
+**Flatpak** support is experimental: fx-autoconfig goes into the Flatpak's system-config extension (`~/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/…`), which Zen reads from `/app/etc/zen`; this has not been tested with current Zen releases. **Snap** and **AppImage** builds are not supported (their installation directory is read-only).
+
+### ZenLeap Manager (macOS)
+
+1. Download `ZenLeap-Manager-vX.Y.Z-macos.zip` from the [latest release](https://github.com/yashas-salankimatt/ZenLeap/releases/latest)
+2. Extract it and open `ZenLeap Manager.app`. The app is not signed: if macOS blocks it, allow it under **System Settings → Privacy & Security** (**Open Anyway**)
+3. Click **Install** and pick the profile (the one Zen opens by default is preselected)
+4. Enter your password if macOS asks (only needed when Zen.app is not writable for your user)
+
+The Manager installs the latest release (SHA-256 verified), sets up fx-autoconfig when needed, tells you when an update is available, and uninstalls.
 
 ### Manual Installation
 
@@ -304,36 +354,41 @@ If Zen Browser isn't found automatically (e.g. CachyOS `zen-browser-bin`), the i
 
 1. Download [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) from GitHub
 
-2. Copy the **contents** of `program/` to your Zen installation:
+2. Copy the **contents** of its `program/` folder (`config.js` and `defaults/`) into Zen's installation directory:
 
    | OS | Path |
    |----|------|
    | **macOS** | `/Applications/Zen.app/Contents/Resources/` |
    | **Windows** | `C:\Program Files\Zen Browser\` |
-   | **Linux** | `/opt/zen-browser/` or `/usr/lib/zen/` |
+   | **Linux** | the folder with the `zen` binary, e.g. `~/.tarball-installations/zen/` (official install script), `/opt/zen-browser/`, `/opt/zen-browser-bin/` or `/usr/lib/zen/` |
 
-3. Copy the **contents** of `profile/` to `<your-profile>/chrome/`:
+   `about:support` → **Application Binary** shows where Zen is installed.
 
-   Find your profile: `about:profiles` → "Root Directory"
+3. Copy its `profile/chrome/utils/` folder to `<your-profile>/chrome/utils/` (only `utils`: the other folders are examples)
+
+   `about:support` → **Profile Folder** shows your profile. Profiles live in:
+
+   | OS | Path |
+   |----|------|
+   | **Linux** | `~/.config/zen/<profile>` (current Zen), or `~/.zen/<profile>` (older installs) |
+   | **macOS** | `~/Library/Application Support/zen/Profiles/<profile>` |
+   | **Windows** | `%APPDATA%\zen\Profiles\<profile>` |
 
 #### Step 2: Install ZenLeap
 
-1. Create `<profile>/chrome/JS/` directory
-2. Copy `zenleap.uc.js` to `<profile>/chrome/JS/`
-3. Append `chrome.css` to `<profile>/chrome/userChrome.css`
+1. Create `<profile>/chrome/JS/`
+2. Copy `JS/zenleap.uc.js` into it
 
-#### Step 3: Enable and Restart
+#### Step 3: Restart
 
-1. In `about:config`, set to `true`:
-   - `toolkit.legacyUserProfileCustomizations.stylesheets`
-
-2. Go to `about:support` → **"Clear Startup Cache"**
-
-3. Restart Zen Browser
+In `about:support`, click **Clear startup cache…** (Zen restarts and loads ZenLeap).
 
 </details>
 
-</details>
+### Updating
+
+- **Installer script or Manager:** ZenLeap checks for new releases (Settings > Advanced > Updates, or the "Check for Updates" command) and can install them itself. Every download is checked against the release's SHA-256 and version before it is written. Running the installer again also updates.
+- **Sine:** Sine updates ZenLeap.
 
 ## Uninstallation
 
@@ -345,21 +400,27 @@ If Zen Browser isn't found automatically (e.g. CachyOS `zen-browser-bin`), the i
 
 ### Using Command Line
 ```bash
-./install.sh uninstall
+./install.sh uninstall                        # asks which profiles; offers to remove fx-autoconfig too
+./install.sh uninstall --yes                  # every profile that has ZenLeap, keeps fx-autoconfig
+./install.sh uninstall --yes --remove-fxautoconfig
 ```
 
+Windows: `powershell -ExecutionPolicy Bypass -File install.ps1 -Action uninstall`.
+
+Your ZenLeap data is kept: settings in `about:config` (`uc.zenleap.*`), and `chrome/zenleap-themes.json`, `chrome/zenleap-plugins/` and `zenleap-sessions/` in the profile. fx-autoconfig is only removed when you ask (other scripts, such as ZenRipple, may use it). ZenLeap installed through Sine is removed from Sine's mods page.
+
 ### Clean Legacy CSS
-If you have old pre-3.1 ZenLeap CSS in your `userChrome.css` that conflicts with the runtime theme engine:
+Installers up to 3.4 appended ZenLeap's CSS to `userChrome.css`; the installer removes that block when you update. To remove it on its own (a backup is saved as `userChrome.css.zenleap-backup`):
 ```bash
-./clean-legacy-css.sh              # Interactive, all profiles
-./clean-legacy-css.sh --yes        # Non-interactive, all profiles
+./clean-legacy-css.sh              # Interactive
+./clean-legacy-css.sh --yes        # Non-interactive
 ./clean-legacy-css.sh --dry-run    # Preview what would change
 ```
 
 ### Manual Uninstall
 1. Delete `<profile>/chrome/JS/zenleap.uc.js`
-2. Remove ZenLeap styles from `userChrome.css` (between `/* === ZenLeap Styles === */` markers)
-3. Clear startup cache and restart
+2. If `userChrome.css` still has a block between `/* === ZenLeap Styles === */` markers, remove it
+3. Restart Zen
 
 ## Usage Examples
 
@@ -497,16 +558,16 @@ p                                              (paste folder here)
 ## Customization
 
 ### Settings Modal
-Open the settings modal from the help screen (gear icon) or command palette (`> settings`). All keybindings, timing values, and display options can be customized.
+Open the settings modal from the help screen (gear icon) or the command palette ("Open Settings"). All keybindings, timing values, and display options can be customized.
 
 ### Themes
 
-ZenLeap ships with 7 built-in themes: **Meridian** (default), **Meridian Transparent**, **Dracula**, **Gruvbox Dark**, **Nord**, **Catppuccin Mocha**, and **Tokyo Night**. Switch themes in Settings > Appearance.
+ZenLeap ships with 24 built-in themes: **Meridian** (default), Meridian Transparent, Dracula, Gruvbox Dark, Nord, Catppuccin Mocha, Tokyo Night, Monokai, One Dark Pro, Solarized Dark, GitHub Dark, Material Palenight, Ayu Dark, Ayu Mirage, Synthwave '84, Everforest Dark, Kanagawa, Rosé Pine, Vesper, Poimandres, Moonlight, Andromeda, Nightfox and Vitesse Dark. Switch themes in Settings > Appearance or with the "Switch Theme" command (live preview). "Apply Theme to Browser" also recolors Zen itself.
 
 #### Custom Themes
 Create your own themes by extending a built-in theme:
 1. **Visual Editor**: Settings > Appearance > Custom Themes > "Create Theme" — grouped color pickers with live preview
-2. **JSON File**: Edit `zenleap-themes.json` in your profile's chrome directory (open via `:open-themes-file` command)
+2. **JSON File**: Edit `zenleap-themes.json` in your profile's `chrome` folder (the "Open Themes File" command opens it)
 
 ```json
 {
@@ -519,28 +580,31 @@ Create your own themes by extending a built-in theme:
 }
 ```
 
-Run `:reload-themes` after editing the JSON file. Themes support `extends` inheritance — only override properties you want to change.
+Run the "Reload Themes" command after editing the JSON file. Themes support `extends` inheritance — only override properties you want to change.
 
 ### Appearance Customization
 
-All 50+ colors are customizable through the Settings modal (Appearance tab) or via the visual theme editor. Changes apply instantly with live preview. All styles are injected at runtime via CSS custom properties (`--zl-*`).
+All 50+ colors can be changed in a custom theme, with the visual theme editor (live preview) or in `zenleap-themes.json`. All styles are injected at runtime via CSS custom properties (`--zl-*`); ZenLeap does not use `userChrome.css`.
 
-## Debugging
+## Troubleshooting
 
 ### Browser Console
-Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages.
+Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages; "Toggle Debug Logging" in the command palette adds more.
 
 ### Common Issues
 
-**Numbers not showing:**
-- Ensure fx-autoconfig is installed
-- Clear startup cache (`about:support`)
-- Verify `zenleap.uc.js` is in `chrome/JS/` (not just `chrome/`)
+**Nothing happens / numbers not showing:**
+- Restart Zen: ZenLeap loads when Zen starts
+- Run `./install.sh check` to see which profiles have ZenLeap, and check `about:support` → **Profile Folder** is one of them
+- Make sure `zenleap.uc.js` is in `<profile>/chrome/JS/` (not just `chrome/`) and that fx-autoconfig is installed (`<profile>/chrome/utils/boot.sys.mjs`, and `config.js` next to the Zen binary); run the installer again to repair both
+- If the installer printed `sudo` or administrator commands for fx-autoconfig, run them
+- Clear the startup cache: `about:support` → **Clear startup cache…**
+- Installed through Sine? Check that the mod is enabled on Sine's mods page
 
 **Keyboard shortcuts not working:**
 - Check no extension is capturing `Ctrl+Space`
+- `Ctrl+Space` is also the default "switch input source" shortcut on macOS and in fcitx/fcitx5 on Linux; change one of them (ZenLeap: Settings > Keybindings)
 - Click somewhere in browser chrome first
-- Check `about:addons` for conflicts
 
 **Sidebar not expanding in compact mode:**
 - Make sure you're using Zen Browser (not Firefox)
@@ -548,9 +612,10 @@ Press `Ctrl+Shift+J` (Cmd+Shift+J on macOS). Look for `[ZenLeap]` messages.
 
 ## Requirements
 
-- [Zen Browser](https://zen-browser.app/) (Firefox-based)
-- [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) (auto-installed by installer)
+- [Zen Browser](https://zen-browser.app/) **1.21.7b or newer** (tested on 1.22.3b)
+- A script loader: [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) (installed by the installer script and the macOS app) or [Sine](https://github.com/CosmoCreeper/Sine)
 - macOS, Linux, or Windows
+- Installer script: bash 3.2 or newer, `curl` (or `wget`) and `unzip`; Windows installer: PowerShell 5.1 or newer
 
 ## License
 
@@ -566,9 +631,10 @@ MIT License
 
 **ZenLeap collects no telemetry, analytics, or user data of any kind.**
 
-- All settings and data (marks, themes, plugin state) are stored locally in your browser's preference system (`about:config`) and never leave your machine
-- The only network requests ZenLeap makes are to the [GitHub repository](https://github.com/yashas-salankimatt/ZenLeap) to check for updates and download new versions — no data is sent
-- ZenLeap does not access or store passwords, cookies, browsing history, or web page content
-- Third-party plugins loaded through the plugin system run locally and are not subject to any ZenLeap network activity
+- Settings, essential-tab marks and update-check state are stored in your profile's preferences (`uc.zenleap.*` in `about:config`); custom themes, plugin data and saved workspace sessions are files in your profile (`chrome/zenleap-themes.json`, `chrome/zenleap-plugin-data.json`, `chrome/zenleap-plugins/`, `zenleap-sessions/`). Nothing leaves your machine.
+- Saved workspace sessions contain the titles and URLs of the tabs you chose to save. Tab previews in browse mode are screenshots taken by the browser and kept in memory only.
+- ZenLeap's own network requests go only to GitHub: checking for a new release, downloading it with its checksum, and loading the changelog shown in the update dialog. Nothing is sent.
+- ZenLeap does not access or store passwords or cookies.
+- Plugins you install run with full browser privileges and may make their own network requests (for example the Readwise Reader example talks to Readwise).
 
 For more details, see [SECURITY.md](SECURITY.md).
