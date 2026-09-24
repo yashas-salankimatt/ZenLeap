@@ -178,6 +178,7 @@ e7fca8757159751df080e5cbfcd27b508d98c5cdfd6434ea14247832418d1f63  profile/chrome
 dc7547aecbaac67da94b54e353f8e306a0ca01b2a461e106cc88c63a2e210cac  profile/chrome/utils/uc_api.sys.mjs
 3fb7c9799864ee01428722939f324acea1e6065cb63a9298e7bbc59e5adbd96a  profile/chrome/utils/utils.sys.mjs
 "
+ZP_BOM=$'\xef\xbb\xbf'
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
 # values must be ignored, and Firefox does so).
@@ -222,14 +223,54 @@ zp__strip_slash() {
     printf '%s\n' "$p"
 }
 
-# Value of <key> in [<section>] of an INI file (CRs ignored)
+# Print an INI file the way Firefox's INI parser (nsINIParser) reads it: one
+# "[section]" or "key=value" line per entry, without the UTF-8 BOM, CRs,
+# leading blanks and comment lines. A malformed section header ("[Profile1]x",
+# "[Profile1") prints "[]", so the keys under it are ignored, as by Firefox.
+zp__ini_lines() {
+    local line first=true name rest
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$first" = true ]; then
+            line=${line#"$ZP_BOM"}
+            first=false
+        fi
+        line=${line#"${line%%[![:blank:]]*}"}
+        case "$line" in
+            ""|\;*|\#*) ;;
+            \[*)
+                name=${line#\[}
+                case "$name" in
+                    *\]*)
+                        rest=${name#*\]}
+                        name=${name%%\]*}
+                        case "$rest" in *[![:blank:]]*) name="" ;; esac
+                        ;;
+                    *) name="" ;;
+                esac
+                printf '[%s]\n' "$name"
+                ;;
+            *=*) printf '%s\n' "$line" ;;
+        esac
+    done < <(tr -d '\r' < "$1")
+}
+
+# Value of <key> in [<section>] of an INI file (the last one, like Firefox)
 zp_ini_value() {
+    local line section="" value="" found=false
     [ -f "$1" ] || return 0
-    awk -v want="$2" -v key="$3" '
-        { sub(/\r$/, "") }
-        /^[ \t]*\[.*\][ \t]*$/ { s = $0; sub(/^[ \t]*\[/, "", s); sub(/\][ \t]*$/, "", s); sect = s; next }
-        sect == want && index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }
-    ' "$1"
+    while IFS= read -r line; do
+        case "$line" in
+            \[*\]) section=${line#\[}; section=${section%\]} ;;
+            "$3="*)
+                if [ "$section" = "$2" ]; then
+                    value=${line#"$3="}
+                    found=true
+                fi
+                ;;
+        esac
+    done < <(zp__ini_lines "$1")
+    if [ "$found" = true ]; then printf '%s\n' "$value"; fi
+    return 0
 }
 
 # Candidate profile roots, the one Zen uses first. Sets ZP_ROOT_CANDIDATES and
@@ -273,12 +314,6 @@ zp__add_profile() {
     ZP_PROFILE_ROOT+=("$4")
 }
 
-# Print an INI file without CRs.
-zp__ini_lines() {
-    tr -d '\r' < "$1"
-    printf '\n'
-}
-
 # zp__newest <dirs...>: position (0-based) of the directory whose prefs.js
 # changed last, i.e. the profile used most recently.
 zp__newest() {
@@ -307,8 +342,6 @@ zp__parse_root() {
     while IFS= read -r line; do
         case "$line" in
             \[*\]) section=${line#\[}; section=${section%\]}; continue ;;
-            *=*) ;;
-            *) continue ;;
         esac
         key=${line%%=*}
         val=${line#*=}
@@ -670,15 +703,16 @@ zp_strip_css_block() {
     return 0
 }
 
-# SHA-256 of a file as lowercase hex.
+# SHA-256 of a file as lowercase hex. The file is read from stdin: given a
+# name containing "\", GNU sha256sum escapes it and prefixes the hash with "\".
 zp_sha256() {
     local out
     if command -v sha256sum >/dev/null 2>&1; then
-        out=$(sha256sum "$1")
+        out=$(sha256sum < "$1")
     elif command -v shasum >/dev/null 2>&1; then
-        out=$(shasum -a 256 "$1")
+        out=$(shasum -a 256 < "$1")
     else
-        out=$(openssl dgst -sha256 -r "$1")
+        out=$(openssl dgst -sha256 -r < "$1")
     fi
     printf '%s\n' "${out%% *}" | tr '[:upper:]' '[:lower:]'
 }

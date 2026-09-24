@@ -514,6 +514,31 @@ EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh instal
 check "FX_AUTOCONFIG_DIR + loader already there: reported as up to date" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
 check "FX_AUTOCONFIG_DIR + loader already there: not called outdated" lacks "$OUT" "older than the tested one"
 
+# 29. profiles.ini the way Firefox reads it: a UTF-8 BOM, "[Section] " with a
+#     trailing blank, indented keys and comments work; the keys under a
+#     malformed header ("[Profile1]x") are ignored  [REV-LINST-10]
+new_home inifx
+R="$H/.config/zen"
+mk_profile "$R" "aaaa.one"
+mk_profile "$R" "bbbb.two"
+printf '\xef\xbb\xbf[Profile0]\nName=one\nIsRelative=1\nPath=aaaa.one\n\n[Profile1]\nName=two\nIsRelative=1\nPath=bbbb.two\nDefault=1\n' > "$R/profiles.ini"
+touch -d '2020-01-01' "$R/bbbb.two/prefs.js"
+run install.sh install --yes --zen-path "$APP"
+check "ini with a UTF-8 BOM: read (the Default=1 profile)" exists "$R/bbbb.two/chrome/JS/zenleap.uc.js"
+check "ini with a UTF-8 BOM: not the newest unmarked one" missing "$R/aaaa.one/chrome"
+rm -rf "$R"/*/chrome
+printf '[Profile0]\nName=one\nIsRelative=1\nPath=aaaa.one\nDefault=1\n\n[Profile1] \nName=two\nIsRelative=1\nPath=bbbb.two\n' > "$R/profiles.ini"
+run install.sh install --yes --zen-path "$APP"
+check "'[Profile1] ': Profile0 keeps its own keys (the default)" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
+check "'[Profile1] ': Profile1 not taken for the default" missing "$R/bbbb.two/chrome"
+run install.sh check
+check "'[Profile1] ': Profile1 is listed" has "$OUT" "two: NOT_INSTALLED"
+rm -rf "$R"/*/chrome
+printf '[Profile0]\n  Name=one\n\tIsRelative=1\n  Path=aaaa.one\n; Path=bbbb.two\n# Default=0\n[Profile1]x\nName=two\nIsRelative=1\nPath=bbbb.two\nDefault=1\n' > "$R/profiles.ini"
+run install.sh install --yes --all-profiles --zen-path "$APP"
+check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
+check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
+
 # 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
 #     (`sh` on macOS) works  [REV-LINST-17]
 new_home notbash
@@ -539,6 +564,40 @@ env -i PATH="$FAKEBIN:/usr/bin:/bin" HOME="$H" TMPDIR="$T" FAKE_ROOT="$T" FAKE_F
 RC=$?
 check "bash --posix (macOS sh): exit 0" rc_is 0
 check "bash --posix (macOS sh): installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+
+# 41. A path with a backslash: files are hashed from stdin (GNU sha256sum
+#     escapes such names in its output)
+new_home 'back\slash'
+mk_two_profiles "$H/.config/zen"
+run install.sh install --yes --zen-path "$APP"
+check "HOME with a backslash: exit 0" rc_is 0
+check "HOME with a backslash: the verified loader copied" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/utils/boot.sys.mjs"
+
+# 42. Profile root rules (the same as the ZenRipple installer, verified with the
+#     real Zen): ~/.zen or ~/zen existing (a regular file counts, a dangling
+#     symlink doesn't) or MOZ_LEGACY_HOME starting with 1 -> ~/.zen
+# shellcheck disable=SC2016  # expanded by the bash under test
+lib_root() {  # lib_root <home> [VAR=value...]
+    local h="$1"
+    shift
+    env -i HOME="$h" PATH=/usr/bin:/bin "$@" "$TEST_BASH" -c '. "$1"; zp_linux_rule_root' _ "$REPO/scripts/lib/zen-paths.sh"
+}
+RH="$T/roots"
+mkdir -p "$RH/plain" "$RH/dangling" "$RH/zenfile" "$RH/dotzenfile" "$RH/capital/Zen" "$RH/mozilla/.mozilla"
+ln -s "$T/nowhere" "$RH/dangling/.zen"
+: > "$RH/zenfile/zen"
+: > "$RH/dotzenfile/.zen"
+check "root: nothing -> ~/.config/zen" test "$(lib_root "$RH/plain")" = "$RH/plain/.config/zen"
+check "root: a dangling ~/.zen symlink doesn't count" test "$(lib_root "$RH/dangling")" = "$RH/dangling/.config/zen"
+check "root: ~/zen as a regular file -> ~/.zen" test "$(lib_root "$RH/zenfile")" = "$RH/zenfile/.zen"
+check "root: ~/.zen as a regular file -> ~/.zen" test "$(lib_root "$RH/dotzenfile")" = "$RH/dotzenfile/.zen"
+check "root: ~/Zen doesn't count" test "$(lib_root "$RH/capital")" = "$RH/capital/.config/zen"
+check "root: ~/.mozilla doesn't count" test "$(lib_root "$RH/mozilla")" = "$RH/mozilla/.config/zen"
+check "root: MOZ_LEGACY_HOME=1x -> ~/.zen" test "$(lib_root "$RH/plain" MOZ_LEGACY_HOME=1x)" = "$RH/plain/.zen"
+check "root: MOZ_LEGACY_HOME=true -> XDG" test "$(lib_root "$RH/plain" MOZ_LEGACY_HOME=true)" = "$RH/plain/.config/zen"
+check "root: MOZ_LEGACY_HOME=0 -> XDG" test "$(lib_root "$RH/plain" MOZ_LEGACY_HOME=0)" = "$RH/plain/.config/zen"
+check "root: relative XDG_CONFIG_HOME ignored" test "$(lib_root "$RH/plain" XDG_CONFIG_HOME=rel/cfg)" = "$RH/plain/.config/zen"
+check "root: absolute XDG_CONFIG_HOME honoured" test "$(lib_root "$RH/plain" XDG_CONFIG_HOME=/x/cfg)" = "/x/cfg/zen"
 
 # ---------------------------------------------------------------- install-plugin.sh
 
