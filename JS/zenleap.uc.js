@@ -740,11 +740,12 @@
 
       for (const [key, def] of entries) resolve(key, def);
       log(`Loaded ${entries.length} user theme(s) from zenleap-themes.json`);
+      return { count: entries.length, error: null };
     } catch (e) {
       // A missing file is fine — it's optional
-      if (e.name !== 'NotFoundError' && (!e.result || e.result !== 0x80520012)) {
-        reportError('Error loading user themes from zenleap-themes.json', e);
-      }
+      if (e.name === 'NotFoundError' || e.result === 0x80520012) return { count: 0, error: null };
+      reportError('Error loading user themes from zenleap-themes.json', e);
+      return { count: 0, error: e };
     }
   }
 
@@ -4131,6 +4132,8 @@
     };
   }
 
+  const _newPluginNames = []; // found by the current scan, announced together
+
   // Register a plugin manifest. Built-in manifests carry init/destroy directly; external
   // ones carry _scriptPath and their plugin.js is only evaluated when enabled.
   function registerPlugin(rawManifest) {
@@ -4149,7 +4152,7 @@
       markPluginDataDirty(manifest.id, '*');
       if (!manifest.builtIn) {
         console.info(`[ZenLeap] New plugin found: "${manifest.name}" (${manifest.id}). Enable it in Manage Plugins to run it.`);
-        showZenLeapToast(`New ZenLeap plugin found: ${manifest.name} — enable it in Manage Plugins`, 6000);
+        _newPluginNames.push(manifest.name);
       }
     }
 
@@ -4450,6 +4453,14 @@
       } catch (e) {
         console.error(`[ZenLeap] Error loading plugin from ${childPath}:`, e);
       }
+    }
+
+    // One toast for everything this scan found
+    const found = _newPluginNames.splice(0);
+    if (found.length === 1) {
+      showZenLeapToast(`New ZenLeap plugin found: ${found[0]} \u2014 enable it in Manage Plugins`, 6000);
+    } else if (found.length > 1) {
+      showZenLeapToast(`${found.length} new ZenLeap plugins found (${found.join(', ')}) \u2014 enable them in Manage Plugins`, 8000);
     }
   }
 
@@ -5186,7 +5197,7 @@
         command: async () => {
           const playingTabs = getPlayingTabs();
           if (playingTabs.length === 0) {
-            log('No tabs currently playing audio');
+            showZenLeapToast('No tab is playing audio');
             return;
           }
           if (playingTabs.length === 1) {
@@ -5396,8 +5407,12 @@
         setTimeout(() => enterUpdateMode(), 100);
       }},
       { key: 'switch-theme', label: 'Switch Theme...', icon: '🎨', tags: ['theme', 'color', 'scheme', 'appearance', 'switch', 'meridian', 'dracula', 'nord', 'gruvbox', 'catppuccin', 'tokyo'], subFlow: 'theme-picker' },
-      { key: 'reload-themes', label: 'Reload Themes', icon: '🎨', tags: ['theme', 'reload', 'refresh', 'custom', 'user'], command: () => {
-        loadUserThemes().then(() => { applyTheme(); log('Themes reloaded'); });
+      { key: 'reload-themes', label: 'Reload Themes', icon: '🎨', tags: ['theme', 'reload', 'refresh', 'custom', 'user'], command: async () => {
+        const { count, error } = await loadUserThemes();
+        applyTheme();
+        showZenLeapToast(error
+          ? 'zenleap-themes.json has an error \u2014 see the Browser Console (built-in themes still work)'
+          : `Themes reloaded: ${count} custom theme${count !== 1 ? 's' : ''}`);
       }},
       { key: 'open-themes-file', label: 'Open Themes File', icon: '📝', tags: ['theme', 'edit', 'custom', 'file', 'json'], command: async () => {
         await ensureThemesFile();
@@ -6101,7 +6116,11 @@
     }
 
     dedupTabsToClose = tabsToClose;
-    if (tabsToClose.length === 0) return [];
+    if (tabsToClose.length === 0) {
+      const sublabel = S['display.searchAllWorkspaces'] ? 'No page is open twice in any workspace'
+        : 'No page is open twice in this workspace \u2014 Tab includes all workspaces';
+      return [{ key: 'dedup:none', label: 'No duplicate tabs found', icon: '\u2713', sublabel, tags: [] }];
+    }
 
     // Cancel first and preselected; the duplicates below are the preview (REV-LCMDS-09)
     const n = tabsToClose.length;
@@ -6210,6 +6229,7 @@
       results: () => getDedupPreviewResults(),
       select: (r) => {
         if (r?.key === 'dedup:cancel') { exitSubFlow(); return; }
+        if (r?.key === 'dedup:none') { exitSearchMode(); return; }
         // "Close N" (or a previewed duplicate): close them as one batch
         const count = TabOps.close(dedupTabsToClose);
         if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
@@ -11087,9 +11107,7 @@
     // Show count header for dedup-preview sub-flow
     if (commandSubFlow?.type === 'dedup-preview') {
       const count = dedupTabsToClose.length;
-      if (count === 0) {
-        html += `<div class="zenleap-command-count">No duplicate tabs found</div>`;
-      } else {
+      if (count > 0) {
         html += `<div class="zenleap-command-count">${count} duplicate${count !== 1 ? 's' : ''} found — choose "Close" to close them</div>`;
       }
     }
