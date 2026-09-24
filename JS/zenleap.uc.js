@@ -749,30 +749,61 @@
     }
   }
 
-  // Create template zenleap-themes.json if it doesn't exist
+  // Create template zenleap-themes.json if it doesn't exist (never over an existing one,
+  // even one that can't be read right now)
   async function ensureThemesFile() {
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
     try {
-      await IOUtils.read(themesPath, { maxBytes: 1 });
+      if (await IOUtils.exists(themesPath)) return;
     } catch (e) {
-      // File doesn't exist — create template
-      const template = JSON.stringify({
-        _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme (themes without it start from Meridian). After editing, run 'Reload Themes' from the ZenLeap command palette (type > in tab search).",
-        "example-custom": {
-          name: "Example Custom",
-          extends: "meridian",
-          accent: "#ff6b6b",
-          accentBright: "#ff8e8e",
-          highlight: "#ff6b6b"
-        }
-      }, null, 2);
-      try {
-        await IOUtils.writeUTF8(themesPath, template);
-        log('Created template zenleap-themes.json');
-      } catch (writeErr) {
-        console.warn('[ZenLeap] Could not create themes template:', writeErr);
-      }
+      console.warn('[ZenLeap] Could not check for zenleap-themes.json:', e);
+      return;
     }
+    const template = JSON.stringify({
+      _comment: "ZenLeap User Themes. Use 'extends' to inherit from a built-in theme (themes without it start from Meridian). After editing, run 'Reload Themes' from the ZenLeap command palette (type > in tab search).",
+      "example-custom": {
+        name: "Example Custom",
+        extends: "meridian",
+        accent: "#ff6b6b",
+        accentBright: "#ff8e8e",
+        highlight: "#ff6b6b"
+      }
+    }, null, 2);
+    try {
+      // 'create' fails instead of replacing a file another window created meanwhile
+      await IOUtils.writeUTF8(themesPath, template, { mode: 'create' });
+      log('Created template zenleap-themes.json');
+    } catch (writeErr) {
+      if (writeErr?.name !== 'NoModificationAllowedError') console.warn('[ZenLeap] Could not create themes template:', writeErr);
+    }
+  }
+
+  // The themes file as the theme editor changes it: {} when there is none yet, null
+  // (after telling the user) when it can't be read or isn't a JSON object, so a
+  // hand-edited file with a typo is never overwritten.
+  async function readThemesFileForEdit(themesPath) {
+    let content;
+    try {
+      content = await IOUtils.readUTF8(themesPath);
+    } catch (e) {
+      if (e?.name === 'NotFoundError') return {};
+      reportError('Reading zenleap-themes.json failed', e);
+      showSettingsToast('error', 'Could not read zenleap-themes.json \u2014 see the Browser Console');
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(content);
+      if (!_isPlainObject(parsed)) throw new Error('the file must contain a JSON object');
+      return parsed;
+    } catch (e) {
+      reportError('zenleap-themes.json is not valid; it was left unchanged', e);
+      showSettingsToast('error', 'zenleap-themes.json has an error: fix it with "Open Themes File", then try again');
+      return null;
+    }
+  }
+
+  function writeThemesFile(themesPath, rawThemes) {
+    return IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2), { tmpPath: `${themesPath}.tmp` });
   }
 
   // Theme editor: schema for all editable theme properties
@@ -13877,11 +13908,11 @@
 
   async function openThemeForEditing(key) {
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    const rawThemes = await readThemesFileForEdit(themesPath);
+    if (!rawThemes) return;
     try {
-      const content = await IOUtils.readUTF8(themesPath);
-      const rawThemes = JSON.parse(content);
       const rawDef = rawThemes[key];
-      if (!rawDef) return;
+      if (!_isPlainObject(rawDef)) return;
 
       themeEditorActive = true;
       themeEditorKey = key;
@@ -13895,7 +13926,7 @@
       applyThemeEditorPreview();
       renderSettingsContent();
     } catch (e) {
-      console.warn('[ZenLeap] Error loading theme for editing:', e);
+      reportError('Opening the theme for editing failed', e);
     }
   }
 
@@ -14229,11 +14260,8 @@
     }
 
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
-    let rawThemes = {};
-    try {
-      const content = await IOUtils.readUTF8(themesPath);
-      rawThemes = JSON.parse(content);
-    } catch (e) { /* start fresh */ }
+    const rawThemes = await readThemesFileForEdit(themesPath);
+    if (!rawThemes) return;
 
     const key = themeEditorKey || generateThemeKey(themeEditorName, rawThemes);
 
@@ -14248,10 +14276,11 @@
     rawThemes[key] = def;
 
     try {
-      await IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2));
+      await writeThemesFile(themesPath, rawThemes);
       log(`Saved theme "${themeEditorName}" to zenleap-themes.json`);
     } catch (e) {
-      console.warn('[ZenLeap] Error saving theme:', e);
+      reportError('Saving the theme failed', e);
+      showSettingsToast('error', 'Saving the theme failed \u2014 see the Browser Console');
       return;
     }
 
@@ -14278,14 +14307,15 @@
     }
 
     const themesPath = PathUtils.join(PathUtils.profileDir, 'chrome', 'zenleap-themes.json');
+    const rawThemes = await readThemesFileForEdit(themesPath);
+    if (!rawThemes) return;
     try {
-      const content = await IOUtils.readUTF8(themesPath);
-      const rawThemes = JSON.parse(content);
       delete rawThemes[key];
-      await IOUtils.writeUTF8(themesPath, JSON.stringify(rawThemes, null, 2));
+      await writeThemesFile(themesPath, rawThemes);
       log(`Deleted theme "${themeName}"`);
     } catch (e) {
-      console.warn('[ZenLeap] Error deleting theme:', e);
+      reportError('Deleting the theme failed', e);
+      showSettingsToast('error', 'Deleting the theme failed \u2014 see the Browser Console');
       return;
     }
 
