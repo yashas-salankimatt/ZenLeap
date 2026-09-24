@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# zen-paths.sh - Zen Browser profile discovery shared by ZenLeap's shell scripts.
+# zen-paths.sh - Zen profile discovery (and ZenLeap release download) shared by
+# ZenLeap's shell scripts.
 #
 # This file is the single source of truth. install.sh and
 # "ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" carry an embedded copy
@@ -29,6 +30,7 @@
 
 ZP_FLATPAK_ID="app.zen_browser.zen"
 ZP_SINE_MOD_ID="zenleap-relative-tab-nav"
+ZP_GITHUB_REPO="yashas-salankimatt/ZenLeap"
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
 # values must be ignored, and Firefox does so).
@@ -487,4 +489,52 @@ zp_zenleap_version() {
     elif d=$(zp_sine_zenleap_dir "$1"); then
         zp_file_version "$d/JS/zenleap.uc.js"
     fi
+}
+
+# Tag of the latest ZenLeap release (e.g. v3.4.0). Uses the GitHub API and
+# falls back to the releases/latest redirect (no API rate limit).
+zp_latest_release_tag() {
+    local json tag
+    json=$(curl -sfL -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/$ZP_GITHUB_REPO/releases/latest" 2>/dev/null) || json=""
+    tag=$(printf '%s' "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [ -z "$tag" ]; then
+        tag=$(curl -sfI "https://github.com/$ZP_GITHUB_REPO/releases/latest" 2>/dev/null | tr -d '\r' |
+            sed -n 's|^[Ll]ocation:.*/releases/tag/||p' | tail -n 1)
+    fi
+    case "$tag" in
+        ""|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    printf '%s\n' "$tag"
+}
+
+# Download ZenLeap release <tag> into <dest> (JS/zenleap.uc.js, and
+# zenleap-themes.json when available) and verify it: the script's SHA-256
+# must match the tag's CHECKSUMS.sha256 and its @version must match the tag.
+# Returns 1 with ZP_ERROR on failure. Usage: zp_fetch_release <tag> <dest>
+zp_fetch_release() {
+    local tag="$1" dest="$2" raw expected actual version
+    raw="https://raw.githubusercontent.com/$ZP_GITHUB_REPO/$tag"
+    mkdir -p "$dest/JS"
+    if ! curl -sfL "$raw/JS/zenleap.uc.js" -o "$dest/JS/zenleap.uc.js"; then
+        ZP_ERROR="Failed to download zenleap.uc.js ($tag)"
+        return 1
+    fi
+    if ! curl -sfL "$raw/CHECKSUMS.sha256" -o "$dest/CHECKSUMS.sha256"; then
+        ZP_ERROR="Release $tag has no CHECKSUMS.sha256; refusing to install unverified code"
+        return 1
+    fi
+    expected=$(awk '$2 == "JS/zenleap.uc.js" || $2 == "*JS/zenleap.uc.js" { print tolower($1); exit }' "$dest/CHECKSUMS.sha256")
+    actual=$(zp_sha256 "$dest/JS/zenleap.uc.js")
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+        ZP_ERROR="zenleap.uc.js from $tag does not match the release's CHECKSUMS.sha256 (expected ${expected:-no entry}, got $actual); refusing to install it"
+        return 1
+    fi
+    version=$(zp_file_version "$dest/JS/zenleap.uc.js")
+    if [ "v$version" != "$tag" ] && [ "$version" != "$tag" ]; then
+        ZP_ERROR="zenleap.uc.js from $tag reports version ${version:-?}; refusing to install it"
+        return 1
+    fi
+    curl -sfL "$raw/zenleap-themes.json" -o "$dest/zenleap-themes.json" 2>/dev/null || rm -f "$dest/zenleap-themes.json"
+    return 0
 }
