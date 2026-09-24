@@ -6,11 +6,12 @@
  * (--zl-* custom properties) and keeps styling in a single canonical
  * source, eliminating drift between static CSS and runtime CSS.
  *
- * This file is intentionally empty.  The installer still appends it to
- * userChrome.css for backwards compatibility, but no rules are needed
- * here — the runtime #zenleap-styles element handles everything.
+ * This file is intentionally empty. Sine loads it as the mod's chrome
+ * stylesheet (see theme.json); the installers no longer add it to
+ * userChrome.css. No rules are needed here: the runtime #zenleap-styles
+ * element handles everything.
  *
  * If you previously customized ZenLeap colors via --zenleap-* CSS
- * variables in this file, use the built-in Settings panel instead
- * (Ctrl+Space → :settings).
+ * variables, use the built-in Settings panel instead (command palette:
+ * Ctrl+Shift+/ → "Open Settings", or Ctrl+Space → ? → gear icon).
  */

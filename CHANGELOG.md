@@ -431,7 +431,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Installer now works correctly when piped from curl (`curl | bash`)
 - Help modal displays dynamic version from VERSION constant
 
-## [2.4.0] - 2025-02-05
+## [2.4.0] - 2026-02-05
 
 ### Added
 - **Help Modal** - Comprehensive keybinding reference
@@ -451,7 +451,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search results now exclude current tab
 - Increased search results window height for more results
 
-## [2.3.0] - 2025-02-05
+## [2.3.0] - 2026-02-05
 
 ### Added
 - **Tab Search** (Spotlight-like fuzzy finder)
@@ -470,7 +470,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Glassmorphism UI with smooth animations
   - Shows up to 9 results with quick-jump labels
 
-## [2.2.0] - 2025-02-05
+## [2.2.0] - 2026-02-05
 
 ### Added
 - **Jump History** (like vim's Ctrl+O / Ctrl+I)
@@ -492,7 +492,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated overlay hints to show all available commands
 - Improved keyboard handling for new modes
 
-## [2.1.0] - 2025-02-05
+## [2.1.0] - 2026-02-05
 
 ### Added
 - **ZenLeap Manager.app** - macOS GUI installer for easy install/update/uninstall
@@ -513,7 +513,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sidebar toggle working incorrectly when floating sidebar already visible
 - Profile selection in installer when multiple profiles exist
 
-## [2.0.0] - 2025-02-05
+## [2.0.0] - 2026-02-05
 
 ### Added
 - **Browse Mode** - Navigate with j/k, Enter to open, x to close, Escape to cancel
@@ -532,7 +532,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - G (shift+g) not working for last tab
 - Pressing 'g' causing immediate jump instead of entering g-mode
 
-## [1.0.0] - 2025-02-05
+## [1.0.0] - 2026-02-05
 
 ### Added
 - Initial release
@@ -551,6 +551,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.4.0 | 2026-03-22 | Fix browser freeze on quit, jj escape now an opt-in setting, URL-bar jj fix |
+| 3.3.9 | 2026-03-14 | Folder badge alignment, long folder names fade before the badge |
+| 3.3.8 | 2026-03-13 | Browser theme on Zen 1.19+, no color flash on workspace switch |
+| 3.3.7 | 2026-03-04 | Plugin data moved from a pref to zenleap-plugin-data.json |
+| 3.3.6 | 2026-02-27 | Collapsed-folder numbering and folder badges, rebound browse keys, installer fixes |
+| 3.3.5 | 2026-02-26 | Sine package manager compatibility (self-update disabled for Sine installs) |
 | 3.3.4 | 2026-02-25 | Relative numbers display modes, browse mode marks, persistent essential tab marks |
 | 3.3.3 | 2026-02-24 | Show Relative Numbers toggle, uninstaller fx-autoconfig fix |
 | 3.3.2 | 2026-02-24 | Split view session save/restore, browse mode scroll fix, cross-workspace marks & jumps, delete workspace defaults to current |
@@ -564,9 +570,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 2.6.0 | 2026-02-05 | Cross-workspace search, exact match quotes, appearance customization |
 | 2.5.0 | 2026-02-05 | Settings modal, h/l workspace switching, configurable keybindings |
 | 2.4.1 | 2026-02-05 | Browse mode multi-select (Space/y/p/P), gg/G navigation, paste fix |
-| 2.4.0 | 2025-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |
-| 2.3.0 | 2025-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |
-| 2.2.0 | 2025-02-05 | Jump history (o/i), marks (m/') |
-| 2.1.0 | 2025-02-05 | Manager app, compact mode, arrow keys |
-| 2.0.0 | 2025-02-05 | Browse mode, g-mode, z-mode |
-| 1.0.0 | 2025-02-05 | Initial release |
+| 2.4.0 | 2026-02-05 | Help modal (?), multi-word search, recency ranking, close tabs from search |
+| 2.3.0 | 2026-02-05 | Tab Search (Ctrl+/) with fuzzy finder and vim mode |
+| 2.2.0 | 2026-02-05 | Jump history (o/i), marks (m/') |
+| 2.1.0 | 2026-02-05 | Manager app, compact mode, arrow keys |
+| 2.0.0 | 2026-02-05 | Browse mode, g-mode, z-mode |
+| 1.0.0 | 2026-02-05 | Initial release |

@@ -1,5 +1,5 @@
 {
-  "_comment": "ZenLeap User Themes — add custom themes here. Use 'extends' to inherit from a built-in theme and override specific properties. Run ':reload-themes' in the command bar after editing. See all available properties at: https://github.com/yashas-salankimatt/ZenLeap#themes",
+  "_comment": "ZenLeap User Themes — add custom themes here. Use 'extends' to inherit from a built-in theme and override specific properties. Run 'Reload Themes' from the command palette (Ctrl+Shift+/) after editing. See all available properties at: https://github.com/yashas-salankimatt/ZenLeap#themes",
   "example-custom": {
     "name": "Example Custom",
     "extends": "meridian",
