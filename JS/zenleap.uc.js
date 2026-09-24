@@ -2935,6 +2935,10 @@
   //   cover the active workspace unless called with { allWorkspaces: true }. While a
   //   Glance is open, tabs.getCurrent() (and the tabs.* default tab) is the Glance's
   //   parent tab; browser.* acts on the page on screen (the Glance).
+  //   commands.execute(key) runs a command without the palette's confirmation step
+  //   (the plugin asked for it); commands that need input open the palette.
+  //   init() throwing means no destroy() call; timers from the plugin's global
+  //   setTimeout/setInterval are cleared when it is disabled.
 
   // ── Plugin State ──
   let _pluginRegistry = new Map();       // pluginId -> { manifest, enabled, loaded, instance, exports, sandbox, error, _dynamicCommands }
@@ -3565,9 +3569,21 @@
           entry._dynamicCommands = entry._dynamicCommands.filter(c => c.key !== cmdKey);
           invalidateCommandCache();
         },
+        // Programmatic, like workspaces.delete: commands that ask for confirmation in
+        // the palette (close other/left/right tabs, ...) run directly; commands that
+        // need input (sub-flows) open the palette on that step. Returns false for an
+        // unknown key (REV-LCMDS-10).
         execute: (cmdKey) => {
           const cmd = getAllCommands().find(c => c.key === cmdKey);
-          if (cmd) executeCommand(cmd);
+          if (!cmd) return false;
+          if (cmd.subFlow) {
+            if (!searchMode) enterSearchMode(true);
+            executeCommand(cmd);
+          } else {
+            commandRecency.set(cmd.key, Date.now());
+            runCommand(cmd);
+          }
+          return true;
         },
         getAll: () => getAllCommands().map(c => ({ key: c.key, label: c.label, icon: c.icon })),
       },
