@@ -36,6 +36,7 @@
     'keys.global.splitFocusRight': { default: { key: 'l', code: 'KeyL', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Navigate Right', description: 'Focus split pane right, or switch to next workspace',     category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.splitResize':     { default: { key: ' ', code: 'Space', ctrl: false, shift: false, alt: true, meta: false }, type: 'combo', label: 'Split Resize (gTile)', description: 'Open gTile-like grid overlay to resize/move tabs in split view (Alt+Space)', category: 'Keybindings', group: 'Global Triggers' },
     'keys.global.undoFolderDelete': { default: { key: 't', ctrl: false, shift: true, alt: false, meta: true }, type: 'combo', label: 'Undo Folder Delete', description: 'Undo the last folder deletion (Cmd+Shift+T)', category: 'Keybindings', group: 'Global Triggers' },
+    'keys.physicalAltFallback':    { default: false, type: 'toggle', label: 'Match Option Shortcuts by Physical Key (macOS)', description: 'On macOS, Option+letter types a character on many layouts (e.g. @ or ł). Off: Option shortcuts only fire when the key types no real character, so those characters can still be typed. On: always match the physical key.', category: 'Keybindings', group: 'Keyboard Layout' },
 
     // --- Keybindings: Leap Mode ---
     'keys.leap.browseDown':     { default: 'j', type: 'key', label: 'Browse Down', description: 'Enter browse mode downward', category: 'Keybindings', group: 'Leap Mode' },
@@ -1443,16 +1444,31 @@
     return String(value);
   }
 
+  // Option-layer characters the US macOS layout types for the default Alt
+  // shortcuts. Matching those by physical key is safe; other layouts type
+  // real characters there (Option+L is @ on German, ł on Polish).
+  const MAC_US_OPTION_KEYS = { KeyH: '\u02D9', KeyJ: '\u2206', KeyK: '\u02DA', KeyL: '\u00AC', Space: '\u00A0' };
+
   // Helper: check if a keyboard event matches a combo-type setting
   function matchCombo(event, combo) {
     if (!combo || typeof combo !== 'object') return false;
-    const keyMatch = event.key === combo.key ||
-      (combo.code && event.code === combo.code);
-    return keyMatch &&
-      !!event.ctrlKey === !!combo.ctrl &&
-      !!event.shiftKey === !!combo.shift &&
-      !!event.altKey === !!combo.alt &&
-      !!event.metaKey === !!combo.meta;
+    if (!!event.ctrlKey !== !!combo.ctrl || !!event.shiftKey !== !!combo.shift ||
+        !!event.altKey !== !!combo.alt || !!event.metaKey !== !!combo.meta) return false;
+    if (event.key === combo.key) return true;
+    // Letters: Shift (or Caps Lock) changes the case of event.key; the
+    // modifiers were compared above (Meta+Shift+T arrives as key 'T').
+    if (event.key.length === 1 && typeof combo.key === 'string' && combo.key.length === 1 &&
+        event.key.toLowerCase() === combo.key.toLowerCase()) return true;
+    if (!combo.code || event.code !== combo.code) return false;
+    // Physical-key fallback: needed for non-Latin layouts (Alt+J on Cyrillic).
+    // On macOS, Option changes `key` to the layout's Option character; only
+    // fall back when that is not a real character, unless the user opted in
+    // (LEAP-B-01). Elsewhere Alt doesn't change `key` (AltGr isn't altKey).
+    if (typeof AppConstants !== 'undefined' && AppConstants.platform === 'macosx' &&
+        event.altKey && !S['keys.physicalAltFallback']) {
+      return event.key === 'Dead' || event.key === 'Unidentified' || MAC_US_OPTION_KEYS[event.code] === event.key;
+    }
+    return true;
   }
 
   // Helper: format a key setting for display
