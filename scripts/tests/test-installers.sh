@@ -73,11 +73,22 @@ check "update: fx-autoconfig already set up is reported" has "$OUT" "fx-autoconf
 new_home select
 R="$H/.config/zen"
 mk_two_profiles "$R"
-run install.sh install --yes --profile 1 --zen-path "$APP"
-check "--profile 1: installs into profiles.ini order #1 (default-release)" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
-check "--profile 1: not into #2" missing "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+run install.sh install --yes --profile 2 --zen-path "$APP"
+check "--profile 2: the default profile is #1, so #2 is default-release" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
+check "--profile 2: not into #1" missing "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 run install.sh install --yes --profile "default (release)" --zen-path "$APP"
 check "--profile <name>: case-insensitive name match" exists "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+rm -rf "$R/0sczwvfb.default-release/chrome/JS"
+run install.sh install --yes --profile "0sczwvfb.default-release" --zen-path "$APP"
+check "--profile <directory name>: works" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
+rm -rf "$R"/*/chrome/JS
+run install.sh install --yes --profile 1 --profile 2 --zen-path "$APP"
+check "--profile repeated: both profiles" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
+check "--profile repeated: first one too" exists "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+rm -rf "$R"/*/chrome/JS
+run install.sh install --yes --all-profiles --zen-path "$APP"
+check "--all-profiles: every profile" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
+check "--all-profiles: never junk dirs" missing "$R/Profile Groups/chrome"
 run install.sh install --yes --profile 7 --zen-path "$APP"
 check "--profile 7: rejected" rc_is 1
 check "--profile 7: explains the valid range" has "$OUT" "valid: 1-2"
@@ -191,11 +202,12 @@ printf '/* no zenleap here */\n' > "$R/0sczwvfb.default-release/chrome-userChrom
 mkdir -p "$R/0sczwvfb.default-release/chrome"
 mv "$R/0sczwvfb.default-release/chrome-userChrome.tmp" "$R/0sczwvfb.default-release/chrome/userChrome.css"
 cp "$R/0sczwvfb.default-release/chrome/userChrome.css" "$T/css-plain"
-run install.sh install --yes --profile 1 --zen-path "$APP"
+run install.sh install --yes --profile 2 --zen-path "$APP"
 check "css: userChrome.css without markers is left byte-identical" same "$T/css-plain" "$R/0sczwvfb.default-release/chrome/userChrome.css"
 check "css: no backup when nothing changed" missing "$R/0sczwvfb.default-release/chrome/userChrome.css.zenleap-backup"
 
-# 14. Outdated fx-autoconfig loader is refreshed (utils only), with a backup
+# 14. An existing fx-autoconfig (e.g. installed by ZenRipple) is left alone with
+#     --yes; interactive runs offer to update a loader older than the tested one
 new_home fxold
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -204,44 +216,70 @@ mkdir -p "$P/chrome/utils" "$P/chrome/JS"
 printf '// @version 0.10.3\n' > "$P/chrome/utils/boot.sys.mjs"
 printf 'content userchromejs ./\n' > "$P/chrome/utils/chrome.manifest"
 printf '// user script\n' > "$P/chrome/JS/mine.uc.js"
-cp "$T/fixtures/release-good/JS/zenleap.uc.js" /dev/null
 mkdir -p "$APP/defaults/pref"
 printf "Components.utils; ChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs');\n" > "$APP/config.js"
 printf 'pref("general.config.filename", "config.js");\n' > "$APP/defaults/pref/config-prefs.js"
 cp "$APP/config.js" "$T/app-config-before"
 run install.sh install --yes --zen-path "$APP"
-check "fx outdated: exit 0" rc_is 0
-check "fx outdated: loader updated to 0.10.16" has "$P/chrome/utils/boot.sys.mjs" "@version 0.10.16"
-check "fx outdated: old loader kept as utils.zenleap-backup" has "$P/chrome/utils.zenleap-backup/boot.sys.mjs" "0.10.3"
-check "fx outdated: user scripts untouched" exists "$P/chrome/JS/mine.uc.js"
-check "fx outdated: existing config.js not overwritten" same "$T/app-config-before" "$APP/config.js"
+check "fx old loader (--yes): exit 0" rc_is 0
+check "fx old loader (--yes): loader left alone" has "$P/chrome/utils/boot.sys.mjs" "0.10.3"
+check "fx old loader (--yes): says how to update it" has "$OUT" "run the installer without --yes to update it"
+check "fx old loader: existing config.js not overwritten" same "$T/app-config-before" "$APP/config.js"
+check "fx old loader: user scripts untouched" exists "$P/chrome/JS/mine.uc.js"
 if $HAVE_SCRIPT; then
+    run_tty '\nn\n' install.sh install --profile 1 --zen-path "$APP"
+    check "fx old loader (interactive Enter): updated to 0.10.16" has "$P/chrome/utils/boot.sys.mjs" "@version 0.10.16"
+    check "fx old loader (interactive Enter): old loader kept as utils.zenleap-backup" has "$P/chrome/utils.zenleap-backup/boot.sys.mjs" "0.10.3"
+    check "fx old loader (interactive Enter): prompt shown" has "$OUT" "Update chrome/utils to 0.10.16?"
     printf '// @version 0.10.3\n' > "$P/chrome/utils/boot.sys.mjs"
-    run_tty 'n\nn\n' install.sh install --profile 2 --zen-path "$APP"
-    check "fx outdated (interactive 'n'): loader kept" has "$P/chrome/utils/boot.sys.mjs" "0.10.3"
-    check "fx outdated (interactive 'n'): prompt shown" has "$OUT" "Update chrome/utils to 0.10.16?"
+    run_tty 'n\nn\n' install.sh install --profile 1 --zen-path "$APP"
+    check "fx old loader (interactive 'n'): kept" has "$P/chrome/utils/boot.sys.mjs" "0.10.3"
 fi
-run install.sh install --yes --zen-path "$APP"
+printf '// @version 0.10.16\n' > "$P/chrome/utils/boot.sys.mjs"
+: > "$T/curl.log"
 FAKE_FXAC_FAIL=1 run install.sh install --yes --zen-path "$APP"
-check "fx download fails, loader present: still installs" rc_is 0
-check "fx download fails, loader present: warns" has "$OUT" "Could not download fx-autoconfig"
+check "fx loader up to date: installs" rc_is 0
+check "fx loader up to date: nothing downloaded for fx-autoconfig" lacks "$T/curl.log" "fx-autoconfig/archive"
+check "fx loader up to date: reported" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
 
 # 15. fx-autoconfig missing and the download fails -> clear error
 new_home fxfail
 mk_two_profiles "$H/.config/zen"
 FAKE_FXAC_FAIL=1 run install.sh install --yes --zen-path "$APP"
 check "fx missing + download fails: exit 1" rc_is 1
-check "fx missing + download fails: error message" has "$OUT" "Failed to download fx-autoconfig"
+check "fx missing + download fails: error message" has "$OUT" "Could not get fx-autoconfig"
 
-# 16. Foreign (Sine) config.js in the app dir is never overwritten
+# 16. config.js that is not fx-autoconfig's is never overwritten
 new_home foreign
 mk_two_profiles "$H/.config/zen"
 mkdir -p "$APP/defaults/pref"
 printf "// Loads Sine.\nChromeUtils.importESModule('chrome://userscripts/content/sine.sys.mjs');\n" > "$APP/config.js"
 cp "$APP/config.js" "$T/sine-config"
 run install.sh install --yes --zen-path "$APP"
-check "foreign config.js: untouched" same "$T/sine-config" "$APP/config.js"
-check "foreign config.js: warns" has "$OUT" "is not fx-autoconfig's"
+check "Sine's config.js: untouched" same "$T/sine-config" "$APP/config.js"
+check "Sine's config.js: explains that Sine only runs Sine mods" has "$OUT" "starts Sine's bootloader"
+check "Sine's config.js, profile without Sine: skipped (exit 1)" rc_is 1
+check "Sine's config.js, profile without Sine: nothing in chrome/JS" missing "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+printf "// some other autoconfig\nlockPref('a', 1);\n" > "$APP/config.js"
+cp "$APP/config.js" "$T/other-config"
+run install.sh install --yes --zen-path "$APP"
+check "other config.js: untouched" same "$T/other-config" "$APP/config.js"
+check "other config.js: warns" has "$OUT" "is not fx-autoconfig's"
+check "other config.js: profile part still installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
+printf "Components.utils.import('chrome://userchromejs/content/boot.jsm');\n" > "$APP/config.js"
+cp "$APP/config.js" "$T/jsm-config"
+run install.sh install --yes --zen-path "$APP"
+check "old boot.jsm fx-autoconfig config.js: left alone" same "$T/jsm-config" "$APP/config.js"
+printf "ChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs'); // mine\n" > "$APP/config.js"
+cp "$APP/config.js" "$T/noprefs-config"
+rm -f "$APP"/defaults/pref/*.js
+run install.sh install --yes --zen-path "$APP"
+check "fx-autoconfig config.js without its pref file: config.js kept" same "$T/noprefs-config" "$APP/config.js"
+check "fx-autoconfig config.js without its pref file: pref file added" has "$APP/defaults/pref/config-prefs.js" "general.config.filename"
+rm -f "$APP/defaults/pref/config-prefs.js"
+printf 'pref("general.config.filename", "config.js");\n' > "$APP/defaults/pref/autoconfig.js"
+run install.sh install --yes --zen-path "$APP"
+check "pref file under another name is recognised" missing "$APP/defaults/pref/config-prefs.js"
 
 # 17. App dir not writable: print sudo commands, never run sudo
 new_home readonly
@@ -269,20 +307,20 @@ printf '// @version 3.3.9\n' > "$S/JS/zenleap.uc.js"
 printf 'content userchromejs ./\ncontent userscripts ../JS/\ncontent sine ../sine-mods/\n' > "$P/chrome/utils/chrome.manifest"
 : > "$P/chrome/JS/sine.sys.mjs"
 cp "$P/chrome/utils/chrome.manifest" "$T/sine-manifest"
-run install.sh install --yes --profile 2 --zen-path "$APP"
+run install.sh install --yes --profile 1 --zen-path "$APP"
 check "sine mod: --yes replaces Sine's copy" same "$REPO/JS/zenleap.uc.js" "$S/JS/zenleap.uc.js"
 check "sine mod: no second copy in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 check "sine mod: Sine's loader untouched" same "$T/sine-manifest" "$P/chrome/utils/chrome.manifest"
 check "sine mod: no fx-autoconfig program files needed" missing "$APP/config.js"
 rm -rf "$P/chrome/sine-mods"
-run install.sh install --yes --profile 2 --zen-path "$APP"
+run install.sh install --yes --profile 1 --zen-path "$APP"
 check "sine loader, no mod: exit 1 (nothing installed)" rc_is 1
 check "sine loader, no mod: tells the user to use Sine" has "$OUT" "Install ZenLeap from Sine instead"
 check "sine loader, no mod: nothing copied to chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 if $HAVE_SCRIPT; then
     mkdir -p "$S/JS"
     printf '// @version 3.3.9\n' > "$S/JS/zenleap.uc.js"
-    run_tty 'n\nn\n' install.sh install --profile 2 --zen-path "$APP"
+    run_tty 'n\nn\n' install.sh install --profile 1 --zen-path "$APP"
     check "sine mod (interactive 'n'): Sine's copy kept" has "$S/JS/zenleap.uc.js" "3.3.9"
 fi
 
@@ -297,14 +335,18 @@ cp "$(command -v sleep)" "$T/fakezen/zen"
 ZPID=$!
 FAKE_PIDS+=("$ZPID")
 ln -s "127.0.1.1:+$ZPID" "$P/lock"
+printf '[Compatibility]\nLastVersion=1.22.3b_20260922050124/20260922050124\n' > "$P/compatibility.ini"
+mkdir -p "$H/.cache/zen/gdgcari8.Default (release)/startupCache"
 run install.sh install --yes --zen-path "$APP"
 check "running: --yes still installs" exists "$P/chrome/JS/zenleap.uc.js"
+check "running: asks Zen to drop its startup cache on the next start" has "$P/compatibility.ini" "InvalidateCaches=1"
+check "running: cache of the running Zen not deleted underneath it" exists "$H/.cache/zen/gdgcari8.Default (release)/startupCache"
 check "running: names the running profile and PID" has "$OUT" "Default (release) (PID $ZPID)"
 check "running: asks for a restart" has "$OUT" "Restart Zen Browser to activate ZenLeap"
 check "running: Zen process not killed" kill -0 "$ZPID"
 check "running: no pkill/pgrep used" missing "$T/stub-calls.log"
 if $HAVE_SCRIPT; then
-    run_tty 'q\n' install.sh install --profile 2 --zen-path "$APP"
+    run_tty 'q\n' install.sh install --profile 1 --zen-path "$APP"
     check "running (interactive 'q'): cancelled" rc_is 1
     check "running (interactive 'q'): Zen still alive" kill -0 "$ZPID"
 fi
@@ -324,8 +366,8 @@ if $HAVE_SCRIPT; then
     check "menu: Enter picks the default profile" exists "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
     check "menu: other profile untouched" missing "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
     check "menu: shows names and marks the default" has "$OUT" "Default (release)  [gdgcari8.Default (release)]  - default profile"
-    run_tty '9\n1\nn\n' install.sh install --zen-path "$APP"
-    check "menu: invalid number re-prompts, then 1 works" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
+    run_tty '9\n2\nn\n' install.sh install --zen-path "$APP"
+    check "menu: invalid number re-prompts, then 2 works" exists "$R/0sczwvfb.default-release/chrome/JS/zenleap.uc.js"
     check "menu: invalid number explained" has "$OUT" "Invalid profile number 9"
     run_tty 'q\n' install.sh install --zen-path "$APP"
     check "menu: q cancels" rc_is 1
@@ -344,7 +386,7 @@ check "uninstall --yes: removed from profile 1" missing "$R/0sczwvfb.default-rel
 check "uninstall --yes: removed from profile 2" missing "$R/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 check "uninstall --yes: keeps fx-autoconfig by default" exists "$R/gdgcari8.Default (release)/chrome/utils/boot.sys.mjs"
 check "uninstall --yes: keeps user data" exists "$R/gdgcari8.Default (release)/zenleap-sessions"
-run install.sh install --yes --profile 2 --zen-path "$APP"
+run install.sh install --yes --profile 1 --zen-path "$APP"
 run install.sh uninstall --yes --remove-fxautoconfig --zen-path "$APP"
 check "uninstall --remove-fxautoconfig: utils removed" missing "$R/gdgcari8.Default (release)/chrome/utils"
 check "uninstall --remove-fxautoconfig: config.js removed" missing "$APP/config.js"
@@ -402,6 +444,76 @@ check "flatpak: installs into the flatpak profile" exists "$FR/gdgcari8.Default 
 check "flatpak: program files go to the systemconfig extension" exists "$H/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/$(uname -m)/stable/config.js"
 check "flatpak: flatpak cache cleared" missing "$H/.var/app/app.zen_browser.zen/cache/zen/gdgcari8.Default (release)/startupCache"
 
+# 25. Zen installation from the profile's compatibility.ini (no --zen-path), version floor
+new_home lastplatform
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+APP2="$T/lastplatform/zen-old"
+mk_app "$APP2"
+printf '[App]\nVersion=1.20.2b\n' > "$APP2/application.ini"
+printf '[Compatibility]\nLastVersion=1.20.2b_1/1\nLastPlatformDir=%s\nLastAppDir=%s/browser\n' "$APP2" "$APP2" > "$P/compatibility.ini"
+run install.sh install --yes
+check "LastPlatformDir: exit 0" rc_is 0
+check "LastPlatformDir: fx-autoconfig goes into the install that runs the profile" exists "$APP2/config.js"
+check "LastPlatformDir: warns about a Zen older than the floor" has "$OUT" "older than 1.21.7b"
+check "cache: InvalidateCaches=1 added to compatibility.ini" has "$P/compatibility.ini" "InvalidateCaches=1"
+run install.sh install --yes
+check "cache: InvalidateCaches=1 not duplicated" test "$(grep -c InvalidateCaches=1 "$P/compatibility.ini")" = 1
+rm -f "$P/compatibility.ini"
+rm -rf "$P/chrome"
+run install.sh install --yes
+check "no Zen installation found with --yes: fails" rc_is 1
+check "no Zen installation found with --yes: asks for --zen-path" has "$OUT" "--zen-path"
+
+# 26. profiles.ini is read like Firefox: stops at the first gap or at a
+#     section without IsRelative; newest profile wins when nothing is marked
+new_home iniquirks
+R="$H/.config/zen"
+mk_profile "$R" "a.A"
+mk_profile "$R" "b.B"
+mk_profile "$R" "c.C"
+printf '[Profile0]\nName=A\nIsRelative=1\nPath=a.A\n\n[Profile2]\nName=C\nIsRelative=1\nPath=c.C\n' > "$R/profiles.ini"
+run install.sh install --yes --all-profiles --zen-path "$APP"
+check "ini gap: Profile0 used" exists "$R/a.A/chrome/JS/zenleap.uc.js"
+check "ini gap: Profile2 after a gap ignored (as by Zen)" missing "$R/c.C/chrome"
+rm -rf "$R/a.A/chrome"
+printf '[Profile0]\nName=A\nIsRelative=1\nPath=a.A\n\n[Profile1]\nName=B\nPath=b.B\n\n[Profile2]\nName=C\nIsRelative=1\nPath=c.C\n' > "$R/profiles.ini"
+run install.sh install --yes --all-profiles --zen-path "$APP"
+check "ini without IsRelative: stops there (as Zen does)" missing "$R/b.B/chrome"
+check "ini without IsRelative: later profiles ignored" missing "$R/c.C/chrome"
+rm -rf "$R"/*/chrome
+printf '[Profile0]\nName=A\nIsRelative=1\nPath=a.A\n\n[Profile1]\nName=B\nIsRelative=1\nPath=b.B\n' > "$R/profiles.ini"
+touch -d '2026-01-01' "$R/a.A/prefs.js"
+touch -d '2026-06-01' "$R/b.B/prefs.js"
+run install.sh install --yes --zen-path "$APP"
+check "no default marked: the most recently used profile" exists "$R/b.B/chrome/JS/zenleap.uc.js"
+check "no default marked: not the other one" missing "$R/a.A/chrome"
+
+# 27. fx-autoconfig pin: the real, tested hashes reject a different archive;
+#     FX_AUTOCONFIG_REF / FX_AUTOCONFIG_DIR are used unverified
+new_home fxpin
+R="$H/.config/zen"
+mk_two_profiles "$R"
+REPO="$REAL_REPO" run install.sh install --yes --zen-path "$APP"
+check "pinned hashes: an archive that differs is refused" rc_is 1
+check "pinned hashes: says why" has "$OUT" "does not match the tested version"
+check "pinned hashes: nothing installed" missing "$APP/config.js"
+check "pinned hashes: downloads the pinned commit" has "$T/curl.log" "fx-autoconfig/archive/dfdab5684faffc112b76ccb1d8cab7f75da0102c.zip"
+EXTRA_ENV="FX_AUTOCONFIG_REF=some-branch" REPO="$REAL_REPO" run install.sh install --yes --zen-path "$APP"
+check "FX_AUTOCONFIG_REF: installs" rc_is 0
+check "FX_AUTOCONFIG_REF: says it is not verified" has "$OUT" "not the tested version, not verified"
+check "FX_AUTOCONFIG_REF: downloads that ref" has "$T/curl.log" "fx-autoconfig/archive/some-branch.zip"
+new_home fxdir
+mk_two_profiles "$H/.config/zen"
+: > "$T/curl.log"
+EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh install --yes --zen-path "$APP"
+check "FX_AUTOCONFIG_DIR: installs from the local checkout" has "$APP/config.js" "boot.sys.mjs"
+check "FX_AUTOCONFIG_DIR: nothing downloaded" lacks "$T/curl.log" "fx-autoconfig"
+EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh install --yes --zen-path "$APP"
+check "FX_AUTOCONFIG_DIR + loader already there: reported as up to date" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
+check "FX_AUTOCONFIG_DIR + loader already there: not called outdated" lacks "$OUT" "older than the tested one"
+
 # ---------------------------------------------------------------- install-plugin.sh
 
 new_home plugins
@@ -432,10 +544,10 @@ printf '{"id": "../evil", "name": "x"}' > "$T/badplugin/manifest.json"
 : > "$T/badplugin/plugin.js"
 run install-plugin.sh "$T/badplugin" --yes
 check "plugin with unsafe id: rejected" rc_is 1
-run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile 1
-check "plugin --profile 1: installs into #1" exists "$O/chrome/zenleap-plugins/tab-stats/manifest.json"
+run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile 2
+check "plugin --profile 2: installs into #2" exists "$O/chrome/zenleap-plugins/tab-stats/manifest.json"
 if $HAVE_SCRIPT; then
-    run_tty 'y\n' install-plugin.sh "$REPO/examples/plugins/tab-timer" --profile 2
+    run_tty 'y\n' install-plugin.sh "$REPO/examples/plugins/tab-timer" --profile 1
     check "plugin interactive overwrite 'y': exit 0" rc_is 0
 fi
 

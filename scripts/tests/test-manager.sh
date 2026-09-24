@@ -150,12 +150,13 @@ echo "# ZenLeap Manager tests (bash under test: $("$TEST_BASH" -c 'echo $BASH_VE
 # A. Fresh install: the list preselects the install's default profile
 new_mac fresh
 mkdir -p "$H/Library/Caches/zen/Profiles/bbbb.Default (release)/startupCache"
+printf '[Compatibility]\nLastVersion=1.22.3b_1/1\n' > "$P/compatibility.ini"
 manager Install DEFAULT No
 check "install: exit 0" rc_is 0
 check "install: all dialogs answered" answers_used
 check "install: main menu offers Install" has "$LOG" "Not installed"
 check "install: profile list preselects the install default" has "$LOG" "default=[Default (release)  [bbbb.Default (release)]]"
-check "install: profile list has both profiles, no junk" has "$LOG" "items=[default-release  [aaaa.default-release] Default (release)  [bbbb.Default (release)]]"
+check "install: profile list has both profiles (default first), no junk" has "$LOG" "items=[Default (release)  [bbbb.Default (release)] default-release  [aaaa.default-release]]"
 check "install: zenleap.uc.js from the verified release" same "$T/fixtures/release-good/JS/zenleap.uc.js" "$P/chrome/JS/zenleap.uc.js"
 check "install: other profile untouched" missing "$O/chrome"
 check "install: fx-autoconfig program files in Zen.app" has "$RES/config.js" "boot.sys.mjs"
@@ -165,6 +166,8 @@ check "install: no fx-autoconfig example scripts" missing "$P/chrome/JS/test.uc.
 check "install: no userChrome.css / user.js" missing "$P/chrome/userChrome.css"
 check "install: no admin rights needed for a writable Zen.app" lacks "$LOG" "ADMIN"
 check "install: startup cache in ~/Library/Caches/zen/Profiles/<p> cleared" missing "$H/Library/Caches/zen/Profiles/bbbb.Default (release)/startupCache"
+check "install: InvalidateCaches=1 in compatibility.ini" has "$P/compatibility.ini" "InvalidateCaches=1"
+check "install: tested fx-autoconfig commit downloaded" has "$T/curl.log" "fx-autoconfig/archive/dfdab5684faffc112b76ccb1d8cab7f75da0102c.zip"
 check "install: success dialog" has "$LOG" "installed successfully"
 check "install: dialogs contain no literal \\n" lacks "$LOG" '\n'
 check "install: downloads from the release tag, not main" lacks "$T/curl.log" "/main/"
@@ -244,9 +247,14 @@ new_mac foreign
 printf "ChromeUtils.importESModule('chrome://userscripts/content/sine.sys.mjs');\n" > "$RES/config.js"
 cp "$RES/config.js" "$T/foreign-config"
 manager Install DEFAULT
-check "foreign config.js: error shown" has "$LOG" "not fx-autoconfig's"
-check "foreign config.js: untouched" same "$T/foreign-config" "$RES/config.js"
-check "foreign config.js: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+check "Sine's config.js: points to Sine" has "$LOG" "starts Sine's bootloader"
+check "Sine's config.js: untouched" same "$T/foreign-config" "$RES/config.js"
+check "Sine's config.js: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+printf "// custom autoconfig\n" > "$RES/config.js"
+cp "$RES/config.js" "$T/foreign-config"
+manager Install DEFAULT
+check "other config.js: error shown" has "$LOG" "not fx-autoconfig's"
+check "other config.js: untouched" same "$T/foreign-config" "$RES/config.js"
 
 # H. Release fails verification
 new_mac badsum
@@ -265,6 +273,24 @@ check "outdated: backup kept" has "$P/chrome/utils.zenleap-backup/boot.sys.mjs" 
 check "outdated: old CSS block removed" lacks "$P/chrome/userChrome.css" ".old{}"
 check "outdated: user CSS kept" has "$P/chrome/userChrome.css" ".mine{}"
 check "outdated: userChrome.css backup" exists "$P/chrome/userChrome.css.zenleap-backup"
+
+# K. Zen.app outside the usual folders, found through the profile's compatibility.ini
+new_mac elsewhere
+mkdir -p "$H/Downloads"
+mv "$APP" "$H/Downloads/Zen.app"
+APP="$H/Downloads/Zen.app"
+RES="$APP/Contents/Resources"
+printf '[Compatibility]\nLastPlatformDir=%s\n' "$RES" > "$P/compatibility.ini"
+manager Install DEFAULT No
+check "Zen.app from LastPlatformDir: installed" exists "$P/chrome/JS/zenleap.uc.js"
+check "Zen.app from LastPlatformDir: fx-autoconfig went into that app" exists "$RES/config.js"
+
+# L. The real, tested fx-autoconfig hashes reject a different archive
+new_mac pinned
+MANAGER="$REAL_REPO/ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" manager Install DEFAULT
+check "pinned hashes: fx-autoconfig from a different archive is refused" has "$LOG" "Failed to install fx-autoconfig"
+check "pinned hashes: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
+check "pinned hashes: no config.js written" missing "$RES/config.js"
 
 # J. No Zen.app
 new_mac noapp

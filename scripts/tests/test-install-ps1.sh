@@ -26,7 +26,7 @@ function global:Write-MockLog([string]$Line) {
     Add-Content -LiteralPath (Join-Path $env:FAKE_ROOT 'ps-net.log') -Value $Line
 }
 function global:Resolve-FakeUrl([string]$Uri) {
-    if ($Uri -eq 'https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip') {
+    if ($Uri -like 'https://github.com/MrOtherGuy/fx-autoconfig/archive/*.zip') {
         if ($env:FAKE_FXAC_FAIL -eq '1') { return $null }
         return $env:FAKE_FXAC_ZIP
     }
@@ -175,11 +175,17 @@ check "check: OUTDATED line" has "$OUT" "OUTDATED:$VERSION:99.0.0"
 # 3. Existing fx-autoconfig config.js is never overwritten; -Profile variants
 printf "// customised\nChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs');\n" > "$ZENDIR/config.js"
 cp "$ZENDIR/config.js" "$T/ps-config"
-ps -Action install -Yes -Profile 1 -ZenPath "$ZENDIR"
+ps -Action install -Yes -Profile 2 -ZenPath "$ZENDIR"
 check "existing config.js: kept byte-identical" same "$T/ps-config" "$ZENDIR/config.js"
-check "-Profile 1: installs into profiles.ini #1" exists "$O/chrome/JS/zenleap.uc.js"
+check "-Profile 2: the default profile is #1, so #2 is default-release" exists "$O/chrome/JS/zenleap.uc.js"
 ps -Action install -Yes -Profile "DEFAULT (RELEASE)" -ZenPath "$ZENDIR"
 check "-Profile <name>: case-insensitive" rc_is 0
+rm -rf "$O/chrome/JS"
+ps -Action install -Yes -Profile "aaaa.default-release" -ZenPath "$ZENDIR"
+check "-Profile <directory name>: works" exists "$O/chrome/JS/zenleap.uc.js"
+rm -rf "$O/chrome/JS"
+ps -Action install -Yes -AllProfiles -ZenPath "$ZENDIR"
+check "-AllProfiles: every profile" exists "$O/chrome/JS/zenleap.uc.js"
 ps -Action install -Yes -Profile 5 -ZenPath "$ZENDIR"
 check "-Profile 5: rejected" rc_is 1
 check "-Profile 5: explains" has "$OUT" "valid: 1-2"
@@ -202,8 +208,21 @@ new_win foreign
 printf "ChromeUtils.importESModule('chrome://userscripts/content/sine.sys.mjs');\n" > "$ZENDIR/config.js"
 cp "$ZENDIR/config.js" "$T/ps-sine-config"
 ps -Action install -Yes -ZenPath "$ZENDIR"
-check "foreign config.js: untouched" same "$T/ps-sine-config" "$ZENDIR/config.js"
-check "foreign config.js: warns" has "$OUT" "is not fx-autoconfig's"
+check "Sine's config.js: untouched" same "$T/ps-sine-config" "$ZENDIR/config.js"
+check "Sine's config.js: explains" has "$OUT" "starts Sine's bootloader"
+check "Sine's config.js, profile without Sine: skipped (exit 1)" rc_is 1
+printf "// other autoconfig\n" > "$ZENDIR/config.js"
+cp "$ZENDIR/config.js" "$T/ps-other-config"
+ps -Action install -Yes -ZenPath "$ZENDIR"
+check "other config.js: untouched" same "$T/ps-other-config" "$ZENDIR/config.js"
+check "other config.js: warns" has "$OUT" "is not fx-autoconfig's"
+check "other config.js: profile part installed" exists "$P/chrome/JS/zenleap.uc.js"
+printf "ChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs'); // mine\n" > "$ZENDIR/config.js"
+cp "$ZENDIR/config.js" "$T/ps-noprefs-config"
+rm -rf "$ZENDIR/defaults"
+ps -Action install -Yes -ZenPath "$ZENDIR"
+check "fx-autoconfig config.js without pref file: config.js kept" same "$T/ps-noprefs-config" "$ZENDIR/config.js"
+check "fx-autoconfig config.js without pref file: pref file added" has "$ZENDIR/defaults/pref/config-prefs.js" "general.config.filename"
 
 # 6. Sine-managed profile and Sine-only profile
 new_win sine
@@ -212,12 +231,12 @@ mkdir -p "$S/JS" "$P/chrome/JS" "$P/chrome/utils"
 printf '// @version 3.3.9\n' > "$S/JS/zenleap.uc.js"
 : > "$P/chrome/JS/sine.sys.mjs"
 printf 'content sine ../sine-mods/\n' > "$P/chrome/utils/chrome.manifest"
-ps -Action install -Yes -Profile 2 -ZenPath "$ZENDIR"
+ps -Action install -Yes -Profile 1 -ZenPath "$ZENDIR"
 check "sine mod: -Yes replaces Sine's copy" same "$REPO/JS/zenleap.uc.js" "$S/JS/zenleap.uc.js"
 check "sine mod: no second copy in chrome/JS" missing "$P/chrome/JS/zenleap.uc.js"
 check "sine mod: no program files needed" missing "$ZENDIR/config.js"
 rm -rf "$P/chrome/sine-mods"
-ps -Action install -Yes -Profile 2 -ZenPath "$ZENDIR"
+ps -Action install -Yes -Profile 1 -ZenPath "$ZENDIR"
 check "sine loader only: exit 1" rc_is 1
 check "sine loader only: points to Sine" has "$OUT" "Install ZenLeap from Sine instead"
 
@@ -231,8 +250,11 @@ mkdir -p "$O/chrome"
 printf '/* plain */\n' > "$O/chrome/userChrome.css"
 cp "$O/chrome/userChrome.css" "$T/ps-css-plain"
 ps -Action install -Yes -Profile all -ZenPath "$ZENDIR"
-check "outdated loader: updated" has "$P/chrome/utils/boot.sys.mjs" "0.10.16"
-check "outdated loader: backup" has "$P/chrome/utils.zenleap-backup/boot.sys.mjs" "0.10.3"
+check "old loader (-Yes): left alone" has "$P/chrome/utils/boot.sys.mjs" "0.10.3"
+check "old loader (-Yes): says how to update" has "$OUT" "run the installer without -Yes to update it"
+ps --stdin '\nn\n' -Action install -Profile 1 -ZenPath "$ZENDIR"
+check "old loader (interactive Enter): updated" has "$P/chrome/utils/boot.sys.mjs" "0.10.16"
+check "old loader (interactive Enter): backup" has "$P/chrome/utils.zenleap-backup/boot.sys.mjs" "0.10.3"
 check "css (CRLF): block removed" lacks "$P/chrome/userChrome.css" ".old"
 check "css (CRLF): content before kept" has "$P/chrome/userChrome.css" ".mine { a: b; }"
 check "css (CRLF): content after kept" has "$P/chrome/userChrome.css" ".after {}"
@@ -253,7 +275,7 @@ check "read-only: 'One more step' summary" has "$OUT" "One more step needed"
 check "read-only: no elevation attempted with -Yes" lacks "$NET" "START-PROCESS"
 check "read-only: profile part installed" exists "$P/chrome/JS/zenleap.uc.js"
 chmod a-w "$ZENDIR"
-ps --stdin '\n' -Action install -Profile 2 -ZenPath "$ZENDIR"
+ps --stdin '\n' -Action install -Profile 1 -ZenPath "$ZENDIR"
 chmod u+w "$ZENDIR"
 check "read-only interactive: elevation offered and attempted (UAC)" has "$NET" "START-PROCESS powershell.exe RunAs"
 check "read-only interactive: falls back to printed commands" has "$OUT" "One more step needed"
@@ -296,8 +318,8 @@ ps --stdin '\nn\n' -Action install -ZenPath "$ZENDIR"
 check "menu: Enter picks the install default" exists "$P/chrome/JS/zenleap.uc.js"
 check "menu: other profile untouched" missing "$O/chrome/JS/zenleap.uc.js"
 check "menu: marks the default" has "$OUT" "Default (release)  [bbbb.Default (release)]  - default profile"
-ps --stdin '7\n1\nn\n' -Action install -ZenPath "$ZENDIR"
-check "menu: invalid number re-prompts, then 1" exists "$O/chrome/JS/zenleap.uc.js"
+ps --stdin '7\n2\nn\n' -Action install -ZenPath "$ZENDIR"
+check "menu: invalid number re-prompts, then 2" exists "$O/chrome/JS/zenleap.uc.js"
 check "menu: invalid number explained" has "$OUT" "Invalid profile number 7"
 ps --stdin 'q\n' -Action install -ZenPath "$ZENDIR"
 check "menu: q cancels with exit 1" rc_is 1
@@ -309,17 +331,42 @@ new_win running
 LOCKPID=$!
 FAKE_PIDS+=("$LOCKPID")
 sleep 3
+printf '[Compatibility]\r\nLastVersion=1.22.3b_1/1\r\n' > "$P/compatibility.ini"
+mkdir -p "$L/Profiles/bbbb.Default (release)/startupCache"
 ps -Action install -Yes -ZenPath "$ZENDIR"
 check "running -Yes: still installs" exists "$P/chrome/JS/zenleap.uc.js"
+check "running -Yes: InvalidateCaches=1 for the next start" has "$P/compatibility.ini" "InvalidateCaches=1"
+check "running -Yes: cache of the running Zen not deleted" exists "$L/Profiles/bbbb.Default (release)/startupCache"
 check "running -Yes: reports the running profile" has "$OUT" "Zen is running with: Default (release)"
 check "running -Yes: asks for a restart" has "$OUT" "Restart Zen Browser to activate ZenLeap"
 check "running -Yes: nothing killed" lacks "$NET" "STOP-PROCESS"
-ps --stdin 'q\n' -Action install -Profile 2 -ZenPath "$ZENDIR"
+ps --stdin 'q\n' -Action install -Profile 1 -ZenPath "$ZENDIR"
 check "running interactive 'q': cancelled" rc_is 1
 kill "$LOCKPID" 2>/dev/null
 sleep 1
 ps -Action install -Yes -ZenPath "$ZENDIR"
 check "stale parent.lock (not held): not reported as running" lacks "$OUT" "Zen is running"
+
+# 13. Zen installation from the profile's compatibility.ini; version floor; pin
+new_win lastplatform
+ZEN2="$T/lastplatform/Other Zen"
+mkdir -p "$ZEN2"
+: > "$ZEN2/zen.exe"
+printf '[App]\r\nVersion=1.20.2b\r\n' > "$ZEN2/application.ini"
+printf '[Compatibility]\r\nLastVersion=1.20.2b_1/1\r\nLastPlatformDir=%s\r\n' "$ZEN2" > "$P/compatibility.ini"
+rm -f "$ZENDIR/zen.exe"
+ps -Action install -Yes
+check "LastPlatformDir: fx-autoconfig goes into the Zen that runs the profile" exists "$ZEN2/config.js"
+check "LastPlatformDir: warns about a Zen older than the floor" has "$OUT" "older than 1.21.7b"
+check "cache: InvalidateCaches=1 added" has "$P/compatibility.ini" "InvalidateCaches=1"
+ps -Action install -Yes
+check "cache: InvalidateCaches=1 not duplicated" test "$(grep -c InvalidateCaches=1 "$P/compatibility.ini")" = 1
+new_win pinned
+REPO="$REAL_REPO" ps -Action install -Yes -ZenPath "$ZENDIR"
+check "pinned hashes: a different fx-autoconfig archive is refused" rc_is 1
+check "pinned hashes: says why" has "$OUT" "does not match the tested version"
+check "pinned hashes: downloads the pinned commit" has "$NET" "fx-autoconfig/archive/dfdab5684faffc112b76ccb1d8cab7f75da0102c.zip"
+check "pinned hashes: nothing installed" missing "$ZENDIR/config.js"
 
 echo ""
 echo "# $PASS passed, $FAIL failed"

@@ -8,7 +8,7 @@
 
 set -u
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REAL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TEST_BASH="${TEST_BASH:-bash}"
 T="$(mktemp -d "${TMPDIR:-/tmp}/zenleap-installer-test.XXXXXX")"
 FAKEBIN="$T/bin"
@@ -44,24 +44,48 @@ for c in pgrep pkill killall sudo flatpak; do
     chmod +x "$FAKEBIN/$c"
 done
 
-# Fake fx-autoconfig archive (layout of the real master.zip)
-make_fxac_zip() {  # make_fxac_zip <out.zip> <version>
-    local src="$T/fxac-src-$2"
-    local top="$src/fx-autoconfig-master"
+# Fake fx-autoconfig archive with the layout of the real one (all files the
+# installers copy, plus example files that must not be copied)
+FXAC_FILES="program/config.js program/defaults/pref/config-prefs.js profile/chrome/utils/boot.sys.mjs
+profile/chrome/utils/chrome.manifest profile/chrome/utils/fs.sys.mjs profile/chrome/utils/module_loader.mjs
+profile/chrome/utils/uc_api.sys.mjs profile/chrome/utils/utils.sys.mjs"
+FXAC_TREE="$T/fxac-src/fx-autoconfig-dfdab5684faffc112b76ccb1d8cab7f75da0102c"
+make_fxac_zip() {  # make_fxac_zip <out.zip>
+    local top="$FXAC_TREE" f
     mkdir -p "$top/program/defaults/pref" "$top/profile/chrome/utils" "$top/profile/chrome/JS" "$top/profile/chrome/CSS"
     printf "// skip 1st line\ntry { ChromeUtils.importESModule('chrome://userchromejs/content/boot.sys.mjs'); } catch (ex) {}\n" > "$top/program/config.js"
     printf 'pref("general.config.filename", "config.js");\n' > "$top/program/defaults/pref/config-prefs.js"
-    printf '// ==UserScript==\n// @version %s\n' "$2" > "$top/profile/chrome/utils/boot.sys.mjs"
+    printf '// ==UserScript==\n// @version 0.10.16\n' > "$top/profile/chrome/utils/boot.sys.mjs"
     printf 'content userchromejs ./\n' > "$top/profile/chrome/utils/chrome.manifest"
+    for f in fs.sys.mjs module_loader.mjs uc_api.sys.mjs utils.sys.mjs; do
+        printf '// fake %s\n' "$f" > "$top/profile/chrome/utils/$f"
+    done
     printf 'console.log("Hi mom");\n' > "$top/profile/chrome/JS/test.uc.js"
     printf '/* example */\n' > "$top/profile/chrome/CSS/agent_style.uc.css"
-    (cd "$src" && python3 -c 'import sys, zipfile, os
+    (cd "$(dirname "$top")" && python3 -c 'import sys, zipfile, os
 z = zipfile.ZipFile(sys.argv[1], "w")
-for root, _, files in os.walk("fx-autoconfig-master"):
+for root, _, files in os.walk(sys.argv[2]):
     for f in files: z.write(os.path.join(root, f))
-z.close()' "$1")
+z.close()' "$1" "$(basename "$top")")
 }
-make_fxac_zip "$T/fixtures/fxac.zip" 0.10.16
+make_fxac_zip "$T/fixtures/fxac.zip"
+
+# The code under test: a copy of the repository whose pinned fx-autoconfig
+# hashes are those of the fake archive. (A test runs the real tree against the
+# fake archive to show that the real pins reject it.)
+REPO="$T/repo"
+mkdir -p "$REPO"
+(cd "$REAL_REPO" && tar cf - --exclude=./.git --exclude=./dist .) | (cd "$REPO" && tar xf -)
+for f in $FXAC_FILES; do
+    h=$(sha256sum "$FXAC_TREE/$f" | cut -d' ' -f1)
+    for code in scripts/lib/zen-paths.sh install.sh "ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" install.ps1; do
+        sed -i -E "s|^[0-9a-f]{64}  $f\$|$h  $f|" "$REPO/$code"
+        if ! grep -q "^$h  $f\$" "$REPO/$code"; then
+            echo "fixtures: could not patch the fx-autoconfig pin for $f in $code" >&2
+            exit 1
+        fi
+    done
+done
 
 # Fake GitHub release (the worktree's script, released under its own version)
 VERSION="$(grep -o '@version[[:space:]]*[0-9][0-9.]*' "$REPO/JS/zenleap.uc.js" | head -n 1 | sed 's/@version[[:space:]]*//')"
@@ -97,7 +121,7 @@ done
 echo "$url" >> "$FAKE_ROOT/curl.log"
 emit() { if [ -n "$out" ]; then cat "$1" > "$out"; else cat "$1"; fi; }
 case "$url" in
-    https://github.com/MrOtherGuy/fx-autoconfig/archive/refs/heads/master.zip)
+    https://github.com/MrOtherGuy/fx-autoconfig/archive/*.zip)
         [ "${FAKE_FXAC_FAIL:-}" = 1 ] && exit 22
         emit "$FAKE_FXAC_ZIP" ;;
     https://api.github.com/repos/yashas-salankimatt/ZenLeap/releases/latest)
