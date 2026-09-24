@@ -603,6 +603,60 @@ if $HAVE_SCRIPT; then
     check "--zen-path without Zen, interactive 'n': no config.js" missing "$T/badpaths/notzen/config.js"
 fi
 
+# 34. Leftovers of older versions  [REV-LINST-12]
+new_home leftovers
+R="$H/.zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+run install.sh install --yes --zen-path "$APP"
+cp "$P/chrome/JS/zenleap.uc.js" "$P/chrome/JS/zenleap.uc.js.bak"
+: > "$P/chrome/JS/zenleap.uc.js.part"
+# What installers up to 3.4 copied: fx-autoconfig's examples, and ZenLeap into
+# every folder of the profile root
+mkdir -p "$P/chrome/CSS"
+cp "$FXAC_TREE/profile/chrome/JS/test.uc.js" "$P/chrome/JS/"
+cp "$FXAC_TREE/profile/chrome/CSS/agent_style.uc.css" "$P/chrome/CSS/"
+printf 'console.log("mine");\n' > "$P/chrome/JS/mine.uc.js"
+G="$R/Profile Groups"
+mkdir -p "$G/chrome/JS" "$G/chrome/utils"
+cp "$REPO/JS/zenleap.uc.js" "$G/chrome/JS/"
+printf 'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);\n' > "$G/user.js"
+C="$R/Crash Reports"
+mkdir -p "$C/chrome/JS"
+cp "$REPO/JS/zenleap.uc.js" "$C/chrome/JS/"
+printf 'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);\nuser_pref("other", 1);\n' > "$C/user.js"
+run install.sh install --yes --zen-path "$APP"
+check "leftovers (--yes): listed" has "$OUT" "Profile Groups/chrome"
+check "leftovers (--yes): the examples listed" has "$OUT" "chrome/JS/test.uc.js"
+check "leftovers (--yes): the user's own script not listed" lacks "$OUT" "mine.uc.js"
+check "leftovers (--yes): nothing removed" exists "$P/chrome/JS/test.uc.js"
+check "leftovers (--yes): Profile Groups untouched" exists "$G/chrome/JS/zenleap.uc.js"
+if $HAVE_SCRIPT; then
+    run_tty 'y\nn\n' install.sh install --profile 1 --zen-path "$APP"
+    check "leftovers (interactive 'y'): example script removed" missing "$P/chrome/JS/test.uc.js"
+    check "... example CSS and its empty folder removed" missing "$P/chrome/CSS"
+    check "... the user's own script kept" exists "$P/chrome/JS/mine.uc.js"
+    check "... ZenLeap kept" exists "$P/chrome/JS/zenleap.uc.js"
+    check "... the non-profile folder's chrome/ removed" missing "$G/chrome"
+    check "... its user.js with only the old pref removed" missing "$G/user.js"
+    check "... the folder's own files kept" exists "$G/abc.sqlite"
+    check "... a user.js with other prefs kept" exists "$C/user.js"
+    check "... the other non-profile folder's chrome/ removed" missing "$C/chrome"
+    check "... the real profiles untouched" exists "$R/0sczwvfb.default-release/prefs.js"
+fi
+run install.sh uninstall --yes --zen-path "$APP"
+check "uninstall: the updater's zenleap.uc.js.bak removed" missing "$P/chrome/JS/zenleap.uc.js.bak"
+check "uninstall: a partial update download removed" missing "$P/chrome/JS/zenleap.uc.js.part"
+new_home onlycss
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+mkdir -p "$P/chrome"
+printf '/* === ZenLeap Styles === */\n.x{}\n/* === End ZenLeap Styles === */\n' > "$P/chrome/userChrome.css"
+run install.sh install --yes --zen-path "$APP"
+check "userChrome.css with only ZenLeap's block: removed" missing "$P/chrome/userChrome.css"
+check "... backup kept" has "$P/chrome/userChrome.css.zenleap-backup" ".x{}"
+
 # 35. fx-autoconfig verification counts every entry of chrome/utils (hidden ones
 #     too, by exact name), and exactly the verified files are copied  [REV-LINST-13]
 new_home fxhidden
@@ -625,6 +679,28 @@ run install.sh install --yes --zen-path "$APP"
 # shellcheck disable=SC2012  # plain file names
 check "verified loader: exactly the pinned files in chrome/utils" \
     test "$(ls -A "$P/chrome/utils" | tr '\n' ' ')" = "boot.sys.mjs chrome.manifest fs.sys.mjs module_loader.mjs uc_api.sys.mjs utils.sys.mjs "
+
+# 36. uninstall --remove-fxautoconfig keeps fx-autoconfig that other scripts need  [REV-LINST-15]
+new_home fxusers
+R="$H/.config/zen"
+mk_two_profiles "$R"
+P="$R/gdgcari8.Default (release)"
+O="$R/0sczwvfb.default-release"
+run install.sh install --yes --zen-path "$APP"
+echo '// other' > "$P/chrome/JS/zenripple_agent.uc.js"
+run install.sh uninstall --yes --remove-fxautoconfig --zen-path "$APP"
+check "--remove-fxautoconfig, another script in the profile: loader kept" exists "$P/chrome/utils/boot.sys.mjs"
+check "... names the script" has "$OUT" "zenripple_agent.uc.js"
+check "... config.js kept (that script needs it)" exists "$APP/config.js"
+check "... ZenLeap itself removed" missing "$P/chrome/JS/zenleap.uc.js"
+rm -f "$P/chrome/JS/zenripple_agent.uc.js"
+run install.sh install --yes --profile all --zen-path "$APP"
+run install.sh uninstall --yes --remove-fxautoconfig --profile 1 --zen-path "$APP"
+check "--remove-fxautoconfig, ZenLeap still in another profile: config.js kept" exists "$APP/config.js"
+check "... this profile's loader removed" missing "$P/chrome/utils"
+check "... explains" has "$OUT" "still need it: default-release"
+run install.sh uninstall --yes --remove-fxautoconfig --zen-path "$APP"
+check "--remove-fxautoconfig, the last user: config.js removed" missing "$APP/config.js"
 
 # 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
 #     (`sh` on macOS) works  [REV-LINST-17]

@@ -274,6 +274,37 @@ check "outdated: old CSS block removed" lacks "$P/chrome/userChrome.css" ".old{}
 check "outdated: user CSS kept" has "$P/chrome/userChrome.css" ".mine{}"
 check "outdated: userChrome.css backup" exists "$P/chrome/userChrome.css.zenleap-backup"
 
+# M. Leftovers: fx-autoconfig's examples offered for removal on install, the
+#    updater's backup removed on uninstall, fx-autoconfig kept for other scripts
+#    [REV-LINST-12, REV-LINST-15]
+new_mac leftovers
+mkdir -p "$P/chrome/JS" "$P/chrome/CSS"
+cp "$FXAC_TREE/profile/chrome/JS/test.uc.js" "$P/chrome/JS/"
+cp "$FXAC_TREE/profile/chrome/CSS/agent_style.uc.css" "$P/chrome/CSS/"
+manager Install DEFAULT Yes No
+check "examples: removal offered" has "$LOG" "Hi mom"
+check "examples: test.uc.js removed" missing "$P/chrome/JS/test.uc.js"
+check "examples: empty CSS folder removed" missing "$P/chrome/CSS"
+check "examples: ZenLeap installed" exists "$P/chrome/JS/zenleap.uc.js"
+cp "$P/chrome/JS/zenleap.uc.js" "$P/chrome/JS/zenleap.uc.js.bak"
+echo '// other' > "$P/chrome/JS/zenripple_agent.uc.js"
+manager Uninstall
+check "uninstall: zenleap.uc.js removed" missing "$P/chrome/JS/zenleap.uc.js"
+check "uninstall: the updater's .bak removed" missing "$P/chrome/JS/zenleap.uc.js.bak"
+check "uninstall: fx-autoconfig not offered for removal while another script uses it" lacks "$LOG" "Also remove fx-autoconfig?"
+check "uninstall: says why it was kept" has "$LOG" "zenripple_agent.uc.js"
+check "uninstall: loader kept" exists "$P/chrome/utils/boot.sys.mjs"
+check "uninstall: config.js kept" exists "$RES/config.js"
+rm -f "$P/chrome/JS/zenripple_agent.uc.js"
+manager Install DEFAULT No
+mkdir -p "$O/chrome/JS"
+cp -R "$P/chrome/utils" "$O/chrome/"
+cp "$P/chrome/JS/zenleap.uc.js" "$O/chrome/JS/"
+manager Uninstall DEFAULT Yes
+check "uninstall + remove fx-autoconfig: this profile's loader removed" missing "$P/chrome/utils"
+check "uninstall + remove fx-autoconfig: config.js kept for the other profile" exists "$RES/config.js"
+check "uninstall + remove fx-autoconfig: says so" has "$LOG" "still need it"
+
 # K. Zen.app outside the usual folders, found through the profile's compatibility.ini
 new_mac elsewhere
 mkdir -p "$H/Downloads"

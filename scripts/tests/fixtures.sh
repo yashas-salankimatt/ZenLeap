@@ -49,6 +49,9 @@ done
 FXAC_FILES="program/config.js program/defaults/pref/config-prefs.js profile/chrome/utils/boot.sys.mjs
 profile/chrome/utils/chrome.manifest profile/chrome/utils/fs.sys.mjs profile/chrome/utils/module_loader.mjs
 profile/chrome/utils/uc_api.sys.mjs profile/chrome/utils/utils.sys.mjs"
+# Example files of the fake archive whose pins are patched too (the other
+# example pins stay the real ones)
+FXAC_EXAMPLE_FILES="profile/chrome/JS/test.uc.js profile/chrome/CSS/agent_style.uc.css"
 FXAC_TREE="$T/fxac-src/fx-autoconfig-dfdab5684faffc112b76ccb1d8cab7f75da0102c"
 make_fxac_zip() {  # make_fxac_zip <out.zip>
     local top="$FXAC_TREE" f
@@ -80,9 +83,11 @@ make_fxac_zip "$T/fixtures/fxac.zip"
 REPO="$T/repo"
 mkdir -p "$REPO"
 (cd "$REAL_REPO" && tar cf - --exclude=./.git --exclude=./dist .) | (cd "$REPO" && tar xf -)
-for f in $FXAC_FILES; do
+for f in $FXAC_FILES $FXAC_EXAMPLE_FILES; do
     h=$(sha256sum "$FXAC_TREE/$f" | cut -d' ' -f1)
     for code in scripts/lib/zen-paths.sh install.sh "ZenLeap Manager.app/Contents/MacOS/ZenLeapManager" install.ps1; do
+        # install.ps1 has no pins for the example files yet
+        case " $FXAC_EXAMPLE_FILES " in *" $f "*) if [ "$code" = install.ps1 ]; then continue; fi ;; esac
         sed -i -E "s|^[0-9a-f]{64}  $f\$|$h  $f|" "$REPO/$code"
         if ! grep -q "^$h  $f\$" "$REPO/$code"; then
             echo "fixtures: could not patch the fx-autoconfig pin for $f in $code" >&2

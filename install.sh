@@ -11,7 +11,8 @@
 #   --profile-dir <dir>     Use this profile directory (e.g. one you start with `zen -profile <dir>`);
 #                           repeatable
 #   --yes, -y               Don't ask questions (non-interactive mode)
-#   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall
+#   --remove-fxautoconfig   Also remove fx-autoconfig during uninstall (it is kept where other
+#                           scripts still use it)
 #   --zen-path <dir>        Zen Browser installation directory (the folder containing the zen
 #                           binary; on macOS the Zen.app bundle)
 #
@@ -180,6 +181,19 @@ d80557b7bdd46f91f0d249f25f1bf66ed83f8c9e620cd0c9334029e4826924d0  profile/chrome
 e7fca8757159751df080e5cbfcd27b508d98c5cdfd6434ea14247832418d1f63  profile/chrome/utils/module_loader.mjs
 dc7547aecbaac67da94b54e353f8e306a0ca01b2a461e106cc88c63a2e210cac  profile/chrome/utils/uc_api.sys.mjs
 3fb7c9799864ee01428722939f324acea1e6065cb63a9298e7bbc59e5adbd96a  profile/chrome/utils/utils.sys.mjs
+"
+# fx-autoconfig's example files (unchanged since 2024). ZenLeap installers up
+# to 3.4 copied them into every profile; test.uc.js logs "Hi mom, I'm loaded!"
+# in every window. Only byte-identical copies are offered for removal.
+# shellcheck disable=SC2034
+ZP_FXAC_EXAMPLES_SHA256="
+de6ddbef85afd6b68ffa66243ffe802bd16f31db36fbb8c78f122c99f54516e4  profile/chrome/JS/test.uc.js
+1abbcad61de45c1507a286098db059d8cb3fe7ca63fb514d7f71a16e9914b4ff  profile/chrome/JS/userChrome_ag_css.sys.mjs
+09543f005ec2aa9ffe68063aa3a3375d0bcef7892bde1244dc917b0e40ba1019  profile/chrome/JS/userChrome_au_css.uc.js
+6b6d576dd8c2e3ac79f02a9ef1ebc8a8d3194a77dd9f6ee7fdf75b5e3dc50f0c  profile/chrome/CSS/agent_style.uc.css
+fd0925fdbae19e3c3503ec0e2624bfeadbf63b08d4cb1e7000e899b158c393c5  profile/chrome/CSS/author_style.uc.css
+6a22fa309f93b22a82b22d06135d69d85c6e782f84fad510bdb7ff46d79ccbe1  profile/chrome/resources/userChrome.ag.css
+23453d331dfaf7b0b01fc7a8d220e21bdedd568b48c2d26cb05a256704850f74  profile/chrome/resources/userChrome.au.css
 "
 ZP_BOM=$'\xef\xbb\xbf'
 
@@ -715,7 +729,8 @@ zp_copy_file() {
 # Remove the "/* === ZenLeap Styles === */ ... /* === End ZenLeap Styles === */"
 # block(s) that older installers appended to a userChrome.css (a block with no
 # end marker runs to the end of the file). Blank lines just before a block go
-# too. Returns 1 if the file has no block.
+# too. A file with nothing else in it (the old installers created it) is
+# deleted; callers keep a backup. Returns 1 if the file has no block.
 zp_strip_css_block() {
     local file="$1" tmp
     if ! grep -qF '/* === ZenLeap Styles === */' "$file" 2>/dev/null; then return 1; fi
@@ -728,6 +743,9 @@ zp_strip_css_block() {
         END { printf "%s", blank }
     ' "$file" > "$tmp" && cat "$tmp" > "$file"
     rm -f "$tmp"
+    if ! grep -q '[^[:space:]]' "$file" 2>/dev/null; then
+        rm -f "$file"
+    fi
     return 0
 }
 
@@ -790,6 +808,70 @@ zp_zenleap_version() {
     elif d=$(zp_sine_zenleap_dir "$1"); then
         zp_file_version "$d/JS/zenleap.uc.js"
     fi
+}
+
+# Scripts in <profile-dir>/chrome/JS that need fx-autoconfig besides ZenLeap
+# (e.g. ZenRipple), one file name per line. fx-autoconfig's own examples
+# don't count.
+zp_other_scripts() {
+    local f examples
+    examples=$(zp_fxac_examples "$1")
+    for f in "$1"/chrome/JS/*.uc.js "$1"/chrome/JS/*.uc.mjs "$1"/chrome/JS/*.sys.mjs; do
+        if [ ! -f "$f" ] || [ "${f##*/}" = zenleap.uc.js ]; then continue; fi
+        if printf '%s\n' "$examples" | grep -qxF "chrome/JS/${f##*/}"; then continue; fi
+        printf '%s\n' "${f##*/}"
+    done
+    return 0
+}
+
+# fx-autoconfig example files in <profile-dir> that are byte-identical to
+# fx-autoconfig's (see ZP_FXAC_EXAMPLES_SHA256), as "chrome/JS/test.uc.js" etc.
+zp_fxac_examples() {
+    local sum file
+    while read -r sum file; do
+        [ -n "$file" ] || continue
+        file="chrome/${file#profile/chrome/}"
+        if [ -f "$1/$file" ] && [ "$(zp_sha256 "$1/$file")" = "$sum" ]; then
+            printf '%s\n' "$file"
+        fi
+    done <<EOF
+$ZP_FXAC_EXAMPLES_SHA256
+EOF
+    return 0
+}
+
+# Folders next to the profiles that are not profiles but hold ZenLeap files:
+# installers up to 3.4 treated every folder in the profile root as a profile
+# (Profile Groups/, Crash Reports/, Pending Pings/, ...). Looks in the roots of
+# the profiles zp_discover found; prints one folder per line.
+zp_leftover_dirs() {
+    local i root d roots=()
+    for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+        root=${ZP_PROFILE_ROOT[$i]}
+        if [ -n "$root" ] && ! zp__in_list "$root" "${roots[@]}"; then roots+=("$root"); fi
+    done
+    for root in "${roots[@]}"; do
+        for d in "$root"/*/ "$root"/Profiles/*/; do
+            d=${d%/}
+            if [ -f "$d/chrome/JS/zenleap.uc.js" ] && ! zp_is_profile_dir "$d" && \
+               ! zp__in_list "$d" "${ZP_PROFILE_DIRS[@]}"; then
+                printf '%s\n' "$d"
+            fi
+        done
+    done
+    return 0
+}
+
+# What installers up to 3.4 left in a non-profile folder <dir> (see
+# zp_leftover_dirs): its chrome/ folder, and user.js when it holds nothing but
+# the stylesheet pref they added. One path per line.
+zp_leftover_files() {
+    printf '%s\n' "$1/chrome"
+    if [ -f "$1/user.js" ] && \
+       ! grep -v -e '^[[:space:]]*$' -e 'toolkit\.legacyUserProfileCustomizations\.stylesheets' "$1/user.js" >/dev/null 2>&1; then
+        printf '%s\n' "$1/user.js"
+    fi
+    return 0
 }
 
 # --- Zen installation and fx-autoconfig ------------------------------------
@@ -1425,6 +1507,11 @@ profile_zen_dir() {
     fi
 }
 
+# "a, b, c" from lines "a", "b", "c"
+join_lines() {
+    printf '%s\n' "$1" | awk 'NR > 1 { printf ", " } { printf "%s", $0 }'
+}
+
 # Remember what each Zen installation's loader looks like (ok, pending,
 # foreign, sine), so every installation is handled once.
 gre_state() {
@@ -1709,13 +1796,21 @@ install_zenleap() {
 
 # Uninstall ZenLeap from the current profile
 uninstall_zenleap() {
-    local found_anything=false
+    local found_anything=false f
 
     if [ -f "$JS_DIR/zenleap.uc.js" ]; then
         rm -f "$JS_DIR/zenleap.uc.js"
         ok "Removed zenleap.uc.js"
         found_anything=true
     fi
+    # The in-browser updater's backup and partial download, and our own temp copy
+    for f in "$JS_DIR/zenleap.uc.js.bak" "$JS_DIR/zenleap.uc.js.part" "$JS_DIR/zenleap.uc.js.zenleap-tmp"; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            ok "Removed ${f##*/}"
+            found_anything=true
+        fi
+    done
 
     # Remove styles that older installers added to userChrome.css
     if [ -f "$CHROME_DIR/userChrome.css" ] && grep -qF '/* === ZenLeap Styles === */' "$CHROME_DIR/userChrome.css"; then
@@ -1736,24 +1831,27 @@ uninstall_zenleap() {
     fi
 }
 
-# Remove fx-autoconfig's loader from the current profile
+# Remove fx-autoconfig's loader from the current profile, unless other scripts
+# in chrome/JS (e.g. ZenRipple, or Sine running on fx-autoconfig) still need it
 uninstall_fxautoconfig_profile() {
-    if zp_profile_uses_sine "$PROFILE_DIR"; then
-        warn "chrome/utils belongs to Sine in this profile; not removing it"
+    local others
+    if [ ! -f "$CHROME_DIR/utils/boot.sys.mjs" ] && [ ! -f "$CHROME_DIR/utils/boot.jsm" ]; then
+        warn "fx-autoconfig's loader not found in this profile"
         return 0
     fi
-    if [ -f "$CHROME_DIR/utils/boot.sys.mjs" ] || [ -f "$CHROME_DIR/utils/boot.jsm" ]; then
-        rm -rf "$CHROME_DIR/utils"
-        ok "Removed chrome/utils/ (fx-autoconfig)"
-    else
-        warn "fx-autoconfig's loader not found in this profile"
+    others=$(zp_other_scripts "$PROFILE_DIR")
+    if [ -n "$others" ]; then
+        warn "Keeping fx-autoconfig in this profile: other scripts in chrome/JS use it ($(join_lines "$others"))."
+        return 0
     fi
+    rm -rf "$CHROME_DIR/utils"
+    ok "Removed chrome/utils/ (fx-autoconfig)"
 }
 
 # Remove fx-autoconfig's program files from Zen installation $1 (only if they
-# are fx-autoconfig's)
+# are fx-autoconfig's, and no profile that runs with it still has fx-autoconfig)
 uninstall_fxautoconfig_program() {
-    local dir="$1" f failed=()
+    local dir="$1" f i p users="" failed=()
     case "$(zp_program_status "$dir")" in
         fxac|fxac-noprefs) ;;
         missing) return 0 ;;
@@ -1762,6 +1860,18 @@ uninstall_fxautoconfig_program() {
             return 0
             ;;
     esac
+    # Profiles of this Zen installation whose scripts still need it
+    for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+        p="${ZP_PROFILE_DIRS[$i]}"
+        if [ -f "$p/chrome/utils/boot.sys.mjs" ] && [ "$(profile_zen_dir "$i")" = "$dir" ] && \
+           { [ -f "$p/chrome/JS/zenleap.uc.js" ] || [ -n "$(zp_other_scripts "$p")" ]; }; then
+            users="${users:+$users$'\n'}${ZP_PROFILE_NAMES[$i]}"
+        fi
+    done
+    if [ -n "$users" ]; then
+        warn "Keeping fx-autoconfig's config.js in $dir: scripts in these profiles still need it: $(join_lines "$users")."
+        return 0
+    fi
     for f in "$dir/config.js" "$dir/defaults/pref/config-prefs.js"; do
         if [ -f "$f" ]; then
             if rm -f "$f" 2>/dev/null && [ ! -e "$f" ]; then
@@ -1801,6 +1911,52 @@ clear_cache() {
     else
         ok "No startup cache to clear"
     fi
+}
+
+# Files that older installers left behind and nothing needs: fx-autoconfig's
+# example scripts in the selected profiles (byte-identical copies only), and
+# ZenLeap files in folders next to the profiles that are not profiles. Offered
+# for removal; --yes only lists them.
+offer_cleanup() {
+    local i f d ans items=()
+    for i in "${ZP_SELECTED[@]}"; do
+        while IFS= read -r f; do
+            if [ -n "$f" ]; then items+=("${ZP_PROFILE_DIRS[$i]}/$f"); fi
+        done < <(zp_fxac_examples "${ZP_PROFILE_DIRS[$i]}")
+    done
+    while IFS= read -r d; do
+        if [ -z "$d" ]; then continue; fi
+        while IFS= read -r f; do items+=("$f"); done < <(zp_leftover_files "$d")
+    done < <(zp_leftover_dirs)
+    if [ ${#items[@]} -eq 0 ]; then
+        return 0
+    fi
+    echo ""
+    warn "Older ZenLeap installers left files behind that nothing needs:"
+    printf '    %s\n' "${items[@]}"
+    echo "  (fx-autoconfig's example scripts - test.uc.js logs \"Hi mom, I'm loaded!\" in every window -"
+    echo "  and copies in folders that are not profiles)"
+    if [ "$AUTO_YES" = true ]; then
+        echo "  Run the installer without --yes to remove them, or delete them yourself."
+        return 0
+    fi
+    echo -n "  Remove them? (Y/n): "
+    read -r ans <&3 || ans="n"
+    case "$ans" in
+        n|N|no|No)
+            echo "  Kept them."
+            return 0
+            ;;
+    esac
+    for f in "${items[@]}"; do
+        rm -rf "$f"
+    done
+    for i in "${ZP_SELECTED[@]}"; do
+        for d in CSS resources; do
+            rmdir "${ZP_PROFILE_DIRS[$i]}/chrome/$d" 2>/dev/null || true
+        done
+    done
+    ok "Removed them"
 }
 
 # Launch Zen Browser
@@ -1866,6 +2022,7 @@ do_install() {
     done
 
     clear_cache
+    offer_cleanup
 
     echo ""
     if [ "$INSTALLED_COUNT" -eq 0 ]; then
@@ -1914,6 +2071,7 @@ do_uninstall() {
     choose_profiles uninstall
     if [ ${#ZP_SELECTED[@]} -eq 0 ]; then
         ok "ZenLeap is not installed in any Zen profile (use --profile to pick one anyway)."
+        offer_cleanup
         return 0
     fi
     check_zen_running
@@ -1948,7 +2106,7 @@ do_uninstall() {
             fi
         else
             echo ""
-            echo -n "Also remove fx-autoconfig? Other userscripts (e.g. ZenRipple) may depend on it. (y/n): "
+            echo -n "Also remove fx-autoconfig? It stays where other scripts (e.g. ZenRipple) use it. (y/n): "
             read -r response <&3 || response="n"
             if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
                 remove_fx=true
@@ -1968,6 +2126,7 @@ do_uninstall() {
     fi
 
     clear_cache
+    offer_cleanup
 
     echo ""
     echo -e "${GREEN}Uninstallation complete!${NC}"
@@ -2036,7 +2195,8 @@ show_help() {
     echo "  --all-profiles          Same as --profile all"
     echo "  --profile-dir <dir>     Use this profile directory directly; repeatable"
     echo "  --yes, -y               Don't ask questions (non-interactive mode)"
-    echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall"
+    echo "  --remove-fxautoconfig   Also remove fx-autoconfig during uninstall (kept where other"
+    echo "                          scripts still use it)"
     echo "  --zen-path <dir>        Zen Browser installation directory (default: the one that last"
     echo "                          ran the profile, else a standard location)"
     echo ""

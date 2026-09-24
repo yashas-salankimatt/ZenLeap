@@ -51,6 +51,19 @@ e7fca8757159751df080e5cbfcd27b508d98c5cdfd6434ea14247832418d1f63  profile/chrome
 dc7547aecbaac67da94b54e353f8e306a0ca01b2a461e106cc88c63a2e210cac  profile/chrome/utils/uc_api.sys.mjs
 3fb7c9799864ee01428722939f324acea1e6065cb63a9298e7bbc59e5adbd96a  profile/chrome/utils/utils.sys.mjs
 "
+# fx-autoconfig's example files (unchanged since 2024). ZenLeap installers up
+# to 3.4 copied them into every profile; test.uc.js logs "Hi mom, I'm loaded!"
+# in every window. Only byte-identical copies are offered for removal.
+# shellcheck disable=SC2034
+ZP_FXAC_EXAMPLES_SHA256="
+de6ddbef85afd6b68ffa66243ffe802bd16f31db36fbb8c78f122c99f54516e4  profile/chrome/JS/test.uc.js
+1abbcad61de45c1507a286098db059d8cb3fe7ca63fb514d7f71a16e9914b4ff  profile/chrome/JS/userChrome_ag_css.sys.mjs
+09543f005ec2aa9ffe68063aa3a3375d0bcef7892bde1244dc917b0e40ba1019  profile/chrome/JS/userChrome_au_css.uc.js
+6b6d576dd8c2e3ac79f02a9ef1ebc8a8d3194a77dd9f6ee7fdf75b5e3dc50f0c  profile/chrome/CSS/agent_style.uc.css
+fd0925fdbae19e3c3503ec0e2624bfeadbf63b08d4cb1e7000e899b158c393c5  profile/chrome/CSS/author_style.uc.css
+6a22fa309f93b22a82b22d06135d69d85c6e782f84fad510bdb7ff46d79ccbe1  profile/chrome/resources/userChrome.ag.css
+23453d331dfaf7b0b01fc7a8d220e21bdedd568b48c2d26cb05a256704850f74  profile/chrome/resources/userChrome.au.css
+"
 ZP_BOM=$'\xef\xbb\xbf'
 
 # Print $1 if it is an absolute path, else $2 (the XDG spec says relative
@@ -585,7 +598,8 @@ zp_copy_file() {
 # Remove the "/* === ZenLeap Styles === */ ... /* === End ZenLeap Styles === */"
 # block(s) that older installers appended to a userChrome.css (a block with no
 # end marker runs to the end of the file). Blank lines just before a block go
-# too. Returns 1 if the file has no block.
+# too. A file with nothing else in it (the old installers created it) is
+# deleted; callers keep a backup. Returns 1 if the file has no block.
 zp_strip_css_block() {
     local file="$1" tmp
     if ! grep -qF '/* === ZenLeap Styles === */' "$file" 2>/dev/null; then return 1; fi
@@ -598,6 +612,9 @@ zp_strip_css_block() {
         END { printf "%s", blank }
     ' "$file" > "$tmp" && cat "$tmp" > "$file"
     rm -f "$tmp"
+    if ! grep -q '[^[:space:]]' "$file" 2>/dev/null; then
+        rm -f "$file"
+    fi
     return 0
 }
 
@@ -660,6 +677,70 @@ zp_zenleap_version() {
     elif d=$(zp_sine_zenleap_dir "$1"); then
         zp_file_version "$d/JS/zenleap.uc.js"
     fi
+}
+
+# Scripts in <profile-dir>/chrome/JS that need fx-autoconfig besides ZenLeap
+# (e.g. ZenRipple), one file name per line. fx-autoconfig's own examples
+# don't count.
+zp_other_scripts() {
+    local f examples
+    examples=$(zp_fxac_examples "$1")
+    for f in "$1"/chrome/JS/*.uc.js "$1"/chrome/JS/*.uc.mjs "$1"/chrome/JS/*.sys.mjs; do
+        if [ ! -f "$f" ] || [ "${f##*/}" = zenleap.uc.js ]; then continue; fi
+        if printf '%s\n' "$examples" | grep -qxF "chrome/JS/${f##*/}"; then continue; fi
+        printf '%s\n' "${f##*/}"
+    done
+    return 0
+}
+
+# fx-autoconfig example files in <profile-dir> that are byte-identical to
+# fx-autoconfig's (see ZP_FXAC_EXAMPLES_SHA256), as "chrome/JS/test.uc.js" etc.
+zp_fxac_examples() {
+    local sum file
+    while read -r sum file; do
+        [ -n "$file" ] || continue
+        file="chrome/${file#profile/chrome/}"
+        if [ -f "$1/$file" ] && [ "$(zp_sha256 "$1/$file")" = "$sum" ]; then
+            printf '%s\n' "$file"
+        fi
+    done <<EOF
+$ZP_FXAC_EXAMPLES_SHA256
+EOF
+    return 0
+}
+
+# Folders next to the profiles that are not profiles but hold ZenLeap files:
+# installers up to 3.4 treated every folder in the profile root as a profile
+# (Profile Groups/, Crash Reports/, Pending Pings/, ...). Looks in the roots of
+# the profiles zp_discover found; prints one folder per line.
+zp_leftover_dirs() {
+    local i root d roots=()
+    for ((i = 0; i < ${#ZP_PROFILE_DIRS[@]}; i++)); do
+        root=${ZP_PROFILE_ROOT[$i]}
+        if [ -n "$root" ] && ! zp__in_list "$root" "${roots[@]}"; then roots+=("$root"); fi
+    done
+    for root in "${roots[@]}"; do
+        for d in "$root"/*/ "$root"/Profiles/*/; do
+            d=${d%/}
+            if [ -f "$d/chrome/JS/zenleap.uc.js" ] && ! zp_is_profile_dir "$d" && \
+               ! zp__in_list "$d" "${ZP_PROFILE_DIRS[@]}"; then
+                printf '%s\n' "$d"
+            fi
+        done
+    done
+    return 0
+}
+
+# What installers up to 3.4 left in a non-profile folder <dir> (see
+# zp_leftover_dirs): its chrome/ folder, and user.js when it holds nothing but
+# the stylesheet pref they added. One path per line.
+zp_leftover_files() {
+    printf '%s\n' "$1/chrome"
+    if [ -f "$1/user.js" ] && \
+       ! grep -v -e '^[[:space:]]*$' -e 'toolkit\.legacyUserProfileCustomizations\.stylesheets' "$1/user.js" >/dev/null 2>&1; then
+        printf '%s\n' "$1/user.js"
+    fi
+    return 0
 }
 
 # --- Zen installation and fx-autoconfig ------------------------------------
