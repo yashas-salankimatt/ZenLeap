@@ -1461,11 +1461,40 @@
     overlay.appendChild(backdrop);
     overlay.appendChild(dialog);
     document.documentElement.appendChild(overlay);
+
+    // Keyboard: Enter/Space press the focused button (Apply first; the user picked
+    // the file and sees the changes), Tab/arrows switch buttons, Escape cancels.
+    const buttons = [cancelBtn, applyBtn];
+    _importDialog = {
+      returnFocus: document.commandDispatcher?.focusedElement || null,
+      pop: pushDialog(overlay, (event) => {
+        if (event.key === 'Escape') {
+          dismissImportConfirmation();
+        } else if (event.key === 'Enter' || event.key === ' ') {
+          if (!event.repeat) (buttons.includes(document.activeElement) ? document.activeElement : applyBtn).click();
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          buttons[event.key === 'ArrowLeft' ? 0 : 1].focus();
+        } else if (event.key === 'Tab') {
+          (document.activeElement === cancelBtn ? applyBtn : cancelBtn).focus();
+        }
+        return true; // modal: nothing else gets keys while it is open
+      }, { overViews: true }),
+    };
+    applyBtn.focus();
   }
+
+  let _importDialog = null; // { pop, returnFocus } while the import confirmation is open
 
   function dismissImportConfirmation() {
     const existing = document.getElementById('zenleap-import-overlay');
     if (existing) existing.remove();
+    const dialog = _importDialog;
+    _importDialog = null;
+    if (dialog) {
+      dialog.pop();
+      // Back to where focus was in Settings (e.g. its search box)
+      if (settingsMode && dialog.returnFocus?.isConnected) dialog.returnFocus.focus();
+    }
   }
 
   function formatImportValue(value, schema) {
@@ -3846,10 +3875,12 @@
   // handleKeyDown, and consumes the keys it handles, so Escape/Enter act on the top
   // dialog only (not also on the view underneath). It also gives the Plugin Manager
   // keyboard navigation.
-  const _dialogStack = []; // [{ el, onKey(event) -> handled }]
+  const _dialogStack = []; // [{ el, onKey(event) -> handled, overViews }]
 
-  function pushDialog(el, onKey) {
-    const dialog = { el, onKey };
+  // overViews: the dialog was opened from a ZenLeap view (settings import) and sits
+  // on top of it, so it gets the keys even while that view is open.
+  function pushDialog(el, onKey, { overViews = false } = {}) {
+    const dialog = { el, onKey, overViews };
     _dialogStack.push(dialog);
     return () => {
       const i = _dialogStack.indexOf(dialog);
@@ -3859,9 +3890,9 @@
 
   function _routeDialogKeys(event) {
     while (_dialogStack.length && !_dialogStack[_dialogStack.length - 1].el.isConnected) _dialogStack.pop();
-    // A ZenLeap view opened on top of a dialog (palette, settings, ...) gets the keys
-    if (searchMode || settingsMode || helpMode || reorgMode || gtileMode || updateMode || leapMode || folderDeleteMode) return;
     const top = _dialogStack[_dialogStack.length - 1];
+    // A ZenLeap view opened on top of a dialog (palette, settings, ...) gets the keys
+    if (!top?.overViews && (searchMode || settingsMode || helpMode || reorgMode || gtileMode || updateMode || leapMode || folderDeleteMode)) return;
     let handled = false;
     try {
       if (top) handled = !!top.onKey(event);
@@ -12949,13 +12980,14 @@
         background: var(--zl-bg-raised); color: var(--zl-text-secondary); font-size: 12px; font-weight: 500;
         font-family: var(--zl-font-ui); cursor: pointer; transition: all 0.15s;
       }
-      .zenleap-import-btn-cancel:hover { background: var(--zl-bg-hover); color: var(--zl-text-primary); }
+      .zenleap-import-btn-cancel:hover, .zenleap-import-btn-cancel:focus-visible { background: var(--zl-bg-hover); color: var(--zl-text-primary); }
       .zenleap-import-btn-apply {
         padding: 7px 18px; border-radius: var(--zl-r-sm); border: 1px solid var(--zl-accent-border);
         background: var(--zl-accent-dim); color: var(--zl-accent); font-size: 12px; font-weight: 600;
         font-family: var(--zl-font-ui); cursor: pointer; transition: all 0.15s;
       }
       .zenleap-import-btn-apply:hover { background: var(--zl-accent-mid); border-color: var(--zl-accent); }
+      .zenleap-import-btn-cancel:focus-visible, .zenleap-import-btn-apply:focus-visible { outline: 2px solid var(--zl-accent); outline-offset: 2px; }
       .zenleap-import-btn-apply:active, .zenleap-import-btn-cancel:active { transform: scale(0.97); }
       /* Settings toast */
       .zenleap-settings-toast {
