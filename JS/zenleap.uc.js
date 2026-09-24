@@ -5639,24 +5639,20 @@
   // COMMAND SUB-FLOW SYSTEM
   // ============================================
 
-  // Sub-flows that show a fixed list (preview/confirmation): the input can't be typed into
-  const READ_ONLY_SUBFLOWS = new Set([
-    'dedup-preview', 'session-detail-view', 'delete-session-confirm', 'command-confirm',
-    'delete-workspace-confirm', 'delete-folder-confirm', 'restore-replace-confirm',
-  ]);
+  // Every sub-flow is one entry in SUBFLOWS (defined at the end of this section):
+  //   placeholder       input placeholder text
+  //   results(q, data)  result rows for the current query
+  //   select(r, data)   Enter on a row
+  //   readOnly          fixed list (preview/confirmation): the input can't be typed into
+  //   onEnter/onExit    optional hooks
+  // enterSubFlow/getSubFlowResults/handleSubFlowSelect dispatch through the table, so a
+  // new flow is defined in one place.
 
-  function enterSubFlow(type, label) {
+  function enterSubFlow(type, label, data = null) {
     commandSubFlowStack.push({ type: commandSubFlow?.type || 'commands', label: commandSubFlow?.label || 'Commands', query: commandQuery, data: commandSubFlow?.data || null });
-    commandSubFlow = { type, label, data: null };
+    commandSubFlow = { type, label, data };
     commandQuery = '';
-    // Only reset matched tabs when entering a fresh tab-search (not when moving to action-picker/workspace-picker/folder-picker which depend on them)
-    if (type === 'tab-search' || type === 'split-tab-picker' || type === 'playing-tabs') {
-      commandMatchedTabs = [];
-    }
-    // Save current theme for live-preview restore on Escape
-    if (type === 'theme-picker') {
-      _themePreviewOriginal = S['appearance.theme'] || 'meridian';
-    }
+    SUBFLOWS[type]?.onEnter?.();
     searchSelectedIndex = 0;
     searchCursorPos = 0;
 
@@ -5666,7 +5662,7 @@
     if (searchInput) {
       searchInput.value = '';
       searchInput.placeholder = getSubFlowPlaceholder(type);
-      searchInput.readOnly = READ_ONLY_SUBFLOWS.has(type);
+      searchInput.readOnly = !!SUBFLOWS[type]?.readOnly;
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5676,22 +5672,8 @@
 
   function exitSubFlow() {
     searchSelectedIndex = 0;
-    const currentType = commandSubFlow?.type;
-
-    // Clean up dedup-preview state when leaving it
-    if (currentType === 'dedup-preview') {
-      hidePreviewPanel(true);
-      dedupTabsToClose = [];
-    }
+    SUBFLOWS[commandSubFlow?.type]?.onExit?.();
     if (searchInput) searchInput.readOnly = false;
-
-    // Restore original theme when backing out of theme-picker
-    if (currentType === 'theme-picker' && _themePreviewOriginal) {
-      S['appearance.theme'] = _themePreviewOriginal;
-      saveSettings();
-      applyTheme();
-      _themePreviewOriginal = null;
-    }
 
     if (commandSubFlowStack.length === 0) {
       if (browseCommandMode) {
@@ -5729,7 +5711,7 @@
     if (searchInput) {
       searchInput.value = commandQuery;
       searchInput.placeholder = commandSubFlow ? getSubFlowPlaceholder(commandSubFlow.type) : 'Type a command...';
-      searchInput.readOnly = READ_ONLY_SUBFLOWS.has(commandSubFlow?.type);
+      searchInput.readOnly = !!SUBFLOWS[commandSubFlow?.type]?.readOnly;
     }
     renderCommandResults();
     updateBreadcrumb();
@@ -5738,51 +5720,7 @@
   }
 
   function getSubFlowPlaceholder(type) {
-    switch (type) {
-      case 'tab-search': return 'Search tabs to select...';
-      case 'action-picker': return 'Choose an action...';
-      case 'workspace-picker': return 'Choose a workspace...';
-      case 'folder-picker': return 'Choose a folder...';
-      case 'split-tab-picker': return 'Search for a tab to split with...';
-      case 'playing-tabs': return 'Search playing tabs...';
-      case 'dedup-preview': return 'Duplicates to close — Enter to confirm';
-      case 'folder-name-input': return 'Enter folder name...';
-      case 'delete-folder-picker': return 'Select a folder to delete...';
-      case 'delete-workspace-picker': return 'Select a workspace to delete...';
-      case 'delete-workspace-confirm': return 'Deleting a workspace closes its tabs — choose with ↓ and Enter';
-      case 'delete-folder-confirm': return 'What should happen to the folder\u2019s tabs?';
-      case 'restore-replace-confirm': return 'Replacing closes the current workspace\u2019s tabs — choose with ↓ and Enter';
-      case 'command-confirm': return 'Confirm — choose with ↓ and Enter';
-      case 'switch-workspace-picker': return 'Select a workspace to switch to...';
-      case 'move-to-workspace-picker': return 'Select a workspace to move tab to...';
-      case 'add-to-folder-picker': return 'Select a folder to add tab to...';
-      case 'rename-folder-picker': return 'Select a folder to rename...';
-      case 'rename-workspace-picker': return 'Select a workspace to rename...';
-      case 'rename-folder-input': return 'Enter new folder name...';
-      case 'rename-workspace-input': return 'Enter new workspace name...';
-      case 'create-workspace-input': return 'Enter new workspace name...';
-      case 'save-session-scope': return 'What to save?';
-      case 'save-session-input': return 'Type a comment for this snapshot and press Enter...';
-      case 'restore-session-picker': return 'Select a session to restore...';
-      case 'restore-session-mode': return 'How to restore?';
-      case 'list-sessions-picker': return 'Browse saved sessions...';
-      case 'session-detail-view': return 'Session contents (Esc to go back)';
-      case 'delete-session-confirm': return 'Press Enter to confirm deletion...';
-      case 'browse-workspace-picker': return 'Choose a workspace...';
-      case 'browse-folder-picker': return 'Choose a folder...';
-      case 'browse-folder-name-input': return 'Enter folder name...';
-      case 'sort-picker': return 'Sort by...';
-      case 'change-folder-icon-picker': return 'Select a folder to change icon...';
-      case 'unload-folder-picker': return 'Select a folder to unload tabs...';
-      case 'create-subfolder-picker': return 'Select a parent folder...';
-      case 'folder-to-workspace-picker': return 'Select a folder to convert to workspace...';
-      case 'unpack-folder-picker': return 'Select a folder to unpack...';
-      case 'move-folder-to-ws-folder-picker': return 'Select a folder to move...';
-      case 'move-folder-to-ws-workspace-picker': return 'Select destination workspace...';
-      case 'theme-picker': return 'Select a theme...';
-      case 'theme-browser-confirm': return 'Apply theme to browser too?';
-      default: return 'Type a command...';
-    }
+    return SUBFLOWS[type]?.placeholder ?? 'Type a command...';
   }
 
   function updateBreadcrumb() {
@@ -5807,98 +5745,89 @@
 
   // Get sub-flow results based on type
   function getSubFlowResults() {
-    if (!commandSubFlow) return [];
-    const query = commandQuery;
-
-    switch (commandSubFlow.type) {
-      case 'tab-search':
-        return getTabSearchSubFlowResults(query);
-      case 'action-picker':
-        return getActionPickerResults(query);
-      case 'workspace-picker':
-        return getWorkspacePickerResults(query);
-      case 'folder-picker':
-        return getFolderPickerResults(query);
-      case 'split-tab-picker':
-        return getSplitTabPickerResults(query);
-      case 'playing-tabs':
-        return getPlayingTabsResults(query);
-      case 'dedup-preview':
-        return getDedupPreviewResults();
-      case 'folder-name-input':
-        return getFolderNameInputResults(query);
-      case 'delete-folder-picker':
-        return getDeleteFolderPickerResults(query);
-      case 'delete-workspace-picker':
-        return getDeleteWorkspacePickerResults(query);
-      case 'delete-workspace-confirm':
-        return getDeleteWorkspaceConfirmResults();
-      case 'delete-folder-confirm':
-        return getDeleteFolderConfirmResults();
-      case 'restore-replace-confirm':
-        return getRestoreReplaceConfirmResults();
-      case 'command-confirm':
-        return getCommandConfirmResults();
-      case 'switch-workspace-picker':
-        return getSwitchWorkspacePickerResults(query);
-      case 'move-to-workspace-picker':
-        return getMoveToWorkspacePickerResults(query);
-      case 'add-to-folder-picker':
-        return getAddToFolderPickerResults(query);
-      case 'rename-folder-picker':
-        return getRenameFolderPickerResults(query);
-      case 'rename-workspace-picker':
-        return getRenameWorkspacePickerResults(query);
-      case 'rename-folder-input':
-        return getRenameFolderInputResults(query);
-      case 'rename-workspace-input':
-        return getRenameWorkspaceInputResults(query);
-      case 'create-workspace-input':
-        return getCreateWorkspaceInputResults(query);
-      case 'save-session-scope':
-        return getSaveSessionScopeResults(query);
-      case 'save-session-input':
-        return getSaveSessionInputResults(query);
-      case 'restore-session-picker':
-        return getRestoreSessionPickerResults(query);
-      case 'restore-session-mode':
-        return getRestoreSessionModeResults(query);
-      case 'list-sessions-picker':
-        return getListSessionsPickerResults(query);
-      case 'session-detail-view':
-        return getSessionDetailViewResults(query);
-      case 'delete-session-confirm':
-        return getDeleteSessionConfirmResults();
-      case 'browse-workspace-picker':
-        return getWorkspacePickerResults(query);
-      case 'browse-folder-picker':
-        return getFolderPickerResults(query);
-      case 'browse-folder-name-input':
-        return getFolderNameInputResults(query);
-      case 'sort-picker':
-        return getSortPickerResults(query);
-      case 'change-folder-icon-picker':
-        return getFolderPickerForAction(query, '🎨', 'change-icon');
-      case 'unload-folder-picker':
-        return getFolderPickerForAction(query, '💤', 'unload');
-      case 'create-subfolder-picker':
-        return getFolderPickerForAction(query, '📁', 'subfolder', { canNest: true });
-      case 'folder-to-workspace-picker':
-        return getFolderPickerForAction(query, '🗂', 'convert');
-      case 'unpack-folder-picker':
-        return getFolderPickerForAction(query, '📦', 'unpack');
-      case 'move-folder-to-ws-folder-picker':
-        return getFolderPickerForAction(query, '🗂', 'move-ws');
-      case 'move-folder-to-ws-workspace-picker':
-        return getMoveToWorkspacePickerResults(query);
-      case 'theme-picker':
-        return getThemePickerResults(query);
-      case 'theme-browser-confirm':
-        return getThemeBrowserConfirmResults(query);
-      default:
-        return [];
-    }
+    const flow = SUBFLOWS[commandSubFlow?.type];
+    return flow ? flow.results(commandQuery, commandSubFlow.data) : [];
   }
+
+  // Handle sub-flow selection (Enter on a result)
+  function handleSubFlowSelect(result) {
+    const flow = SUBFLOWS[commandSubFlow?.type];
+    if (flow?.select) flow.select(result, commandSubFlow.data);
+  }
+
+  // ── Picker builders ──
+
+  // Workspaces as picker rows. Options: markCurrent (label "(current)"), excludeActive,
+  // currentLast (never pre-select the current workspace), createKey (adds a
+  // "+ Create New Workspace" row with that key), emptyLabel (row shown when empty).
+  function workspacePickerResults(query, { keyPrefix, verb, icon = '🗂', markCurrent = false, excludeActive = false, currentLast = false, createKey = null, emptyLabel = null } = {}) {
+    const activeId = window.gZenWorkspaces?.activeWorkspace;
+    const rows = [];
+    try {
+      for (const ws of (gZenWorkspaces.getWorkspaces() || [])) {
+        const isActive = ws.uuid === activeId;
+        if (excludeActive && isActive) continue;
+        const name = ws.name || 'Unnamed';
+        rows.push({
+          key: `${keyPrefix}:${ws.uuid}`,
+          label: `${name}${markCurrent && isActive ? ' (current)' : ''}`,
+          icon: safeIconText(ws.icon, icon),
+          tags: ['workspace', ...(verb ? [verb] : []), name.toLowerCase()],
+          workspaceId: ws.uuid,
+          workspaceName: name,
+          isActive,
+        });
+      }
+    } catch (e) { reportError('Listing workspaces failed', e); }
+    if (rows.length === 0 && emptyLabel) {
+      return [{ key: `${keyPrefix}:none`, label: emptyLabel, icon: '🗂', tags: [] }];
+    }
+    if (currentLast) rows.sort((a, b) => (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0));
+    const filtered = fuzzyFilterAndSort(rows, query);
+    if (createKey) filtered.push({ key: createKey, label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
+    return filtered;
+  }
+
+  // Folders of the active workspace (no live folders) as picker rows. Options: canNest
+  // (only folders that may get a subfolder), skip (a folder to leave out), counts (tab
+  // count sublabel), createKey (adds a "Create New Folder" row with that key).
+  function folderPickerResults(query, { keyPrefix, verb, icon, canNest = false, skip = null, counts = true, createKey = null } = {}) {
+    const maxDepth = Services.prefs.getIntPref('zen.folders.max-subfolders', 5);
+    const rows = [];
+    for (const folder of getWorkspaceFolders()) {
+      if (folder === skip) continue;
+      // Zen refuses subfolders beyond its nesting limit (same rule as its context menu)
+      if (canNest && (folder.level ?? 0) >= maxDepth - 1) continue;
+      const name = folderName(folder);
+      const row = { key: `${keyPrefix}:${folder.id}`, label: name, icon, tags: ['folder', ...(verb ? [verb] : []), name.toLowerCase()], folder };
+      if (counts) {
+        const tabCount = folderTabCount(folder);
+        row.sublabel = `${tabCount} tab${tabCount !== 1 ? 's' : ''}`;
+      }
+      rows.push(row);
+    }
+    if (createKey) {
+      rows.push({ key: createKey, label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
+    } else if (rows.length === 0) {
+      return [{ key: `${keyPrefix}:none`, label: 'No folders found', icon: '📂', tags: [] }];
+    }
+    return fuzzyFilterAndSort(rows, query);
+  }
+
+  // A free-text step: a prompt row until something is typed, then a confirm row.
+  function textInputResults(query, { keyPrefix, icon, prompt, confirm, confirmIcon = icon }) {
+    const text = (query || '').trim();
+    if (!text) return [{ key: `${keyPrefix}:prompt`, label: prompt, icon, tags: [] }];
+    return [{ key: `${keyPrefix}:confirm`, label: confirm(text), icon: confirmIcon, tags: [] }];
+  }
+
+  const FOLDER_NAME_INPUT = {
+    keyPrefix: 'folder-name', icon: '📁', confirmIcon: '📁+',
+    prompt: 'Type a name for the new folder and press Enter',
+    confirm: name => `Create folder: "${name}"`,
+  };
+
+  // ── Individual result lists ──
 
   // Theme picker sub-flow: lists all themes (built-in + user) with grouping
   function getThemePickerResults(query) {
@@ -5930,69 +5859,6 @@
     return fuzzyFilterAndSort(options, query);
   }
 
-  function getFolderNameInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'folder-name:prompt', label: 'Type a name for the new folder and press Enter', icon: '📁', tags: [] }];
-    }
-    return [{ key: 'folder-name:confirm', label: `Create folder: "${name}"`, icon: '📁+', tags: [] }];
-  }
-
-  // Generic folder picker for context-menu-parity sub-flows (active workspace, no live folders)
-  function getFolderPickerForAction(query, icon, actionPrefix, { canNest = false } = {}) {
-    const maxDepth = Services.prefs.getIntPref('zen.folders.max-subfolders', 5);
-    const results = [];
-    for (const folder of getWorkspaceFolders()) {
-      // Zen refuses subfolders beyond its nesting limit (same rule as its context menu)
-      if (canNest && (folder.level ?? 0) >= maxDepth - 1) continue;
-      const name = folderName(folder);
-      const tabCount = folderTabCount(folder);
-      results.push({
-        key: `${actionPrefix}-folder:${folder.id}`,
-        label: name,
-        sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-        icon,
-        tags: ['folder', actionPrefix, name.toLowerCase()],
-        folder: folder,
-      });
-    }
-    if (results.length === 0) {
-      return [{ key: `${actionPrefix}-folder:none`, label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getDeleteFolderPickerResults(query) {
-    return getFolderPickerForAction(query, '🗑', 'delete');
-  }
-
-  // Deleting a workspace closes all of its tabs, so the picker never pre-selects the
-  // current workspace (it is listed last) and a confirmation step follows.
-  function getDeleteWorkspacePickerResults(query) {
-    const results = [];
-    const activeId = window.gZenWorkspaces?.activeWorkspace;
-    try {
-      for (const ws of (gZenWorkspaces.getWorkspaces() || [])) {
-        const name = ws.name || 'Unnamed';
-        const isActive = ws.uuid === activeId;
-        results.push({
-          key: `delete-workspace:${ws.uuid}`,
-          label: `${name}${isActive ? ' (current)' : ''}`,
-          icon: safeIconText(ws.icon, '🗑'),
-          tags: ['workspace', 'delete', name.toLowerCase()],
-          workspaceId: ws.uuid,
-          workspaceName: name,
-          isActive,
-        });
-      }
-    } catch (e) { reportError('Listing workspaces failed', e); }
-    if (results.length === 0) {
-      return [{ key: 'delete-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    results.sort((a, b) => (a.isActive ? 1 : 0) - (b.isActive ? 1 : 0));
-    return fuzzyFilterAndSort(results, query);
-  }
-
   // What deleting a workspace closes (same selection as Zen's removeWorkspace()).
   function getWorkspaceOwnedItems(workspaceId) {
     let stored = [];
@@ -6006,8 +5872,7 @@
     return { tabs, folders, pinned: tabs.filter(t => t.pinned).length };
   }
 
-  function getDeleteWorkspaceConfirmResults() {
-    const data = commandSubFlow?.data;
+  function getDeleteWorkspaceConfirmResults(data) {
     if (!data?.workspaceId) return [];
     const { tabs, folders, pinned } = getWorkspaceOwnedItems(data.workspaceId);
     const plural = (n, w) => `${n} ${w}${n !== 1 ? 's' : ''}`;
@@ -6024,8 +5889,8 @@
     ];
   }
 
-  function getDeleteFolderConfirmResults() {
-    const folder = commandSubFlow?.data?.folder;
+  function getDeleteFolderConfirmResults(data) {
+    const folder = data?.folder;
     if (!folder?.isConnected) return [{ key: 'delete-folder:gone', label: 'The folder no longer exists', icon: '📂', tags: [] }];
     const n = folderTabCount(folder);
     const tabsText = `${n} tab${n !== 1 ? 's' : ''}`;
@@ -6034,136 +5899,6 @@
       { key: 'delete-folder:keep-tabs', label: `Delete folder only (keep ${tabsText})`, icon: '📦', sublabel: 'The tabs stay in the workspace', tags: [] },
       { key: 'delete-folder:with-tabs', label: `Delete folder and close ${tabsText}`, icon: '🗑', sublabel: `Undo with ${formatKeyDisplay(S['keys.global.undoFolderDelete'], SETTINGS_SCHEMA['keys.global.undoFolderDelete'])} within 30 seconds`, tags: [] },
     ];
-  }
-
-  function getSwitchWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `switch-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: safeIconText(ws.icon, '🗂'),
-              tags: ['workspace', 'switch', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for switch: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'switch-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getMoveToWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            if (ws.uuid === activeId) continue;
-            const name = ws.name || 'Unnamed';
-            results.push({
-              key: `move-to-workspace:${ws.uuid}`,
-              label: name,
-              icon: safeIconText(ws.icon, '🗂'),
-              tags: ['workspace', 'move', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for move: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'move-to-workspace:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getRenameWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        const activeId = window.gZenWorkspaces.activeWorkspace;
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            const isActive = ws.uuid === activeId;
-            results.push({
-              key: `rename-workspace:${ws.uuid}`,
-              label: `${name}${isActive ? ' (current)' : ''}`,
-              icon: safeIconText(ws.icon, '✏'),
-              tags: ['workspace', 'rename', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces for rename: ${e}`); }
-    if (results.length === 0) {
-      return [{ key: 'rename-workspace:none', label: 'No workspaces found', icon: '🗂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getAddToFolderPickerResults(query) {
-    const activeTab = gBrowser.selectedTab;
-    const results = [];
-    for (const folder of getWorkspaceFolders()) {
-      // Skip if tab is already in this folder
-      if (activeTab && activeTab.group === folder) continue;
-      const name = folderName(folder);
-      const tabCount = folderTabCount(folder);
-      results.push({
-        key: `add-to-folder:${folder.id}`,
-        label: name,
-        sublabel: `${tabCount} tab${tabCount !== 1 ? 's' : ''}`,
-        icon: '📂',
-        tags: ['folder', 'add', name.toLowerCase()],
-        folder: folder,
-      });
-    }
-    if (results.length === 0) {
-      return [{ key: 'add-to-folder:none', label: 'No folders found', icon: '📂', tags: [] }];
-    }
-    return fuzzyFilterAndSort(results, query);
-  }
-
-  function getRenameFolderPickerResults(query) {
-    return getFolderPickerForAction(query, '✏', 'rename');
-  }
-
-  function getRenameFolderInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-folder-input:prompt', label: 'Type a new name for the folder and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-folder-input:confirm', label: `Rename folder to: "${name}"`, icon: '✏', tags: [] }];
-  }
-
-  function getRenameWorkspaceInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'rename-workspace-input:prompt', label: 'Type a new name for the workspace and press Enter', icon: '✏', tags: [] }];
-    }
-    return [{ key: 'rename-workspace-input:confirm', label: `Rename workspace to: "${name}"`, icon: '✏', tags: [] }];
-  }
-
-  function getCreateWorkspaceInputResults(query) {
-    const name = (query || '').trim();
-    if (!name) {
-      return [{ key: 'create-workspace-input:prompt', label: 'Type a name for the new workspace and press Enter', icon: '➕', tags: [] }];
-    }
-    return [{ key: 'create-workspace-input:confirm', label: `Create workspace: "${name}"`, icon: '➕', tags: [] }];
   }
 
   function getTabSearchSubFlowResults(query) {
@@ -6207,46 +5942,6 @@
       { key: 'sort:recency-oldest', label: 'By Recency (Oldest First)', icon: '🕰', tags: ['old', 'oldest', 'stale', 'time', 'first'] },
     ];
     return fuzzyFilterAndSort(options, query);
-  }
-
-  function getWorkspacePickerResults(query) {
-    const results = [];
-    try {
-      if (window.gZenWorkspaces) {
-        const workspaces = window.gZenWorkspaces.getWorkspaces();
-        if (workspaces && Array.isArray(workspaces)) {
-          for (const ws of workspaces) {
-            const name = ws.name || 'Unnamed';
-            results.push({
-              key: `ws:${ws.uuid}`,
-              label: name,
-              icon: safeIconText(ws.icon, '🗂'),
-              tags: ['workspace', name.toLowerCase()],
-              workspaceId: ws.uuid,
-            });
-          }
-        }
-      }
-    } catch (e) { log(`Error getting workspaces: ${e}`); }
-    const filtered = fuzzyFilterAndSort(results, query);
-    filtered.push({ key: 'ws:create-new', label: '+ Create New Workspace', icon: '➕', tags: ['workspace', 'new', 'create'] });
-    return filtered;
-  }
-
-  function getFolderPickerResults(query) {
-    const results = [];
-    for (const folder of getWorkspaceFolders()) {
-      const name = folderName(folder);
-      results.push({
-        key: `folder:${folder.id}`,
-        label: name,
-        icon: '📂',
-        tags: ['folder', name.toLowerCase()],
-        folder: folder,
-      });
-    }
-    results.push({ key: 'folder:new', label: 'Create New Folder', icon: '📁+', tags: ['folder', 'new', 'create'] });
-    return fuzzyFilterAndSort(results, query);
   }
 
   function getSplitTabPickerResults(query) {
@@ -6345,7 +6040,7 @@
 
     // For each group with >1 tab, keep the most recently accessed, collect the rest
     const tabsToClose = [];
-    for (const [url, tabs] of urlGroups) {
+    for (const [, tabs] of urlGroups) {
       if (tabs.length < 2) continue;
       tabs.sort((a, b) => getTabLastAccessed(b) - getTabLastAccessed(a));
       for (let i = 1; i < tabs.length; i++) {
@@ -6368,404 +6063,448 @@
     }));
   }
 
-  // Handle sub-flow selection (Enter on a result)
-  function handleSubFlowSelect(result) {
-    if (!commandSubFlow) return;
+  // ── Selection helpers shared by several flows ──
 
-    switch (commandSubFlow.type) {
-      case 'tab-search':
-        // Move to action picker
-        enterSubFlow('action-picker', `${commandMatchedTabs.length} tabs`);
-        break;
+  function enterCreateWorkspaceStep(data) {
+    enterSubFlow('create-workspace-input', 'New Workspace', data);
+  }
 
-      case 'action-picker':
-        if (result.subFlow) {
-          enterSubFlow(result.subFlow, result.label);
-        } else if (result.key === 'action:browse-select') {
-          selectTabsInBrowseMode(commandMatchedTabs);
-        } else if (result.key === 'action:close-all') {
-          closeMatchedTabs(commandMatchedTabs);
-        } else if (result.key === 'action:move-to-top') {
-          moveMatchedTabsToPosition(commandMatchedTabs, 'top');
-        } else if (result.key === 'action:move-to-bottom') {
-          moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
-        } else if (result.key === 'action:unload-all') {
-          unloadMatchedTabs(commandMatchedTabs);
-        }
-        break;
+  // Run a folder action from a picker after the palette has closed (Zen's pickers and
+  // inline editors need the palette gone first).
+  function afterPalette(action, what) {
+    exitSearchMode();
+    setTimeout(() => {
+      try { action(); } catch (e) { reportError(`${what} failed`, e); }
+    }, 100);
+  }
 
-      case 'workspace-picker':
-        if (result.key === 'ws:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'workspace-picker' };
-        } else {
-          moveTabsToWorkspace(commandMatchedTabs, result.workspaceId);
-        }
-        break;
+  // ── The sub-flow table ──
+  const SUBFLOWS = {
+    // Select matching tabs → action
+    'tab-search': {
+      placeholder: 'Search tabs to select...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getTabSearchSubFlowResults(q),
+      select: () => enterSubFlow('action-picker', `${commandMatchedTabs.length} tabs`),
+    },
+    'action-picker': {
+      placeholder: 'Choose an action...',
+      results: q => getActionPickerResults(q),
+      select: (r) => {
+        if (r.subFlow) enterSubFlow(r.subFlow, r.label);
+        else if (r.key === 'action:browse-select') selectTabsInBrowseMode(commandMatchedTabs);
+        else if (r.key === 'action:close-all') closeMatchedTabs(commandMatchedTabs);
+        else if (r.key === 'action:move-to-top') moveMatchedTabsToPosition(commandMatchedTabs, 'top');
+        else if (r.key === 'action:move-to-bottom') moveMatchedTabsToPosition(commandMatchedTabs, 'bottom');
+        else if (r.key === 'action:unload-all') unloadMatchedTabs(commandMatchedTabs);
+      },
+    },
+    'workspace-picker': {
+      placeholder: 'Choose a workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      select: (r) => {
+        if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'workspace-picker' });
+        else moveTabsToWorkspace(commandMatchedTabs, r.workspaceId);
+      },
+    },
+    'folder-picker': {
+      placeholder: 'Choose a folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'folder', icon: '📂', counts: false, createKey: 'folder:new' }),
+      select: (r) => {
+        // Name input sub-flow instead of Zen's inline rename (unreliable from the palette)
+        if (r.key === 'folder:new') enterSubFlow('folder-name-input', 'Name new folder');
+        else addTabsToFolder(commandMatchedTabs, r);
+      },
+    },
+    'folder-name-input': {
+      placeholder: 'Enter folder name...',
+      results: q => textInputResults(q, FOLDER_NAME_INPUT),
+      select: () => {
+        const name = (commandQuery || '').trim();
+        if (name) createFolderWithName(commandMatchedTabs, name);
+      },
+    },
 
-      case 'folder-picker':
-        if (result.key === 'folder:new') {
-          // Enter name input sub-flow instead of using Zen's broken rename UI
-          enterSubFlow('folder-name-input', 'Name new folder');
-        } else {
-          addTabsToFolder(commandMatchedTabs, result);
-        }
-        break;
-
-      case 'folder-name-input': {
-        const newFolderName = (commandQuery || '').trim();
-        if (newFolderName) {
-          createFolderWithName(commandMatchedTabs, newFolderName);
-        }
-        break;
-      }
-
-      case 'split-tab-picker':
-        splitWithTab(result.tab);
-        break;
-
-      case 'playing-tabs': {
-        const ptTab = result.tab;
+    // Tab pickers
+    'split-tab-picker': {
+      placeholder: 'Search for a tab to split with...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getSplitTabPickerResults(q),
+      select: r => splitWithTab(r.tab),
+    },
+    'playing-tabs': {
+      placeholder: 'Search playing tabs...',
+      onEnter: () => { commandMatchedTabs = []; },
+      results: q => getPlayingTabsResults(q),
+      select: (r) => {
         exitSearchMode();
-        if (ptTab) switchToTabAcrossWorkspaces(ptTab).catch(e => reportError('Switching to playing tab failed', e));
-        break;
-      }
-
-      case 'dedup-preview': {
+        if (r.tab) switchToTabAcrossWorkspaces(r.tab).catch(e => reportError('Switching to playing tab failed', e));
+      },
+    },
+    'dedup-preview': {
+      placeholder: 'Duplicates to close — Enter to confirm',
+      readOnly: true,
+      onExit: () => { hidePreviewPanel(true); dedupTabsToClose = []; },
+      results: () => getDedupPreviewResults(),
+      select: () => {
         // The preview list is the confirmation; close them as one batch
         const count = TabOps.close(dedupTabsToClose);
         if (count) log(`Deduplicated: closed ${count} duplicate tab(s)`);
         dedupTabsToClose = [];
         hidePreviewPanel(true);
         exitSearchMode();
-        break;
-      }
+      },
+    },
+    'sort-picker': {
+      placeholder: 'Sort by...',
+      results: q => getSortPickerResults(q),
+      select: (r) => {
+        if (r.key === 'sort:domain') sortLooseTabsByDomain();
+        else if (r.key === 'sort:title-az') sortLooseTabsByTitle();
+        else if (r.key === 'sort:title-za') sortLooseTabsByTitleReverse();
+        else if (r.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
+        else if (r.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+        exitSearchMode();
+      },
+    },
 
-      case 'command-confirm': {
-        const cmd = commandSubFlow.data?.cmd;
-        if (result.key === 'command-confirm:run' && cmd) runCommand(cmd);
+    // Confirmation of a command that declared confirm()
+    'command-confirm': {
+      placeholder: 'Confirm — choose with ↓ and Enter',
+      readOnly: true,
+      results: () => getCommandConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'command-confirm:run' && data?.cmd) runCommand(data.cmd);
         else exitSubFlow();
-        break;
-      }
+      },
+    },
 
-      case 'delete-folder-picker':
-        if (result.folder) {
-          enterSubFlow('delete-folder-confirm', `Delete: ${result.label}`);
-          commandSubFlow.data = { folder: result.folder };
-          renderCommandResults();
+    // Workspaces
+    'create-workspace-input': {
+      placeholder: 'Enter new workspace name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'create-workspace-input', icon: '➕',
+        prompt: 'Type a name for the new workspace and press Enter',
+        confirm: name => `Create workspace: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'create-workspace-input:confirm' && name) handleCreateWorkspaceAndChain(name, data);
+      },
+    },
+    'delete-workspace-picker': {
+      placeholder: 'Select a workspace to delete...',
+      // Deleting closes the workspace's tabs: never pre-select the current workspace
+      results: q => workspacePickerResults(q, { keyPrefix: 'delete-workspace', verb: 'delete', icon: '🗑', markCurrent: true, currentLast: true, emptyLabel: 'No workspaces found' }),
+      select: (r) => {
+        if (r.workspaceId) enterSubFlow('delete-workspace-confirm', `Delete: ${r.workspaceName}`, { workspaceId: r.workspaceId, workspaceName: r.workspaceName });
+      },
+    },
+    'delete-workspace-confirm': {
+      placeholder: 'Deleting a workspace closes its tabs — choose with ↓ and Enter',
+      readOnly: true,
+      results: (q, data) => getDeleteWorkspaceConfirmResults(data),
+      select: (r, data) => {
+        if (r.key === 'delete-workspace:confirm' && data?.workspaceId) deleteWorkspace(data.workspaceId);
+        else exitSubFlow();
+      },
+    },
+    'switch-workspace-picker': {
+      placeholder: 'Select a workspace to switch to...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'switch-workspace', verb: 'switch', markCurrent: true, createKey: 'switch-workspace:create-new' }),
+      select: (r) => {
+        if (r.key === 'switch-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'switch-workspace-picker' });
+        } else if (r.workspaceId) {
+          exitSearchMode();
+          gZenWorkspaces.changeWorkspaceWithID(r.workspaceId);
         }
-        break;
+      },
+    },
+    'move-to-workspace-picker': {
+      placeholder: 'Select a workspace to move tab to...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      select: (r) => {
+        if (r.key === 'move-to-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab });
+        } else if (r.workspaceId) {
+          const tabToMove = gBrowser.selectedTab;
+          exitSearchMode();
+          // Move, then follow the tab into the target workspace
+          TabOps.moveToWorkspace([tabToMove], r.workspaceId);
+          switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
+        }
+      },
+    },
+    'rename-workspace-picker': {
+      placeholder: 'Select a workspace to rename...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'rename-workspace', verb: 'rename', icon: '✏', markCurrent: true, emptyLabel: 'No workspaces found' }),
+      select: (r) => {
+        if (r.workspaceId) enterSubFlow('rename-workspace-input', `Rename: ${r.workspaceName}`, { workspaceId: r.workspaceId, workspaceName: r.workspaceName });
+      },
+    },
+    'rename-workspace-input': {
+      placeholder: 'Enter new workspace name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'rename-workspace-input', icon: '✏',
+        prompt: 'Type a new name for the workspace and press Enter',
+        confirm: name => `Rename workspace to: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'rename-workspace-input:confirm' && name && data?.workspaceId) renameWorkspace(data.workspaceId, name);
+      },
+    },
 
-      case 'delete-folder-confirm': {
-        const folder = commandSubFlow.data?.folder;
-        if (result.key === 'delete-folder:keep-tabs' && folder) {
+    // Folders
+    'delete-folder-picker': {
+      placeholder: 'Select a folder to delete...',
+      results: q => folderPickerResults(q, { keyPrefix: 'delete-folder', verb: 'delete', icon: '🗑' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('delete-folder-confirm', `Delete: ${r.label}`, { folder: r.folder });
+      },
+    },
+    'delete-folder-confirm': {
+      placeholder: 'What should happen to the folder’s tabs?',
+      readOnly: true,
+      results: (q, data) => getDeleteFolderConfirmResults(data),
+      select: (r, data) => {
+        const folder = data?.folder;
+        if (r.key === 'delete-folder:keep-tabs' && folder) {
           exitSearchMode();
           dissolveFolder(folder).catch(e => reportError('Deleting folder failed', e));
-        } else if (result.key === 'delete-folder:with-tabs' && folder) {
+        } else if (r.key === 'delete-folder:with-tabs' && folder) {
           exitSearchMode();
           deleteFolderWithTabs(folder).catch(e => reportError('Deleting folder failed', e));
         } else {
           exitSubFlow();
         }
-        break;
-      }
-
-      case 'delete-workspace-picker':
-        if (result.workspaceId) {
-          enterSubFlow('delete-workspace-confirm', `Delete: ${result.workspaceName}`);
-          commandSubFlow.data = { workspaceId: result.workspaceId, workspaceName: result.workspaceName };
-          renderCommandResults();
-        }
-        break;
-
-      case 'delete-workspace-confirm': {
-        const wsId = commandSubFlow.data?.workspaceId;
-        if (result.key === 'delete-workspace:confirm' && wsId) deleteWorkspace(wsId);
-        else exitSubFlow();
-        break;
-      }
-
-      case 'switch-workspace-picker':
-        if (result.key === 'switch-workspace:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'switch-workspace-picker' };
-        } else if (result.workspaceId) {
-          exitSearchMode();
-          gZenWorkspaces.changeWorkspaceWithID(result.workspaceId);
-        }
-        break;
-
-      case 'move-to-workspace-picker':
-        if (result.key === 'move-to-workspace:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'move-to-workspace-picker', tabToMove: gBrowser.selectedTab };
-        } else if (result.workspaceId) {
-          const tabToMove = gBrowser.selectedTab;
-          exitSearchMode();
-          // Move, then follow the tab into the target workspace
-          TabOps.moveToWorkspace([tabToMove], result.workspaceId);
-          switchToTabAcrossWorkspaces(tabToMove).catch(e => reportError('Following moved tab failed', e));
-        }
-        break;
-
-      case 'add-to-folder-picker':
-        if (result.folder) {
-          addTabToFolder(result.folder);
-        }
-        break;
-
-      case 'rename-folder-picker':
-        if (result.folder) {
-          enterSubFlow('rename-folder-input', `Rename: ${result.label}`);
-          commandSubFlow.data = { folderId: result.folder.id, folderName: result.label };
-        }
-        break;
-
-      case 'rename-workspace-picker':
-        if (result.workspaceId) {
-          enterSubFlow('rename-workspace-input', `Rename: ${result.label.replace(' (current)', '')}`);
-          commandSubFlow.data = { workspaceId: result.workspaceId, workspaceName: result.label.replace(' (current)', '') };
-        }
-        break;
-
-      case 'rename-folder-input':
-        if (result.key === 'rename-folder-input:confirm') {
-          const name = commandQuery.trim();
-          const data = commandSubFlow?.data;
-          if (name && data?.folderId) {
-            renameFolder(data.folderId, name);
-          }
-        }
-        break;
-
-      case 'rename-workspace-input':
-        if (result.key === 'rename-workspace-input:confirm') {
-          const name = commandQuery.trim();
-          const data = commandSubFlow?.data;
-          if (name && data?.workspaceId) {
-            renameWorkspace(data.workspaceId, name);
-          }
-        }
-        break;
-
-      case 'create-workspace-input':
-        if (result.key === 'create-workspace-input:confirm') {
-          const name = commandQuery.trim();
-          if (name) {
-            handleCreateWorkspaceAndChain(name, commandSubFlow?.data);
-          }
-        }
-        break;
-
-      // --- Session Management Sub-Flows ---
-      case 'save-session-scope': {
-        const saveScope = result.key === 'save-scope:all' ? 'all' : 'current';
-        enterSubFlow('save-session-input', 'Add Comment');
-        commandSubFlow.data = { scope: saveScope };
-        break;
-      }
-
-      case 'save-session-input':
-        handleSaveSession(commandQuery.trim());
-        break;
-
-      case 'restore-session-picker':
-        if (result.sessionData) {
-          enterSubFlow('restore-session-mode', 'Restore Mode');
-          commandSubFlow.data = { session: result.sessionData };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-
-      case 'restore-session-mode': {
-        const restoreSession = commandSubFlow.data?.session;
-        if (result.key === 'restore-mode:new') {
-          handleRestoreSession(restoreSession, 'new');
-        } else if (result.key === 'restore-mode:replace') {
-          // Destructive: confirm (with counts) first
-          enterSubFlow('restore-replace-confirm', 'Replace Current Workspace');
-          commandSubFlow.data = { session: restoreSession };
-          renderCommandResults();
-        }
-        break;
-      }
-
-      case 'restore-replace-confirm':
-        if (result.key === 'restore-replace:confirm') handleRestoreSession(commandSubFlow.data?.session, 'replace');
-        else exitSubFlow();
-        break;
-
-      case 'list-sessions-picker':
-        if (result.sessionData) {
-          enterSubFlow('session-detail-view', result.label);
-          commandSubFlow.data = { session: result.sessionData };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-
-      case 'session-detail-view': {
-        const detailSession = commandSubFlow.data?.session;
-        if (detailSession) {
-          enterSubFlow('restore-session-mode', 'Restore Mode');
-          commandSubFlow.data = { session: detailSession };
-          renderCommandResults(); // re-render now that data is set
-        }
-        break;
-      }
-
-      case 'delete-session-confirm':
-        if (result.key === 'delete-session:confirm') {
-          const sessionId = commandSubFlow.data?.sessionId;
-          if (sessionId) {
-            deleteSessionFile(sessionId).then(() => {
-              sessionCache = null;
-              sessionLoadPromise = null;
-              exitSubFlow();
-            }).catch(e => {
-              reportError('Deleting session failed', e);
-              exitSubFlow();
-            });
-          }
-        } else if (result.key === 'delete-session:cancel') {
-          exitSubFlow();
-        }
-        break;
-      case 'sort-picker':
-        if (result.key === 'sort:domain') sortLooseTabsByDomain();
-        else if (result.key === 'sort:title-az') sortLooseTabsByTitle();
-        else if (result.key === 'sort:title-za') sortLooseTabsByTitleReverse();
-        else if (result.key === 'sort:recency-newest') sortLooseTabsByRecencyNewest();
-        else if (result.key === 'sort:recency-oldest') sortLooseTabsByRecencyOldest();
+      },
+    },
+    'add-to-folder-picker': {
+      placeholder: 'Select a folder to add tab to...',
+      // Skip the folder the tab is already in
+      results: q => folderPickerResults(q, { keyPrefix: 'add-to-folder', verb: 'add', icon: '📂', skip: gBrowser.selectedTab?.group }),
+      select: (r) => { if (r.folder) addTabToFolder(r.folder); },
+    },
+    'rename-folder-picker': {
+      placeholder: 'Select a folder to rename...',
+      results: q => folderPickerResults(q, { keyPrefix: 'rename-folder', verb: 'rename', icon: '✏' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('rename-folder-input', `Rename: ${r.label}`, { folderId: r.folder.id, folderName: r.label });
+      },
+    },
+    'rename-folder-input': {
+      placeholder: 'Enter new folder name...',
+      results: q => textInputResults(q, {
+        keyPrefix: 'rename-folder-input', icon: '✏',
+        prompt: 'Type a new name for the folder and press Enter',
+        confirm: name => `Rename folder to: "${name}"`,
+      }),
+      select: (r, data) => {
+        const name = commandQuery.trim();
+        if (r.key === 'rename-folder-input:confirm' && name && data?.folderId) renameFolder(data.folderId, name);
+      },
+    },
+    'change-folder-icon-picker': {
+      placeholder: 'Select a folder to change icon...',
+      results: q => folderPickerResults(q, { keyPrefix: 'change-icon-folder', verb: 'change-icon', icon: '🎨' }),
+      select: (r) => {
+        if (r.folder) afterPalette(() => gZenFolders.changeFolderUserIcon(r.folder), 'Change folder icon');
+      },
+    },
+    'unload-folder-picker': {
+      placeholder: 'Select a folder to unload tabs...',
+      results: q => folderPickerResults(q, { keyPrefix: 'unload-folder', verb: 'unload', icon: '💤' }),
+      select: (r) => {
+        if (!r.folder) return;
         exitSearchMode();
-        break;
-
-      // Browse command mode sub-flows
-      case 'browse-workspace-picker':
-        if (result.key === 'ws:create-new') {
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'browse-workspace-picker' };
-        } else if (result.workspaceId) {
-          moveTabsToWorkspace(browseCommandTabs, result.workspaceId);
-        }
-        break;
-
-      case 'browse-folder-picker':
-        if (result.key === 'folder:new') {
-          enterSubFlow('browse-folder-name-input', 'Name new folder');
-        } else {
-          addTabsToFolder(browseCommandTabs, result);
-        }
-        break;
-
-      case 'browse-folder-name-input': {
-        const browseFolderName = (commandQuery || '').trim();
-        if (browseFolderName) {
-          createFolderWithName(browseCommandTabs, browseFolderName);
-        }
-        break;
-      }
-
-      // --- Folder context-menu-parity sub-flows ---
-      case 'change-folder-icon-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          exitSearchMode();
-          setTimeout(() => {
-            try { gZenFolders.changeFolderUserIcon(targetFolder); }
-            catch (e) { reportError('Change folder icon failed', e); }
-          }, 100);
-        }
-        break;
-
-      case 'unload-folder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          exitSearchMode();
-          // Zen's own "Unload all tabs" for folders: unloads (per the pinned-tab close
-          // behavior pref) and collapses the folder
-          try {
-            targetFolder.unloadAllTabs(new CustomEvent('ZenLeapUnloadFolder'));
-            log(`Unloaded tabs in folder: ${folderName(targetFolder)}`);
-          } catch (e) { reportError('Unloading folder tabs failed', e); }
-        }
-        break;
-
-      case 'create-subfolder-picker':
-        if (result.folder) {
-          const targetFolder = result.folder;
-          exitSearchMode();
-          setTimeout(() => {
-            try { targetFolder.createSubfolder(); }
-            catch (e) { reportError('Create subfolder failed', e); }
-          }, 100);
-        }
-        break;
-
-      case 'folder-to-workspace-picker':
+        // Zen's own "Unload all tabs" for folders: unloads (per the pinned-tab close
+        // behavior pref) and collapses the folder
+        try {
+          r.folder.unloadAllTabs(new CustomEvent('ZenLeapUnloadFolder'));
+          log(`Unloaded tabs in folder: ${folderName(r.folder)}`);
+        } catch (e) { reportError('Unloading folder tabs failed', e); }
+      },
+    },
+    'create-subfolder-picker': {
+      placeholder: 'Select a parent folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'subfolder-folder', verb: 'subfolder', icon: '📁', canNest: true }),
+      select: (r) => {
+        if (r.folder) afterPalette(() => r.folder.createSubfolder(), 'Create subfolder');
+      },
+    },
+    'folder-to-workspace-picker': {
+      placeholder: 'Select a folder to convert to workspace...',
+      results: q => folderPickerResults(q, { keyPrefix: 'convert-folder', verb: 'convert', icon: '🗂' }),
+      select: (r) => {
         exitSearchMode();
-        if (result.folder) {
-          convertFolderToWorkspace(result.folder).catch(e => reportError('Convert folder to workspace failed', e));
-        }
-        break;
-
-      case 'unpack-folder-picker':
+        if (r.folder) convertFolderToWorkspace(r.folder).catch(e => reportError('Convert folder to workspace failed', e));
+      },
+    },
+    'unpack-folder-picker': {
+      placeholder: 'Select a folder to unpack...',
+      results: q => folderPickerResults(q, { keyPrefix: 'unpack-folder', verb: 'unpack', icon: '📦' }),
+      select: (r) => {
         exitSearchMode();
-        if (result.folder) {
-          Promise.resolve(result.folder.unpackTabs())
-            .then(() => log(`Unpacked folder: ${folderName(result.folder)}`))
-            .catch(e => reportError('Unpack folder failed', e));
-        }
-        break;
-
-      case 'move-folder-to-ws-folder-picker':
-        if (result.folder) {
-          enterSubFlow('move-folder-to-ws-workspace-picker', `Move: ${result.label}`);
-          commandSubFlow.data = { folder: result.folder, folderName: result.label };
-        }
-        break;
-
-      case 'move-folder-to-ws-workspace-picker':
-        if (result.key === 'move-to-workspace:create-new') {
-          const prevData = commandSubFlow?.data;
-          enterSubFlow('create-workspace-input', 'New Workspace');
-          commandSubFlow.data = { originFlow: 'move-folder-to-ws-workspace-picker', folder: prevData?.folder, folderName: prevData?.folderName };
-        } else if (result.workspaceId) {
-          const folderData = commandSubFlow?.data;
+        if (!r.folder) return;
+        Promise.resolve(r.folder.unpackTabs())
+          .then(() => log(`Unpacked folder: ${folderName(r.folder)}`))
+          .catch(e => reportError('Unpack folder failed', e));
+      },
+    },
+    'move-folder-to-ws-folder-picker': {
+      placeholder: 'Select a folder to move...',
+      results: q => folderPickerResults(q, { keyPrefix: 'move-ws-folder', verb: 'move-ws', icon: '🗂' }),
+      select: (r) => {
+        if (r.folder) enterSubFlow('move-folder-to-ws-workspace-picker', `Move: ${r.label}`, { folder: r.folder, folderName: r.label });
+      },
+    },
+    'move-folder-to-ws-workspace-picker': {
+      placeholder: 'Select destination workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'move-to-workspace', verb: 'move', excludeActive: true, createKey: 'move-to-workspace:create-new' }),
+      select: (r, data) => {
+        if (r.key === 'move-to-workspace:create-new') {
+          enterCreateWorkspaceStep({ originFlow: 'move-folder-to-ws-workspace-picker', folder: data?.folder, folderName: data?.folderName });
+        } else if (r.workspaceId) {
           exitSearchMode();
-          if (folderData?.folder && window.gZenFolders) {
+          if (data?.folder && window.gZenFolders) {
             try {
-              gZenFolders.changeFolderToSpace(folderData.folder, result.workspaceId);
-              log(`Moved folder "${folderData.folderName}" to workspace`);
+              gZenFolders.changeFolderToSpace(data.folder, r.workspaceId);
+              log(`Moved folder "${data.folderName}" to workspace`);
             } catch (e) { reportError('Move folder to workspace failed', e); }
           }
         }
-        break;
+      },
+    },
 
-      // --- Theme Sub-Flows ---
-      case 'theme-picker':
-        if (result.themeId) {
-          // User confirmed — clear preview state so exitSubFlow won't revert
-          _themePreviewOriginal = null;
-          S['appearance.theme'] = result.themeId;
-          saveSettings();
-          applyTheme();
-          // Ask about browser application
-          enterSubFlow('theme-browser-confirm', 'Apply to Browser?');
-        }
-        break;
+    // Browse-mode selection (the palette opened from browse mode acts on browseCommandTabs)
+    'browse-workspace-picker': {
+      placeholder: 'Choose a workspace...',
+      results: q => workspacePickerResults(q, { keyPrefix: 'ws', createKey: 'ws:create-new' }),
+      select: (r) => {
+        if (r.key === 'ws:create-new') enterCreateWorkspaceStep({ originFlow: 'browse-workspace-picker' });
+        else if (r.workspaceId) moveTabsToWorkspace(browseCommandTabs, r.workspaceId);
+      },
+    },
+    'browse-folder-picker': {
+      placeholder: 'Choose a folder...',
+      results: q => folderPickerResults(q, { keyPrefix: 'folder', icon: '📂', counts: false, createKey: 'folder:new' }),
+      select: (r) => {
+        if (r.key === 'folder:new') enterSubFlow('browse-folder-name-input', 'Name new folder');
+        else addTabsToFolder(browseCommandTabs, r);
+      },
+    },
+    'browse-folder-name-input': {
+      placeholder: 'Enter folder name...',
+      results: q => textInputResults(q, FOLDER_NAME_INPUT),
+      select: () => {
+        const name = (commandQuery || '').trim();
+        if (name) createFolderWithName(browseCommandTabs, name);
+      },
+    },
 
-      case 'theme-browser-confirm':
-        if (result.key === 'theme-browser:yes') {
-          S['appearance.applyToBrowser'] = true;
-        } else if (result.key === 'theme-browser:no') {
-          S['appearance.applyToBrowser'] = false;
+    // Sessions
+    'save-session-scope': {
+      placeholder: 'What to save?',
+      results: q => getSaveSessionScopeResults(q),
+      select: r => enterSubFlow('save-session-input', 'Add Comment', { scope: r.key === 'save-scope:all' ? 'all' : 'current' }),
+    },
+    'save-session-input': {
+      placeholder: 'Type a comment for this snapshot and press Enter...',
+      results: q => getSaveSessionInputResults(q),
+      select: () => handleSaveSession(commandQuery.trim()),
+    },
+    'restore-session-picker': {
+      placeholder: 'Select a session to restore...',
+      results: q => getRestoreSessionPickerResults(q),
+      select: (r) => { if (r.sessionData) enterSubFlow('restore-session-mode', 'Restore Mode', { session: r.sessionData }); },
+    },
+    'restore-session-mode': {
+      placeholder: 'How to restore?',
+      results: q => getRestoreSessionModeResults(q),
+      select: (r, data) => {
+        if (r.key === 'restore-mode:new') handleRestoreSession(data?.session, 'new');
+        // Destructive: confirm (with counts) first
+        else if (r.key === 'restore-mode:replace') enterSubFlow('restore-replace-confirm', 'Replace Current Workspace', { session: data?.session });
+      },
+    },
+    'restore-replace-confirm': {
+      placeholder: 'Replacing closes the current workspace’s tabs — choose with ↓ and Enter',
+      readOnly: true,
+      results: () => getRestoreReplaceConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'restore-replace:confirm') handleRestoreSession(data?.session, 'replace');
+        else exitSubFlow();
+      },
+    },
+    'list-sessions-picker': {
+      placeholder: 'Browse saved sessions...',
+      results: q => getListSessionsPickerResults(q),
+      select: (r) => { if (r.sessionData) enterSubFlow('session-detail-view', r.label, { session: r.sessionData }); },
+    },
+    'session-detail-view': {
+      placeholder: 'Session contents (Esc to go back)',
+      readOnly: true,
+      results: q => getSessionDetailViewResults(q),
+      select: (r, data) => { if (data?.session) enterSubFlow('restore-session-mode', 'Restore Mode', { session: data.session }); },
+    },
+    'delete-session-confirm': {
+      placeholder: 'Press Enter to confirm deletion...',
+      readOnly: true,
+      results: () => getDeleteSessionConfirmResults(),
+      select: (r, data) => {
+        if (r.key === 'delete-session:confirm' && data?.sessionId) {
+          deleteSessionFile(data.sessionId).then(() => {
+            sessionCache = null;
+            sessionLoadPromise = null;
+            exitSubFlow();
+          }).catch(e => {
+            reportError('Deleting session failed', e);
+            exitSubFlow();
+          });
+        } else if (r.key === 'delete-session:cancel') {
+          exitSubFlow();
         }
+      },
+    },
+
+    // Themes
+    'theme-picker': {
+      placeholder: 'Select a theme...',
+      // Save current theme for live-preview restore on Escape
+      onEnter: () => { _themePreviewOriginal = S['appearance.theme'] || 'meridian'; },
+      onExit: () => {
+        if (!_themePreviewOriginal) return;
+        S['appearance.theme'] = _themePreviewOriginal;
+        _themePreviewOriginal = null;
+        saveSettings();
+        applyTheme();
+      },
+      results: q => getThemePickerResults(q),
+      select: (r) => {
+        if (!r.themeId) return;
+        // User confirmed — clear preview state so leaving the picker won't revert
+        _themePreviewOriginal = null;
+        S['appearance.theme'] = r.themeId;
+        saveSettings();
+        applyTheme();
+        // Ask about browser application
+        enterSubFlow('theme-browser-confirm', 'Apply to Browser?');
+      },
+    },
+    'theme-browser-confirm': {
+      placeholder: 'Apply theme to browser too?',
+      results: q => getThemeBrowserConfirmResults(q),
+      select: (r) => {
+        if (r.key === 'theme-browser:yes') S['appearance.applyToBrowser'] = true;
+        else if (r.key === 'theme-browser:no') S['appearance.applyToBrowser'] = false;
         saveSettings();
         applyBrowserTheme();
         exitSearchMode();
-        break;
-    }
-  }
+      },
+    },
+  };
 
   // Action executors for sub-flows
   function selectTabsInBrowseMode(tabs) {
