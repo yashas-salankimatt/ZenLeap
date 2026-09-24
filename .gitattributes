@@ -1,0 +1,6 @@
+# The release checksum is taken over the committed bytes of JS/zenleap.uc.js,
+# and the shell scripts break with CRLF line endings: keep these LF everywhere.
+*.sh                                             text eol=lf
+JS/zenleap.uc.js                                 text eol=lf
+CHECKSUMS.sha256                                 text eol=lf
+ZenLeap?Manager.app/Contents/MacOS/ZenLeapManager text eol=lf
