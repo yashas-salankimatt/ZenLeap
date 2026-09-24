@@ -4022,9 +4022,12 @@
   // Evaluate an external plugin's script in its own sandbox. freshCompartment:
   // a system-principal sandbox otherwise shares the window's compartment, and
   // Cu.nukeSandbox() then throws instead of cutting the plugin off (REV-LCMDS-01).
-  async function loadPluginScript(entry) {
+  async function loadPluginScript(entry, activation) {
     const { manifest } = entry;
     const source = await IOUtils.readUTF8(manifest._scriptPath);
+    // Disabled (or re-enabled) while the file was read: never run its code for
+    // a stale activation (REV-LCMDS-03)
+    if (entry._activation !== activation || !entry.enabled) return;
     const sandbox = Cu.Sandbox(Services.scriptSecurityManager.getSystemPrincipal(), {
       sandboxName: `ZenLeap plugin: ${manifest.id}`,
       sandboxPrototype: window,
@@ -4078,14 +4081,17 @@
     catch (e) { reportError(`Plugin "${manifest.name}": releasing its sandbox failed`, e); }
   }
 
-  // Load (if needed) and init a plugin in this window.
+  // Load (if needed) and init a plugin in this window. Each activation has a
+  // token: a disable (or another enable) while plugin.js loads supersedes it.
   async function activatePlugin(entry) {
     const { manifest } = entry;
+    const activation = entry._activation = {};
     entry.enabled = true;
     entry.error = null;
     try {
-      if (!entry.loaded) await loadPluginScript(entry);
-      if (!entry.enabled || _pluginRegistry.get(manifest.id) !== entry) return; // disabled/removed while loading
+      if (!entry.loaded) await loadPluginScript(entry, activation);
+      if (entry._activation !== activation || !entry.enabled || _pluginRegistry.get(manifest.id) !== entry) return; // disabled/removed while loading
+      if (!entry.loaded) return;
       if (typeof entry.exports.init === 'function') {
         entry.instance = entry.exports.init(createScopedPluginAPI(manifest.id)) || {};
       }
@@ -4102,6 +4108,7 @@
   // Run the plugin's destroy hook (exactly one) and release its sandbox.
   function deactivatePlugin(entry) {
     const { manifest, instance, exports } = entry;
+    entry._activation = null;
     try {
       if (instance && instance !== exports && typeof instance.destroy === 'function') instance.destroy();
       else if (typeof exports?.destroy === 'function') exports.destroy(createScopedPluginAPI(manifest.id));
