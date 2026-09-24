@@ -8308,7 +8308,7 @@
 
   let updateModal = null;
   let updateMode = false;
-  let updateModalState = null; // 'checking' | 'available' | 'progress' | 'success' | 'error' | 'uptodate'
+  let updateModalState = null; // 'checking' | 'available' | 'progress' | 'success' | 'check-error' | 'error' | 'uptodate'
   let updateToast = null;
   let updateToastVersion = null;
   let updateStylesInjected = false;
@@ -9033,9 +9033,13 @@
     body.appendChild(actions);
   }
 
-  function renderUpdateError(errorMsg) {
-    updateModalState = 'error';
-    setUpdateHeader('Update Failed', 'Something went wrong during the update');
+  // step 'check': the version check failed (Retry checks again); 'install': the
+  // download/install failed (Retry installs again).
+  function renderUpdateError(errorMsg, { step = 'install' } = {}) {
+    const checkFailed = step === 'check';
+    updateModalState = checkFailed ? 'check-error' : 'error';
+    setUpdateHeader(checkFailed ? 'Update Check Failed' : 'Update Failed',
+      checkFailed ? 'Could not check for a new version' : 'Something went wrong during the update');
     const body = setUpdateBody();
     if (!body) return;
 
@@ -9046,7 +9050,7 @@
     icon.textContent = '!';
     const title = document.createElement('div');
     title.className = 'zenleap-update-result-title error';
-    title.textContent = 'Update Failed';
+    title.textContent = checkFailed ? 'Update Check Failed' : 'Update Failed';
     const detail = document.createElement('div');
     detail.className = 'zenleap-update-result-detail';
     detail.textContent = errorMsg || 'Could not download the update. Check your internet connection and try again.';
@@ -9073,10 +9077,11 @@
     const retryKbd = document.createElement('kbd');
     retryKbd.textContent = '\u21B5';
     retryBtn.appendChild(retryKbd);
-    retryBtn.addEventListener('click', () => performUpdate());
+    retryBtn.addEventListener('click', () => { if (checkFailed) runUpdateCheck(); else performUpdate(); });
 
     actions.appendChild(closeBtn);
-    if (!isSineManaged) {
+    // (Sine installs update through Sine; checking again is still fine)
+    if (checkFailed || !isSineManaged) {
       actions.appendChild(retryBtn);
     }
     body.appendChild(actions);
@@ -9162,17 +9167,24 @@
     if (helpMode) exitHelpMode();
     if (settingsMode) exitSettingsMode();
     if (reorgMode) exitReorgMode(false);
+    if (gtileMode) exitGtileMode(false);
+    if (_pluginManagerMode) exitPluginManagerMode();
 
     createUpdateModal();
     updateMode = true;
+    // Like the other overlays: focus goes back where it was when the dialog closes
+    _overlayFocus = captureFocusTarget();
     updateModal.classList.add('active');
 
-    renderUpdateChecking();
+    await runUpdateCheck();
+  }
 
+  async function runUpdateCheck() {
+    renderUpdateChecking();
     const result = await checkForZenLeapUpdate();
     if (!updateMode) return; // user dismissed while checking
     if (!result) {
-      renderUpdateError('Could not reach GitHub. Check your internet connection.');
+      renderUpdateError('Could not reach GitHub. Check your internet connection.', { step: 'check' });
     } else if (result.available) {
       renderUpdateAvailable(result.remoteVersion, result.changelog);
     } else {
@@ -9185,7 +9197,7 @@
     updateMode = false;
     updateModalState = null;
     if (updateModal) updateModal.classList.remove('active');
-    if (S['display.refocusOnClose']) try { gBrowser.selectedBrowser.focus(); } catch (_) {}
+    restoreOverlayFocus();
   }
 
   // Update toast: a centered bar with Update/Details and Dismiss buttons. Enter/Escape
@@ -18460,8 +18472,9 @@
           if (isSineManaged) exitUpdateMode(); else performUpdate();
         }
         else if (updateModalState === 'success') {
-          try { Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart); } catch(e) { log(`Restart failed: ${e}`); }
+          try { Services.startup.quit(Services.startup.eAttemptQuit | Services.startup.eRestart); } catch(e) { reportError('Restart after update failed', e); }
         }
+        else if (updateModalState === 'check-error') runUpdateCheck(); // retry the check
         else if (updateModalState === 'error') {
           if (isSineManaged) exitUpdateMode(); else performUpdate(); // retry
         }
