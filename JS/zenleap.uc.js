@@ -6865,6 +6865,42 @@
     return dir;
   }
 
+  // Session files may be old, hand-edited or damaged: keep what is usable and drop
+  // what isn't (null workspaces or layout items, numeric names/comments), so one bad
+  // file can't break the session pickers (REV-LCMDS-05). Returns null if unusable.
+  function sessionText(value, fallback) {
+    if (typeof value === 'string') return value;
+    return (typeof value === 'number' || typeof value === 'boolean') ? String(value) : fallback;
+  }
+
+  function normalizeLayoutItems(items, depth = 0) {
+    if (!Array.isArray(items) || depth > 32) return [];
+    const out = [];
+    for (const item of items) {
+      if (!_isPlainObject(item)) continue;
+      if (item.type === 'folder') {
+        out.push({ ...item, name: sessionText(item.name, ''), children: normalizeLayoutItems(item.children, depth + 1) });
+      } else if (item.type === 'tab') {
+        out.push({ ...item, url: sessionText(item.url, 'about:blank'), title: sessionText(item.title, '') });
+      }
+    }
+    return out;
+  }
+
+  function normalizeSessionData(data) {
+    if (!_isPlainObject(data) || !data.version || typeof data.id !== 'string' || !Array.isArray(data.workspaces)) return null;
+    const workspaces = data.workspaces.filter(_isPlainObject).map(ws => {
+      const out = { ...ws, name: sessionText(ws.name, 'Workspace') };
+      if (Array.isArray(ws.layout)) out.layout = normalizeLayoutItems(ws.layout);
+      // v1 files: flat tab and folder lists
+      if (Array.isArray(ws.tabs)) out.tabs = ws.tabs.filter(_isPlainObject);
+      if (Array.isArray(ws.folders)) out.folders = ws.folders.filter(_isPlainObject);
+      return out;
+    });
+    // Stats are derived from the layout (older files have none, edited ones may be wrong)
+    return { ...data, comment: sessionText(data.comment, ''), workspaces, stats: computeSessionStats(workspaces) };
+  }
+
   async function loadAllSessions() {
     // Return cached sessions if fresh (< 5 seconds old)
     if (sessionCache && (Date.now() - sessionCache.loadedAt < 5000)) {
@@ -6881,11 +6917,9 @@
         for (const filePath of children) {
           if (!filePath.endsWith('.json')) continue;
           try {
-            const data = await IOUtils.readJSON(filePath);
-            if (data && data.version && typeof data.id === 'string' && Array.isArray(data.workspaces)) {
+            const data = normalizeSessionData(await IOUtils.readJSON(filePath));
+            if (data) {
               data._filePath = filePath;
-              // Older/hand-edited files may lack stats; derive them
-              if (!_isPlainObject(data.stats)) data.stats = computeSessionStats(data.workspaces);
               sessions.push(data);
             } else {
               log(`Skipping session file with unexpected format: ${filePath}`);
