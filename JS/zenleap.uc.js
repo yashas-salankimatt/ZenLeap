@@ -870,14 +870,15 @@
   const SETTINGS_PREF = 'uc.zenleap.settings';
   const _settingsSynced = {};     // id -> JSON of the value last read from / written to the pref
   let _settingsSelfWrite = false;
-  let _settingsCorruptBackedUp = false;
+  let _settingsCorruptSeen = null;  // last corrupt pref value this window reported
 
   function cloneSettingValue(value) {
     return (value && typeof value === 'object') ? JSON.parse(JSON.stringify(value)) : value;
   }
 
   // Parse the settings pref. Returns {} when unset; on corrupt JSON keeps a copy of the
-  // raw string in a sibling pref (once per session) instead of silently discarding it.
+  // raw string in a sibling pref instead of silently discarding it: one copy per
+  // corrupt value, whichever window reads it first (REV-LCMDS-07).
   function readSettingsOverrides() {
     let raw = '';
     try {
@@ -888,10 +889,16 @@
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
       throw new Error('settings pref is not a JSON object');
     } catch (e) {
-      if (!_settingsCorruptBackedUp && raw) {
-        _settingsCorruptBackedUp = true;
-        const backup = `${SETTINGS_PREF}.corrupt-${Date.now()}`;
-        try { Services.prefs.setStringPref(backup, raw); } catch (_) {}
+      if (raw && raw !== _settingsCorruptSeen) {
+        _settingsCorruptSeen = raw;
+        // Every open window reads the pref: another one may have kept this value already
+        const same = Services.prefs.getChildList(`${SETTINGS_PREF}.corrupt-`).find(p => {
+          try { return Services.prefs.getStringPref(p, '') === raw; } catch (_) { return false; }
+        });
+        const backup = same || `${SETTINGS_PREF}.corrupt-${Date.now()}`;
+        if (!same) {
+          try { Services.prefs.setStringPref(backup, raw); } catch (_) {}
+        }
         console.warn(`[ZenLeap] Saved settings are corrupt; using defaults. The original value was copied to about:config "${backup}".`, e);
       }
       return {};
