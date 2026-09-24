@@ -17185,6 +17185,13 @@
     // gBrowser.moveTabBefore/After enforce for zen-folder elements.
     let folderAfterRef = null;
     for (const folder of yankFolders) {
+      // A folder can't go next to (or into) something inside itself; every
+      // fallback position would be inside it too (HierarchyRequestError).
+      if (folder.contains(anchorItem)) {
+        log(`  Cannot paste folder "${folder.label}" inside itself — skipped`);
+        continue;
+      }
+
       // 2a. Cross-workspace: update workspace IDs on folder and all its tabs
       const folderWsId = folder.getAttribute('zen-workspace-id');
       if (folderWsId && folderWsId !== anchorWorkspaceId && window.gZenFolders) {
@@ -17204,14 +17211,11 @@
       if (anchorIsFolder) {
         ref = anchorItem;
       } else if (anchorFolder) {
-        // Guard: circular nesting — don't nest a folder inside itself or its own descendants
-        let canNest = !(folder === anchorFolder || folder.contains(anchorFolder));
-        if (!canNest) {
-          log(`  Cannot nest folder "${folder.label}" inside its own descendant — placing as sibling`);
-        }
+        // (Circular nesting is excluded above: the anchor is outside `folder`.)
+        let canNest = true;
         // Guard: max nesting depth. Check it here: moveTabBefore/After would
         // otherwise move the folder's *parent* when the drop is not allowed.
-        if (canNest && window.gZenFolders?.canDropElement && !gZenFolders.canDropElement(folder, anchorTab)) {
+        if (window.gZenFolders?.canDropElement && !gZenFolders.canDropElement(folder, anchorTab)) {
           canNest = false;
           log(`  Cannot nest folder "${folder.label}" — max nesting depth reached — placing as sibling`);
         }
