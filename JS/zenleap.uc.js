@@ -1090,7 +1090,7 @@
         }
         const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const filePath = PathUtils.join(downloadsDir, `zenleap-settings-${ts}.json`);
-        await IOUtils.write(filePath, new TextEncoder().encode(json));
+        await IOUtils.writeUTF8(filePath, json, { tmpPath: `${filePath}.tmp` });
         showSettingsToast('success', 'Settings exported to Downloads');
       } catch (e) {
         reportError('Exporting settings failed', e);
