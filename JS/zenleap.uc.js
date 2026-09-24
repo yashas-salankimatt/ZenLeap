@@ -2298,18 +2298,24 @@
 
   // Score, filter, and sort picker results by fuzzy match relevance.
   // Matched characters inside the label are returned as labelIndices for highlighting.
+  // A row whose label is exactly the query ranks first: typing a workspace's full name picks
+  // it even when a longer name ("ZenRipple (restored)") matches just as well.
   function fuzzyFilterAndSort(results, query) {
     if (!query) return results;
+    const wanted = query.trim().toLowerCase();
     const scored = [];
+    const exact = new Set();
     for (const r of results) {
       const target = `${r.label} ${(r.tags || []).join(' ')}`;
       const match = fuzzyMatchSingle(query, target);
       if (match) {
         const labelLen = r.label.length;
-        scored.push({ ...r, score: match.score, labelIndices: match.indices.filter(i => i < labelLen) });
+        const row = { ...r, score: match.score, labelIndices: match.indices.filter(i => i < labelLen) };
+        if (wanted && String(r.label).trim().toLowerCase() === wanted) exact.add(row);
+        scored.push(row);
       }
     }
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => (exact.has(b) - exact.has(a)) || (b.score - a.score));
     return scored;
   }
 
