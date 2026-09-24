@@ -4665,7 +4665,8 @@
       { key: 'remove-tab-from-split', label: 'Remove Tab from Split View', icon: '\u229F', tags: ['split', 'unsplit', 'remove', 'tab', 'maximize', 'extract', 'detach', 'pop'], command: () => {
         try {
           const container = gBrowser.selectedTab.linkedBrowser?.closest('.browserSidebarContainer');
-          if (container) window.gZenViewSplitter.removeTabFromSplit(container);
+          // Zen >= 1.19: removeTabFromSplit(event, container); shiftKey=false also selects the tab
+          if (container) window.gZenViewSplitter.removeTabFromSplit({ shiftKey: false }, container);
         } catch (e) { log(`Remove tab from split failed: ${e}`); }
       }, condition: () => {
         try {
@@ -5547,7 +5548,7 @@
     const results = searchTabs(query, { includeCurrent: true });
     commandMatchedTabs = results.map(r => r.tab);
     return results.map(r => ({
-      key: `matched-tab:${r.tab._tPos}`,
+      key: `matched-tab:${r.tab.index}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '☑',
@@ -5632,7 +5633,7 @@
     // Reuse tab search for split view picker
     const results = searchTabs(query);
     return results.map(r => ({
-      key: `split-tab:${r.tab._tPos}`,
+      key: `split-tab:${r.tab.index}`,
       label: r.tab.label || 'Untitled',
       sublabel: r.tab.linkedBrowser?.currentURI?.spec || '',
       icon: '◫',
@@ -5665,7 +5666,7 @@
     );
 
     let results = playingTabs.map(tab => ({
-      key: `playing-tab:${tab._tPos}`,
+      key: `playing-tab:${tab.index}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: tab.hasAttribute('muted') ? '🔇' : '🔊',
@@ -5736,7 +5737,7 @@
     dedupTabsToClose = tabsToClose;
 
     return tabsToClose.map(tab => ({
-      key: `dedup-tab:${tab._tPos}`,
+      key: `dedup-tab:${tab.index}`,
       label: tab.label || 'Untitled',
       sublabel: tab.linkedBrowser?.currentURI?.spec || '',
       icon: '🧹',
