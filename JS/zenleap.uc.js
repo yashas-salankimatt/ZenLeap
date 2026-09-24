@@ -17344,10 +17344,146 @@
     }
   }
 
+  // ============================================
+  // KEYBOARD HELPERS
+  // ============================================
+
+  function consumeEvent(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  // Keys that never trigger anything on their own.
+  const NON_ACTION_KEYS = new Set([...MODIFIER_KEYS, 'AltGraph', 'OS', 'Fn', 'FnLock', 'Hyper', 'Super', 'Symbol', 'SymbolLock', 'NumLock', 'ScrollLock']);
+
+  // The key a single-key binding is compared against. Layout-aware: on
+  // non-Latin layouts (Cyrillic, Greek, ...) letters and digits fall back to the
+  // physical key, and a dead-key apostrophe/backtick (US-International) still
+  // counts as ' and `. Latin layouts keep their own letters (AZERTY 'a' = a).
+  function navKey(event) {
+    const k = event.key;
+    const code = event.code || '';
+    if (k === 'Dead' && !event.shiftKey) {
+      if (code === 'Quote') return "'";
+      if (code === 'Backquote') return '`';
+    }
+    if (k.length === 1 && /[^\x00-\x7F]/.test(k)) {
+      if (/^Key[A-Z]$/.test(code)) return event.shiftKey ? code.slice(3) : code.slice(3).toLowerCase();
+      if (/^Digit\d$/.test(code)) return code.slice(5);
+    }
+    return k;
+  }
+
+  // Does `event` press the single-key setting `settingId`? Case-sensitive
+  // settings (G, M, P, ?) must match exactly; the others ignore case, so
+  // Shift+J still counts as j (it extends the selection in browse mode).
+  function keyMatches(event, settingId) {
+    const bound = S[settingId];
+    if (typeof bound !== 'string' || bound === '') return false;
+    const k = navKey(event);
+    if (SETTINGS_SCHEMA[settingId]?.caseSensitive) return k === bound;
+    return k.toLowerCase() === bound.toLowerCase();
+  }
+
+  function keyMatchesAny(event, ...settingIds) {
+    return settingIds.some(id => keyMatches(event, id));
+  }
+
+  // Mark names are single letters/digits. Named keys (ArrowDown, Tab, F5, ...)
+  // must never become marks.
+  function markCharFor(event) {
+    const k = navKey(event);
+    return /^[a-z0-9]$/i.test(k) ? k.toLowerCase() : null;
+  }
+
+  function digitFor(event) {
+    const k = navKey(event);
+    return /^[0-9]$/.test(k) ? k : null;
+  }
+
+  // Global trigger combos (keys.global.*), in the order they are checked.
+  const GLOBAL_COMBO_IDS = Object.keys(SETTINGS_SCHEMA).filter(id => SETTINGS_SCHEMA[id].type === 'combo');
+  // Holding these chords may auto-repeat (tab/pane navigation); every other
+  // trigger toggles a mode and must ignore auto-repeat.
+  const REPEATABLE_COMBOS = new Set(['keys.global.splitFocusDown', 'keys.global.splitFocusUp']);
+
+  function matchedGlobalCombo(event) {
+    for (const id of GLOBAL_COMBO_IDS) {
+      if (matchCombo(event, S[id])) return id;
+    }
+    return null;
+  }
+
+  // True when keyboard focus is somewhere the user types or interacts:
+  // web content, the URL bar, the find bar or any editable chrome field.
+  function isTypingContext() {
+    const fe = document.commandDispatcher?.focusedElement || document.activeElement;
+    if (!fe || fe === document.documentElement || fe === document.body) return false;
+    if (fe.localName === 'browser' || fe.localName === 'iframe') return true;
+    if (fe.isContentEditable) return true;
+    return !!fe.closest?.('input, textarea, [contenteditable="true"], #urlbar, findbar');
+  }
+
+  // Any ZenLeap mode or overlay that owns the keyboard right now.
+  function isAnyZenLeapModeActive() {
+    return leapMode || browseMode || searchMode || helpMode || reorgMode || folderDeleteMode ||
+      gtileMode || settingsMode || updateMode || _pluginManagerMode;
+  }
+
+  // Sub-modes (g, z, mark, goto-mark) get a generous timeout instead of none,
+  // so a forgotten half-typed command can't linger indefinitely.
+  const LEAP_SUBMODE_TIMEOUT_MS = 60000;
+
+  function armLeapTimeout(ms = CONFIG.leapModeTimeout) {
+    clearTimeout(leapModeTimeout);
+    leapModeTimeout = setTimeout(() => {
+      if (leapMode && !browseMode) {
+        log('Leap mode timed out');
+        exitLeapMode();
+      }
+    }, ms);
+  }
+
+  // The tab the user is "on". While a Glance preview is open, selectedTab is
+  // the glance child; numbering and navigation must use its parent tab.
+  function currentTab() {
+    const tab = gBrowser.selectedTab;
+    try {
+      return window.gZenGlanceManager?.getTabOrGlanceParent?.(tab) || tab;
+    } catch (e) {
+      return tab;
+    }
+  }
+
+  // gTile needs an active split view with at least two panes.
+  function gtileCanOpen() {
+    const splitter = window.gZenViewSplitter;
+    if (!splitter?.splitViewActive) return false;
+    const viewData = splitter._data?.[splitter.currentView];
+    return !!viewData?.tabs && viewData.tabs.length >= 2;
+  }
+
+  // Key events that belong to a window-/tab-modal dialog (prompt(), close-tabs
+  // warning, ...) hosted in a sub-document of this window. ZenLeap must never
+  // swallow Enter/Escape meant for those.
+  function isEventForDialog(event) {
+    const doc = event.target?.ownerDocument;
+    if (!doc || doc === document) return false;
+    const frame = doc.defaultView?.browsingContext?.embedderElement;
+    return !!frame && (frame.classList?.contains('dialogFrame') ||
+      !!frame.closest?.('.dialogBox, .dialogOverlay, #window-modal-dialog, dialog'));
+  }
+
   // Handle keydown events
   function handleKeyDown(event) {
+    // Keys consumed by an input method (composition) belong to the IME.
+    if (event.isComposing || event.keyCode === 229) return;
+    // Keys typed into a prompt/dialog belong to it.
+    if (isEventForDialog(event)) return;
+
     // Ignore modifier keys pressed alone
-    if (MODIFIER_KEYS.includes(event.key)) {
+    if (NON_ACTION_KEYS.has(event.key)) {
       return;
     }
 
@@ -17408,17 +17544,18 @@
       return;
     }
 
-    // Handle update toast - Enter to open update flow, Escape to dismiss
-    if (updateToast && !searchMode && !leapMode && !helpMode && !reorgMode && !folderDeleteMode) {
+    // Update toast - Enter opens the update flow, Escape dismisses. Only when
+    // nothing else wants these keys: no ZenLeap overlay, and focus is not in
+    // web content, the URL bar, the find bar or any other editable field.
+    if (updateToast && !event.repeat && !isAnyZenLeapModeActive() && !isTypingContext() &&
+        !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
       if (event.key === 'Enter') {
-        event.preventDefault();
-        event.stopPropagation();
+        consumeEvent(event);
         dismissUpdateToast(false);
         enterUpdateMode();
         return;
       } else if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
+        consumeEvent(event);
         dismissUpdateToast(true);
         return;
       }
@@ -17434,30 +17571,30 @@
     if (helpMode) {
       event.preventDefault();
       event.stopPropagation();
-      if (event.key === 'Escape' || event.key === S['keys.leap.help']) {
+      if (event.key === 'Escape' || keyMatches(event, 'keys.leap.help')) {
         exitHelpMode();
         return;
       }
       // j/k/arrows scroll the help content
       const scrollEl = helpModal?.querySelector('.zenleap-help-content');
       if (scrollEl) {
-        if (event.key === 'j' || event.key === 'ArrowDown') { scrollEl.scrollBy({ top: 80, behavior: 'smooth' }); return; }
-        if (event.key === 'k' || event.key === 'ArrowUp') { scrollEl.scrollBy({ top: -80, behavior: 'smooth' }); return; }
-        if (event.key === 'g') { scrollEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
-        if (event.key === 'G') { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' }); return; }
+        const k = navKey(event);
+        if (k === 'j' || k === 'ArrowDown') { scrollEl.scrollBy({ top: 80, behavior: 'smooth' }); return; }
+        if (k === 'k' || k === 'ArrowUp') { scrollEl.scrollBy({ top: -80, behavior: 'smooth' }); return; }
+        if (k === 'G') { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' }); return; }
+        if (k === 'g') { scrollEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
       }
       return;
     }
 
     // Handle folder delete modal
     if (folderDeleteMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
       if (event.key === 'Escape') {
         closeFolderDeleteModal();
         return;
       }
+      if (event.repeat) return;
       if (event.key === '1') {
         deleteFolderAndContents(folderDeleteTarget);
         return;
@@ -17471,9 +17608,7 @@
 
     // Handle gTile mode
     if (gtileMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
       handleGtileKeyDown(event);
       return;
     }
@@ -17481,16 +17616,13 @@
     // Handle URL bar vim mode (Cmd+L / Cmd+T native browser bar).
     // Key interception happens at the input level (urlbarInputKeyHandler) because
     // window-level preventDefault cannot stop moz-urlbar's internal editor.
-    // This block only: (1) lazily attaches listeners, (2) blocks other ZenLeap
-    // handlers from processing keys while the URL bar is focused.
-    if (!searchMode && !leapMode && !settingsMode && !helpMode && !reorgMode && !gtileMode && !folderDeleteMode) {
+    // This block only blocks other ZenLeap handlers while the URL bar is in
+    // NORMAL mode.
+    if (!searchMode && !leapMode) {
       try {
         const _gURLBarFocused = typeof gURLBar !== 'undefined' && gURLBar && gURLBar.focused;
         if (_gURLBarFocused) {
-          // Lazily set up input-level listeners if not done yet
           if (!urlbarVimSetupDone) lazySetupUrlbarVim();
-          // In normal mode, block all other ZenLeap handlers.
-          // Actual key prevention is at input level.
           if (S['display.vimModeInBars'] && urlbarVimActive && urlbarVimMode === 'normal') return;
         }
       } catch (_e) { /* ignore */ }
@@ -17505,11 +17637,18 @@
       return;
     }
 
+    // Global trigger combos
+    const comboId = matchedGlobalCombo(event);
+    if (comboId && event.repeat && !REPEATABLE_COMBOS.has(comboId) && comboId !== 'keys.global.undoFolderDelete') {
+      // Holding a trigger chord auto-repeats; don't toggle the mode ~15x/s.
+      // (Alt+Space without a split view is left alone, see below.)
+      if (comboId !== 'keys.global.splitResize' || gtileCanOpen()) consumeEvent(event);
+      return;
+    }
+
     // Check for command mode trigger
-    if (matchCombo(event, S['keys.global.commandPalette'])) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    if (comboId === 'keys.global.commandPalette') {
+      consumeEvent(event);
       if (leapMode && browseMode) {
         enterBrowseCommandMode();
       } else {
@@ -17519,20 +17658,15 @@
     }
 
     // Check for search trigger
-    if (matchCombo(event, S['keys.global.search'])) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    if (comboId === 'keys.global.search') {
+      consumeEvent(event);
       enterSearchMode();
       return;
     }
 
     // Check for leap mode trigger
-    if (matchCombo(event, S['keys.global.leapMode'])) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-
+    if (comboId === 'keys.global.leapMode') {
+      consumeEvent(event);
       if (leapMode) {
         exitLeapMode(false);
       } else {
@@ -17544,30 +17678,26 @@
     }
 
     // Check for quick mark jump (works outside leap mode)
-    if (matchCombo(event, S['keys.global.quickMark'])) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
-
+    if (comboId === 'keys.global.quickMark') {
+      consumeEvent(event);
       if (!leapMode) {
         // Set mark mode state AND attribute BEFORE entering leap mode
         // This ensures CSS sees mark-mode before leap-active is set
         gotoMarkMode = true;
         document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
         enterLeapMode();
-        clearTimeout(leapModeTimeout);
+        armLeapTimeout(LEAP_SUBMODE_TIMEOUT_MS);
         log('Quick goto mark mode via Ctrl+\'');
       }
       return;
     }
 
     // Check for undo folder delete (Cmd+Shift+T)
-    if (matchCombo(event, S['keys.global.undoFolderDelete'])) {
+    if (comboId === 'keys.global.undoFolderDelete') {
+      if (event.repeat) return;
       const handled = undoLastFolderDelete();
       if (handled) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+        consumeEvent(event);
         return;
       }
       // If not handled, let browser's native Cmd+Shift+T proceed
@@ -17579,14 +17709,12 @@
     // - In split, not at boundary: focus adjacent pane (existing behavior)
     // - In split, at boundary: J/K navigate to first non-split tab outside
     //   the group; H/L switch workspaces
-    {
+    if (comboId && comboId.startsWith('keys.global.split')) {
       const EDGE = 0.1; // threshold for "pane touches edge" (percentage)
       const pos = getSplitBounds(); // null when split view inactive
 
-      if (matchCombo(event, S['keys.global.splitFocusDown'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+      if (comboId === 'keys.global.splitFocusDown') {
+        consumeEvent(event);
         interceptQuickNav();
         if (pos && pos.bottom > EDGE) {
           splitFocusInDirection('down');
@@ -17596,10 +17724,8 @@
         }
         return;
       }
-      if (matchCombo(event, S['keys.global.splitFocusUp'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+      if (comboId === 'keys.global.splitFocusUp') {
+        consumeEvent(event);
         interceptQuickNav();
         if (pos && pos.top > EDGE) {
           splitFocusInDirection('up');
@@ -17609,10 +17735,8 @@
         }
         return;
       }
-      if (matchCombo(event, S['keys.global.splitFocusLeft'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+      if (comboId === 'keys.global.splitFocusLeft') {
+        consumeEvent(event);
         interceptQuickNav();
         if (pos && pos.left > EDGE) {
           splitFocusInDirection('left');
@@ -17622,10 +17746,8 @@
         }
         return;
       }
-      if (matchCombo(event, S['keys.global.splitFocusRight'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+      if (comboId === 'keys.global.splitFocusRight') {
+        consumeEvent(event);
         interceptQuickNav();
         if (pos && pos.right > EDGE) {
           splitFocusInDirection('right');
@@ -17635,11 +17757,12 @@
         }
         return;
       }
-      // Alt+Space — open gTile resize overlay
-      if (matchCombo(event, S['keys.global.splitResize'])) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
+      // Alt+Space — open gTile resize overlay. Only consumed when there is a
+      // split view to resize, so Alt+Space still opens the window menu
+      // (Windows) or types a non-breaking space (macOS) otherwise.
+      if (comboId === 'keys.global.splitResize') {
+        if (!gtileCanOpen()) return;
+        consumeEvent(event);
         enterGtileMode();
         return;
       }
@@ -17648,14 +17771,11 @@
     // Handle keys when in leap mode
     if (!leapMode) return;
 
-    const key = event.key.toLowerCase();
-    const originalKey = event.key; // Preserve case for special chars
+    const key = navKey(event);
 
     // Escape to cancel
-    if (key === 'escape') {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+    if (key === 'Escape') {
+      consumeEvent(event);
 
       // Exit mark/goto-mark sub-mode first (in both leap and browse mode)
       if (markMode || gotoMarkMode) {
@@ -17698,67 +17818,63 @@
     // When mark/goto-mark sub-mode is active, skip browse keys and fall through
     // to the mark/goto-mark handlers below.
     if (browseMode && !markMode && !gotoMarkMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
+
+      const digit = digitFor(event);
 
       // If a number buffer is accumulating and a non-digit key is pressed,
       // cancel the pending number jump (the user changed their mind)
-      if (browseNumberBuffer && !(key >= '0' && key <= '9')) {
+      if (browseNumberBuffer && digit === null) {
         clearTimeout(browseNumberTimeout);
         browseNumberTimeout = null;
         browseNumberBuffer = '';
       }
 
-      if (key === S['keys.browse.down'] || key === S['keys.browse.downAlt'] || key === S['keys.leap.browseDown'] || key === S['keys.leap.browseDownAlt']) {
+      if (keyMatchesAny(event, 'keys.browse.down', 'keys.browse.downAlt', 'keys.leap.browseDown', 'keys.leap.browseDownAlt')) {
         event.shiftKey ? shiftMoveHighlight('down') : moveHighlight('down');
         return;
       }
-      if (key === S['keys.browse.up'] || key === S['keys.browse.upAlt'] || key === S['keys.leap.browseUp'] || key === S['keys.leap.browseUpAlt']) {
+      if (keyMatchesAny(event, 'keys.browse.up', 'keys.browse.upAlt', 'keys.leap.browseUp', 'keys.leap.browseUpAlt')) {
         event.shiftKey ? shiftMoveHighlight('up') : moveHighlight('up');
         return;
       }
-      if (key === S['keys.browse.confirm']) {
+      // One-shot actions: ignore auto-repeat (holding x must not close a run of tabs)
+      if (event.repeat) return;
+
+      if (keyMatches(event, 'keys.browse.confirm')) {
         confirmBrowseSelection();
         return;
       }
-      if (key === S['keys.browse.close']) {
+      if (keyMatches(event, 'keys.browse.close')) {
         closeHighlightedTab();
         return;
       }
-      if (key === S['keys.browse.select']) {
+      if (keyMatches(event, 'keys.browse.select')) {
         toggleItemSelection();
         return;
       }
-      if (key === S['keys.browse.yank']) {
-        yankSelectedItems();
-        return;
-      }
-      if (originalKey === S['keys.browse.pasteBefore']) {
+      // Case-sensitive bindings first (P before p, G before g, M before m)
+      if (keyMatches(event, 'keys.browse.pasteBefore')) {
         pasteItems('before');
         return;
       }
-      if (key === S['keys.browse.pasteAfter']) {
+      if (keyMatches(event, 'keys.browse.yank')) {
+        yankSelectedItems();
+        return;
+      }
+      if (keyMatches(event, 'keys.browse.pasteAfter')) {
         pasteItems('after');
         return;
       }
-      if (key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'] ||
-          key === S['keys.browse.nextWorkspace'] || key === S['keys.browse.nextWorkspaceAlt']) {
-        const isPrev = key === S['keys.browse.prevWorkspace'] || key === S['keys.browse.prevWorkspaceAlt'];
+      if (keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt',
+                               'keys.browse.nextWorkspace', 'keys.browse.nextWorkspaceAlt')) {
+        const isPrev = keyMatchesAny(event, 'keys.browse.prevWorkspace', 'keys.browse.prevWorkspaceAlt');
         browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
         return;
       }
 
-      // m = set mark on highlighted tab
-      if (key === S['keys.leap.setMark'] && originalKey !== S['keys.leap.clearMarks']) {
-        markMode = true;
-        updateLeapOverlayState();
-        log('Browse: entered mark mode');
-        return;
-      }
-
       // M = clear all marks
-      if (originalKey === S['keys.leap.clearMarks']) {
+      if (keyMatches(event, 'keys.leap.clearMarks')) {
         clearAllMarks();
         updateHighlight();
         updateLeapOverlayState();
@@ -17766,8 +17882,16 @@
         return;
       }
 
+      // m = set mark on highlighted tab
+      if (keyMatches(event, 'keys.leap.setMark')) {
+        markMode = true;
+        updateLeapOverlayState();
+        log('Browse: entered mark mode');
+        return;
+      }
+
       // ' = goto mark (move highlight to marked tab)
-      if (key === S['keys.leap.gotoMark'] || key === S['keys.leap.gotoMarkAlt']) {
+      if (keyMatchesAny(event, 'keys.leap.gotoMark', 'keys.leap.gotoMarkAlt')) {
         gotoMarkMode = true;
         updateLeapOverlayState();
         log('Browse: entered goto mark mode');
@@ -17775,7 +17899,7 @@
       }
 
       // G = move highlight to last item
-      if (originalKey === S['keys.browse.lastTab']) {
+      if (keyMatches(event, 'keys.browse.lastTab')) {
         const items = getVisibleItems();
         highlightedTabIndex = items.length - 1;
         updateHighlight();
@@ -17785,7 +17909,7 @@
       }
 
       // g = pending gg (move highlight to first item)
-      if (key === S['keys.browse.gMode'] && originalKey === S['keys.browse.gMode']) {
+      if (keyMatches(event, 'keys.browse.gMode')) {
         if (browseGPending) {
           // Second g pressed - move to first item (or first unpinned if setting enabled)
           clearTimeout(browseGTimeout);
@@ -17821,8 +17945,8 @@
       }
 
       // Digit keys: accumulate multi-digit number with timeout
-      if (key >= '1' && key <= '9' || (key === '0' && browseNumberBuffer.length > 0)) {
-        browseNumberBuffer += key;
+      if (digit !== null && (digit !== '0' || browseNumberBuffer.length > 0)) {
+        browseNumberBuffer += digit;
         clearTimeout(browseNumberTimeout);
         browseNumberTimeout = setTimeout(() => {
           browseNumberTimeout = null;
@@ -17841,12 +17965,19 @@
 
     // === G-MODE HANDLING ===
     if (gMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
+      if (event.repeat) return;
+      const digit = digitFor(event);
+
+      // G in g-mode - go to last tab (case-sensitive, so check before gg)
+      if (keyMatches(event, 'keys.gMode.last') && gNumberBuffer === '') {
+        const items = getVisibleItems();
+        goToAbsoluteTab(items.length);
+        return;
+      }
 
       // gg - go to first tab (or first unpinned if setting enabled)
-      if (key === S['keys.gMode.first'] && gNumberBuffer === '') {
+      if (keyMatches(event, 'keys.gMode.first') && gNumberBuffer === '') {
         if (S['display.ggSkipPinned']) {
           const items = getVisibleItems();
           const firstUnpinned = items.findIndex(t => !isFolder(t) && !t.pinned && !t.hasAttribute('zen-essential'));
@@ -17865,16 +17996,9 @@
         return;
       }
 
-      // G in g-mode - go to last tab
-      if (originalKey === S['keys.gMode.last'] && gNumberBuffer === '') {
-        const items = getVisibleItems();
-        goToAbsoluteTab(items.length);
-        return;
-      }
-
       // Number keys - accumulate for absolute position
-      if (key >= '0' && key <= '9') {
-        gNumberBuffer += key;
+      if (digit !== null) {
+        gNumberBuffer += digit;
         clearTimeout(gNumberTimeout);
         updateLeapOverlayState();
 
@@ -17898,7 +18022,7 @@
       }
 
       // Enter to confirm number immediately
-      if (key === 'enter' && gNumberBuffer) {
+      if (key === 'Enter' && gNumberBuffer) {
         clearTimeout(gNumberTimeout);
         const tabNum = parseInt(gNumberBuffer);
         if (tabNum > 0) {
@@ -17918,21 +18042,20 @@
 
     // === Z-MODE HANDLING ===
     if (zMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
+      if (event.repeat) return;
 
-      if (key === S['keys.zMode.center']) {
+      if (keyMatches(event, 'keys.zMode.center')) {
         scrollTabIntoView('center');
         exitLeapMode(false);
         return;
       }
-      if (key === S['keys.zMode.top']) {
+      if (keyMatches(event, 'keys.zMode.top')) {
         scrollTabIntoView('top');
         exitLeapMode(false);
         return;
       }
-      if (key === S['keys.zMode.bottom']) {
+      if (keyMatches(event, 'keys.zMode.bottom')) {
         scrollTabIntoView('bottom');
         exitLeapMode(false);
         return;
@@ -17947,14 +18070,14 @@
 
     // === MARK MODE HANDLING ===
     if (markMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
+      if (event.repeat) return;
 
       // Accept a-z and 0-9 as mark characters
-      if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
-        // In browse mode, mark the highlighted tab; otherwise mark the selected tab
-        let targetTab = gBrowser.selectedTab;
+      const markChar = markCharFor(event);
+      if (markChar) {
+        // In browse mode, mark the highlighted tab; otherwise mark the current tab
+        let targetTab = currentTab();
         if (browseMode && highlightedTabIndex >= 0) {
           const items = getVisibleItems();
           const item = items[highlightedTabIndex];
@@ -17967,7 +18090,7 @@
           }
           targetTab = item;
         }
-        setMark(key, targetTab);
+        setMark(markChar, targetTab);
         if (browseMode) {
           // Stay in browse mode, just exit mark sub-mode
           markMode = false;
@@ -17988,15 +18111,15 @@
 
     // === GOTO MARK MODE HANDLING ===
     if (gotoMarkMode) {
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation();
+      consumeEvent(event);
+      if (event.repeat) return;
 
       // Accept a-z and 0-9 as mark characters
-      if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
+      const markChar = markCharFor(event);
+      if (markChar) {
         if (browseMode) {
           // In browse mode, move highlight to the marked tab
-          const markedTab = marks.get(key);
+          const markedTab = marks.get(markChar);
           if (markedTab && !markedTab.closing && markedTab.parentNode) {
             const items = getVisibleItems();
             const idx = items.indexOf(markedTab);
@@ -18005,29 +18128,29 @@
               gotoMarkMode = false;
               updateHighlight();
               updateLeapOverlayState();
-              log(`Browse: moved highlight to mark '${key}'`);
+              log(`Browse: moved highlight to mark '${markChar}'`);
             } else {
               gotoMarkMode = false;
               updateLeapOverlayState();
-              log(`Mark '${key}' tab not in current visible items`);
+              log(`Mark '${markChar}' tab not in current visible items`);
             }
           } else {
             gotoMarkMode = false;
             updateLeapOverlayState();
             if (markedTab && (markedTab.closing || !markedTab.parentNode)) {
-              marks.delete(key);
+              marks.delete(markChar);
               saveEssentialMarks();
-              log(`Mark '${key}' tab was closed, removing mark`);
+              log(`Mark '${markChar}' tab was closed, removing mark`);
             } else {
-              log(`Mark '${key}' not found`);
+              log(`Mark '${markChar}' not found`);
             }
           }
         } else {
-          if (goToMark(key)) {
+          if (goToMark(markChar)) {
             exitLeapMode(true); // Center scroll on the marked tab
           } else {
             // Mark not found, stay in goto mark mode for retry
-            log(`Mark '${key}' not found`);
+            log(`Mark '${markChar}' not found`);
           }
         }
         return;
@@ -18041,84 +18164,84 @@
     }
 
     // === INITIAL LEAP MODE (waiting for j/k/g/z/m/'/o/i) ===
-    event.preventDefault();
-    event.stopPropagation();
-    event.stopImmediatePropagation();
+    consumeEvent(event);
 
-    if (key === S['keys.leap.browseDown'] || key === S['keys.leap.browseDownAlt']) {
+    if (keyMatchesAny(event, 'keys.leap.browseDown', 'keys.leap.browseDownAlt')) {
       enterBrowseMode('down');
       return;
     }
-    if (key === S['keys.leap.browseUp'] || key === S['keys.leap.browseUpAlt']) {
+    if (keyMatchesAny(event, 'keys.leap.browseUp', 'keys.leap.browseUpAlt')) {
       enterBrowseMode('up');
       return;
     }
-    if (originalKey === S['keys.leap.lastTab']) {
+    if (event.repeat) return;
+    // Case-sensitive bindings first (G before g, M before m, ? before /)
+    if (keyMatches(event, 'keys.leap.lastTab')) {
       const items = getVisibleItems();
       goToAbsoluteTab(items.length);
       return;
     }
-    if (key === S['keys.leap.gMode']) {
-      gMode = true;
-      gNumberBuffer = '';
-      clearTimeout(leapModeTimeout);
-      updateLeapOverlayState();
-      log('Entered g-mode');
-      return;
-    }
-    if (key === S['keys.leap.zMode']) {
-      zMode = true;
-      clearTimeout(leapModeTimeout);
-      updateLeapOverlayState();
-      log('Entered z-mode');
-      return;
-    }
-    if (key === S['keys.leap.setMark'] && originalKey !== S['keys.leap.clearMarks']) {
-      markMode = true;
-      document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
-      clearTimeout(leapModeTimeout);
-      updateLeapOverlayState();
-      log('Entered mark mode');
-      return;
-    }
-    if (originalKey === S['keys.leap.clearMarks']) {
+    if (keyMatches(event, 'keys.leap.clearMarks')) {
       clearAllMarks();
       exitLeapMode(false);
       return;
     }
-    if (key === S['keys.leap.gotoMark'] || key === S['keys.leap.gotoMarkAlt']) {
+    if (keyMatches(event, 'keys.leap.help')) {
+      enterHelpMode();
+      return;
+    }
+    if (keyMatches(event, 'keys.leap.gMode')) {
+      gMode = true;
+      gNumberBuffer = '';
+      armLeapTimeout(LEAP_SUBMODE_TIMEOUT_MS);
+      updateLeapOverlayState();
+      log('Entered g-mode');
+      return;
+    }
+    if (keyMatches(event, 'keys.leap.zMode')) {
+      zMode = true;
+      armLeapTimeout(LEAP_SUBMODE_TIMEOUT_MS);
+      updateLeapOverlayState();
+      log('Entered z-mode');
+      return;
+    }
+    if (keyMatches(event, 'keys.leap.setMark')) {
+      markMode = true;
+      document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
+      armLeapTimeout(LEAP_SUBMODE_TIMEOUT_MS);
+      updateLeapOverlayState();
+      log('Entered mark mode');
+      return;
+    }
+    if (keyMatchesAny(event, 'keys.leap.gotoMark', 'keys.leap.gotoMarkAlt')) {
       gotoMarkMode = true;
       document.documentElement.setAttribute('data-zenleap-mark-mode', 'true');
-      clearTimeout(leapModeTimeout);
+      armLeapTimeout(LEAP_SUBMODE_TIMEOUT_MS);
       updateLeapOverlayState();
       log('Entered goto mark mode');
       return;
     }
-    if (key === S['keys.leap.jumpBack']) {
+    if (keyMatches(event, 'keys.leap.jumpBack')) {
       if (jumpBack()) exitLeapMode(true);
       return;
     }
-    if (key === S['keys.leap.jumpForward']) {
+    if (keyMatches(event, 'keys.leap.jumpForward')) {
       if (jumpForward()) exitLeapMode(true);
       return;
     }
-    if (key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.prevWorkspaceAlt'] ||
-        key === S['keys.leap.nextWorkspace'] || key === S['keys.leap.nextWorkspaceAlt']) {
-      const isPrev = key === S['keys.leap.prevWorkspace'] || key === S['keys.leap.prevWorkspaceAlt'];
+    if (keyMatchesAny(event, 'keys.leap.prevWorkspace', 'keys.leap.prevWorkspaceAlt',
+                             'keys.leap.nextWorkspace', 'keys.leap.nextWorkspaceAlt')) {
+      const isPrev = keyMatchesAny(event, 'keys.leap.prevWorkspace', 'keys.leap.prevWorkspaceAlt');
       browseMode = true;
       browseDirection = isPrev ? 'up' : 'down';
       const wsItems = getVisibleItems();
       originalTabIndex = findCurrentItemIndex(wsItems);
       if (originalTabIndex === -1) originalTabIndex = 0;
-      originalTab = gBrowser.selectedTab;
+      originalTab = currentTab();
       highlightedTabIndex = 0;
       clearTimeout(leapModeTimeout);
       updateLeapOverlayState();
       browseWorkspaceSwitch(isPrev ? 'prev' : 'next');
-      return;
-    }
-    if (originalKey === S['keys.leap.help']) {
-      enterHelpMode();
       return;
     }
 
@@ -18136,7 +18259,7 @@
     }
 
     // $ = jump to last tab (like vim's $ goes to end of line)
-    if (originalKey === '$') {
+    if (event.key === '$') {
       const items = getVisibleItems();
       if (items.length > 0) {
         // Find the last non-folder item, or fall back to last item
