@@ -3073,9 +3073,10 @@
   //   that window only (never persisted); settings (configuration) are saved.
   // - Plugin API notes: only ONE destroy hook runs (the object returned by init() if it
   //   has its own destroy(), otherwise ZenLeapPlugin.destroy(api)); events are delivered
-  //   asynchronously; browser.getSelectedText() returns a Promise of the whole selection,
-  //   except inside a page's text field (only its first 150 characters can be read there:
-  //   browser.getSelection() resolves to { text, truncated } to tell); tabs.getAll()/findBy*
+  //   asynchronously; browser.getSelectedText() returns a Promise of the whole selection
+  //   (text hidden with CSS inside the selection may be included), except inside a page's
+  //   text field, where only the first 150 characters can be read (browser.getSelection()
+  //   resolves to { text, truncated } and flags that with truncated: true); tabs.getAll()/findBy*
   //   cover the active workspace unless called with { allWorkspaces: true }. While a
   //   Glance is open, tabs.getCurrent() (and the tabs.* default tab) is the Glance's
   //   parent tab; browser.* acts on the page on screen (the Glance).

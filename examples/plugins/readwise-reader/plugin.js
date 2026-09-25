@@ -124,7 +124,9 @@ var ZenLeapPlugin = {
             return;
           }
           // Async: the page lives in a content process. getSelection() also says whether
-          // the text had to be cut short (a selection inside a text field on the page).
+          // the text had to be cut short (a selection inside a text field on the page is
+          // limited to 150 characters). Text hidden with CSS inside the selection may be
+          // included.
           var picked = api.browser.getSelection
             ? await api.browser.getSelection()
             : { text: await api.browser.getSelectedText(), truncated: false };

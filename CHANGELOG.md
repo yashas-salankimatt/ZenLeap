@@ -26,7 +26,7 @@ Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and insta
   - The top level of `plugin.js` runs when the plugin is enabled, once per window, and again (re-read from disk) on every re-enable
   - Disabling a plugin nukes its sandbox: functions it left registered elsewhere become dead. Timers started with the plugin's own `setTimeout`/`setInterval` are cleared for it
 - **Exactly one destroy hook runs** — the object returned by `init()`, if it has its own `destroy()` (called without arguments), otherwise `ZenLeapPlugin.destroy(api)`; none if `init()` threw. 3.4.0 called both
-- **`api.browser.getSelectedText()` is async** — it returns a Promise of the whole selection (with line breaks). Inside a page's text field only the first 150 characters can be read; the new `api.browser.getSelection()` resolves to `{ text, truncated }` to tell
+- **`api.browser.getSelectedText()` is async** — it returns a Promise of the whole selection (with line breaks; text hidden with CSS inside the selection may be included). Inside a page's text field only the first 150 characters can be read; the new `api.browser.getSelection()` resolves to `{ text, truncated }` and flags that with `truncated: true`
 - **Events are delivered asynchronously** — handlers run in a later task, never in the middle of a tab switch; a handler removed in the meantime is skipped. `workspace:changed` now actually fires, once per change, with `{ workspaceId, workspace }` (3.4.0 listened for a DOM event Zen no longer sends)
 - **While a Glance is open, `tabs.getCurrent()` is the Glance's parent tab** — and so is the default tab of every `tabs.*` method; `browser.*` still acts on the page on screen
 - **Return values**
