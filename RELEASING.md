@@ -8,7 +8,7 @@ Several things read the files of a release, and two of them read the **`main` br
 
 | What | Where it looks |
 |------|----------------|
-| In-browser updater of 3.5 and later (fx-autoconfig installs) | `releases/latest` → `tag_name`, then `raw.githubusercontent.com/…/<tag>/JS/zenleap.uc.js` and `<tag>/CHECKSUMS.sha256`. It installs only if the file's SHA-256 matches `CHECKSUMS.sha256` and its `@version` equals the tag. The update dialog shows that version's `CHANGELOG.md` section. |
+| In-browser updater of X.Y.Z (the first release after 3.4.0) and later (fx-autoconfig installs) | `releases/latest` → `tag_name`, then `raw.githubusercontent.com/…/<tag>/JS/zenleap.uc.js` and `<tag>/CHECKSUMS.sha256`. It installs only if the file's SHA-256 matches `CHECKSUMS.sha256` and its `@version` equals the tag. The update dialog shows that version's `CHANGELOG.md` section. |
 | In-browser updater of **3.4.0 and older** (every fx-autoconfig install that has not updated yet) | **`main/JS/zenleap.uc.js`**: when its `@version` is higher than the running one, it installs **whatever is on `main`**, unverified, and appends `main/chrome.css` to `userChrome.css`. Tags play no part. |
 | Sine (installed copies) | `theme.json` from **`main`**; when its `updatedAt` is later than the installed copy's, Sine downloads the **`main` branch** as a zip. `version` is only displayed. |
 | Sine (new installs) | The **`main` branch** as a zip. |

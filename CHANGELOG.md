@@ -59,7 +59,7 @@ Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and insta
 - **Settings > Keybindings > Match Option Shortcuts by Physical Key (macOS)**
 - **Key conflict warnings** — the key recorder refuses global shortcuts without Ctrl/Alt/Cmd (or an F-key), AltGr and dead keys, and shows "Also used by …" for other ZenLeap bindings, Zen shortcuts and ZenRipple's spawn shortcut; a console warning at startup lists global bindings that collide
 - **Help and the leap/browse hints follow your key bindings** — the help also lists all 24 themes and has a URL-bar vim section
-- **Plugin Manager** — keyboard control (`j`/`k`, Enter/`l` details, Space/`e` enable, `u` uninstall, `h`/Backspace back, Escape), "New" and "Error" badges with the load error, and a full-privileges warning
+- **Plugin Manager** — keyboard control (`j`/`k`, Enter/`l` details, Space/`e` enable, `u` uninstall from a plugin's detail view, `h`/Backspace back, Escape), "New" and "Error" badges with the load error, and a full-privileges warning
 - **Plugin API** — `browser.isPrivate()`, `browser.getSelection()`, `tabs.getAll/findByUrl/findByTitle({ allWorkspaces: true })`, `tabs.create(url, { skipRoute })` and `browser.openUrl(url, { skipRoute })`, `workspaces.create(name, { icon, switchTo })`, `workspaces.delete(ws, { timeoutMs })`, `ui.showPrompt(title, placeholder, value, { password })`, and `fs` paths with sub-folders (`'notes/today.txt'`, built with `fs.joinPath()`)
 - **Update toast** with Update (Details on Sine) and Dismiss buttons; it hides after 15 seconds (hovering pauses it) and when leap mode opens; only Dismiss or Escape skips that version
 - **Reorganize Workspaces** has Cancel and Apply Order buttons
@@ -81,7 +81,7 @@ Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and insta
 - **Update checks** read a few KB from the GitHub releases API instead of downloading the whole script, run in one window only, and "On Startup" means once per browser session; Retry after a failed check checks again
 - **Browse previews** use Firefox's `drawSnapshot`; nothing is injected into pages. Unloaded tabs show "Tab not loaded"
 - **Themes** — user themes always start from Meridian; named and `hsl()` colors are normalized; invalid colors fall back to Meridian's
-- **Tab switches are faster with many tabs** — badge attributes are written only when they change, and the close-button rule no longer uses `:has()`
+- **Tab switches with many tabs write 3× fewer attributes** — style and layout cost is the same as in 3.4.0; badge attributes are written only when they change
 - **Installers** find profiles like Zen (`profiles.ini`/`installs.ini`, `~/.config/zen`, `$XDG_CONFIG_HOME`, `MOZ_LEGACY_HOME`, legacy `~/.zen`), never touch non-profile folders, never run `sudo` themselves, never replace an existing `config.js`, copy only fx-autoconfig's `chrome/utils` from a pinned, hash-checked commit, and clear the startup cache with `InvalidateCaches`. ZenLeap Manager (macOS) is released as `ZenLeap-Manager-vX.Y.Z-macos.zip` and has a profile picker
 
 ### Fixed
