@@ -7809,9 +7809,10 @@
     const prevWsId = gZenWorkspaces.activeWorkspace;
     let name = (typeof wsData.name === 'string' && wsData.name.trim()) ? wsData.name.trim().slice(0, 100) : 'Restored';
     let icon = sanitizeSessionIcon(wsData.icon);
-    // ZenRipple adopts the space with its name as its agents' space: a restored copy of
-    // it gets its own name (and the default icon), never a second "ZenRipple" space.
-    if (name.toLowerCase() === ZENRIPPLE_SPACE_NAME.toLowerCase()) {
+    // ZenRipple adopts the space with its name as its agents' space: while it runs, a
+    // restored copy of it gets its own name (and the default icon), never a second
+    // "ZenRipple" space. Without ZenRipple the name is an ordinary one and is kept.
+    if (zenRippleActive() && name.toLowerCase() === ZENRIPPLE_SPACE_NAME.toLowerCase()) {
       name = `${name} (restored)`;
       icon = undefined;
     }
