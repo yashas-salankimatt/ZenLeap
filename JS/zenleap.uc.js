@@ -8900,7 +8900,7 @@
       sineNotice.style.cssText = 'font-size:12px;color:var(--zl-text-secondary);text-align:center;line-height:1.5;';
       const sineName = updateEl('strong', null, 'Sine');
       sineName.style.color = 'var(--zl-accent)';
-      sineNotice.append('This installation is managed by ', sineName, '.', document.createElement('br'), 'Update through the Sine mod settings page.');
+      sineNotice.append('This installation is managed by ', sineName, '.');
       actions.appendChild(sineNotice);
 
       const closeBtn = document.createElement('button');
@@ -9413,7 +9413,7 @@
       document.documentElement.appendChild(folderDeleteModal);
     }
 
-    folderDeleteModal.innerHTML = '';
+    folderDeleteModal.replaceChildren();
 
     const backdrop = document.createElement('div');
     backdrop.className = 'zenleap-folder-delete-backdrop';
@@ -20881,7 +20881,7 @@
   }
 
   // ============================================
-  // LIFECYCLE: init, teardown registry, Sine hot-unload
+  // LIFECYCLE: Zen version check, teardown, init, Sine hot-unload
   // ============================================
 
   // Oldest Zen release this version supports. Older builds still load but log one
