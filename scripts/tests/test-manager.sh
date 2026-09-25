@@ -248,7 +248,7 @@ rm -rf "$P/chrome/sine-mods"
 manager Install DEFAULT
 check "sine bootloader profile without the mod: points to Sine" has "$LOG" "set up for Sine's bootloader"
 check "sine bootloader profile without the mod: nothing installed" missing "$P/chrome/JS/zenleap.uc.js"
-# A sine-mods copy where Sine does not start is a leftover: install as usual [REV-LINST-05]
+# A sine-mods copy where Sine does not start is a leftover: install as usual
 new_mac sineleft
 mkdir -p "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS"
 printf '// @version 3.3.9\n' > "$P/chrome/sine-mods/zenleap-relative-tab-nav/JS/zenleap.uc.js"
@@ -280,7 +280,7 @@ check "other config.js: error shown" has "$LOG" "loads neither fx-autoconfig nor
 check "other config.js: names the file Zen runs" has "$LOG" "$RES/config.js"
 check "other config.js: untouched" same "$T/foreign-config" "$RES/config.js"
 
-# H. Release fails verification: what happened and what to do instead [REV-LINST-01]
+# H. Release fails verification: what happened and what to do instead
 new_mac badsum
 FAKE_RELEASE="$T/fixtures/release-badsum" manager Install DEFAULT
 check "bad checksum: error shown" has "$LOG" "does not match the release's CHECKSUMS.sha256"
@@ -306,7 +306,6 @@ check "outdated: userChrome.css backup" exists "$P/chrome/userChrome.css.zenleap
 
 # M. Leftovers: fx-autoconfig's examples offered for removal on install, the
 #    updater's backup removed on uninstall, fx-autoconfig kept for other scripts
-#    [REV-LINST-12, REV-LINST-15]
 new_mac leftovers
 mkdir -p "$P/chrome/JS" "$P/chrome/CSS"
 cp "$FXAC_TREE/profile/chrome/JS/test.uc.js" "$P/chrome/JS/"

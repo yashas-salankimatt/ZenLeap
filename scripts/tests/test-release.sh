@@ -1,8 +1,8 @@
 #!/bin/bash
-# Tests for scripts/release.sh and scripts/check-release.sh (REV-LINST-19,
-# REV-LINST-02). They run on a throwaway git repository made from this
-# checkout's files, with its current state committed and tagged as the last
-# release; nothing here touches the real repository.
+# Tests for scripts/release.sh and scripts/check-release.sh. They run on a
+# throwaway git repository made from this checkout's files, with its current
+# state committed and tagged as the last release; nothing here touches the real
+# repository.
 #
 # Usage: scripts/tests/test-release.sh      (TEST_BASH=/path/to/bash-3.2 to run the scripts with it)
 

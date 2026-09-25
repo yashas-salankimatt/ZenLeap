@@ -521,7 +521,7 @@ EXTRA_ENV="FX_AUTOCONFIG_DIR=$FXAC_TREE" REPO="$REAL_REPO" run install.sh instal
 check "FX_AUTOCONFIG_DIR + loader already there: reported as up to date" has "$OUT" "fx-autoconfig loader 0.10.16 already installed"
 check "FX_AUTOCONFIG_DIR + loader already there: not called outdated" lacks "$OUT" "older than the tested one"
 
-# 28. --profile is repeatable and its kinds can be mixed; --profile-dir is repeatable  [REV-LINST-07]
+# 28. --profile is repeatable and its kinds can be mixed; --profile-dir is repeatable
 new_home mixsel
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -546,7 +546,7 @@ check "--profile-dir twice: the second" exists "$H/adhoc2/chrome/JS/zenleap.uc.j
 
 # 29. profiles.ini the way Firefox reads it: a UTF-8 BOM, "[Section] " with a
 #     trailing blank, indented keys and comments work; the keys under a
-#     malformed header ("[Profile1]x") are ignored  [REV-LINST-10]
+#     malformed header ("[Profile1]x") are ignored
 new_home inifx
 R="$H/.config/zen"
 mk_profile "$R" "aaaa.one"
@@ -569,7 +569,7 @@ run install.sh install --yes --all-profiles --zen-path "$APP"
 check "indented keys and comments: Profile0 read" exists "$R/aaaa.one/chrome/JS/zenleap.uc.js"
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" missing "$R/bbbb.two/chrome"
 
-# 30. The Flatpak is used only when it is installed and no native Zen is in use  [REV-LINST-03]
+# 30. The Flatpak is used only when it is installed and no native Zen is in use
 new_home fpleft
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -600,7 +600,7 @@ FAKE_FLATPAK_INSTALLED=1 run install.sh install --yes --profile-dir "$FP"
 check "--profile-dir inside the Flatpak's folder: the Flatpak" exists "$FP/chrome/JS/zenleap.uc.js"
 check "... config.js into its systemconfig extension" exists "$H/.local/share/flatpak/extension/app.zen_browser.zen.systemconfig/$(uname -m)/stable/config.js"
 
-# 31. The loader that runs a profile decides, not stray Sine files  [REV-LINST-05, REV-LINST-09]
+# 31. The loader that runs a profile decides, not stray Sine files
 new_home loaders
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -654,7 +654,7 @@ check "... says it will not load yet" has "$OUT" "chrome/utils is not fx-autocon
 check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 check "... chrome/utils still untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 
-# 32. --yes without --profile: update where ZenLeap is, else install into the default  [REV-LINST-08]
+# 32. --yes without --profile: update where ZenLeap is, else install into the default
 new_home onlyother
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -672,7 +672,7 @@ if $HAVE_SCRIPT; then
     check "interactive: the default profile untouched" missing "$P/chrome/JS/zenleap.uc.js"
 fi
 
-# 33. --zen-path and --profile-dir must point to Zen and to a profile  [REV-LINST-11]
+# 33. --zen-path and --profile-dir must point to Zen and to a profile
 new_home badpaths
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -695,7 +695,7 @@ if $HAVE_SCRIPT; then
     check "--zen-path without Zen, interactive 'n': no config.js" missing "$T/badpaths/notzen/config.js"
 fi
 
-# 34. Leftovers of older versions  [REV-LINST-12]
+# 34. Leftovers of older versions
 new_home leftovers
 R="$H/.zen"
 mk_two_profiles "$R"
@@ -750,7 +750,7 @@ check "userChrome.css with only ZenLeap's block: removed" missing "$P/chrome/use
 check "... backup kept" has "$P/chrome/userChrome.css.zenleap-backup" ".x{}"
 
 # 35. fx-autoconfig verification counts every entry of chrome/utils (hidden ones
-#     too, by exact name), and exactly the verified files are copied  [REV-LINST-13]
+#     too, by exact name), and exactly the verified files are copied
 new_home fxhidden
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -772,7 +772,7 @@ run install.sh install --yes --zen-path "$APP"
 check "verified loader: exactly the pinned files in chrome/utils" \
     test "$(ls -A "$P/chrome/utils" | tr '\n' ' ')" = "boot.sys.mjs chrome.manifest fs.sys.mjs module_loader.mjs uc_api.sys.mjs utils.sys.mjs "
 
-# 36. uninstall --remove-fxautoconfig keeps fx-autoconfig that other scripts need  [REV-LINST-15]
+# 36. uninstall --remove-fxautoconfig keeps fx-autoconfig that other scripts need
 new_home fxusers
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -794,7 +794,7 @@ check "... explains" has "$OUT" "still need it: default-release"
 run install.sh uninstall --yes --remove-fxautoconfig --zen-path "$APP"
 check "--remove-fxautoconfig, the last user: config.js removed" missing "$APP/config.js"
 
-# 37. A config.js that cannot load ZenLeap: no "Installation Complete!"  [REV-LINST-16]
+# 37. A config.js that cannot load ZenLeap: no "Installation Complete!"
 new_home foreignsum
 mk_two_profiles "$H/.config/zen"
 printf '// old fx-autoconfig\nChromeUtils.import("chrome://userchromejs/content/boot.jsm");\n' > "$APP/config.js"
@@ -804,7 +804,7 @@ check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 check "... says what keeps it from loading" has "$OUT" "does not load fx-autoconfig"
 
 # 38. Not bash: a clear message instead of a parse error; bash in POSIX mode
-#     (`sh` on macOS) works  [REV-LINST-17]
+#     (`sh` on macOS) works
 new_home notbash
 mk_two_profiles "$H/.config/zen"
 DASH=$(command -v dash || true)
@@ -829,7 +829,7 @@ RC=$?
 check "bash --posix (macOS sh): exit 0" rc_is 0
 check "bash --posix (macOS sh): installed" exists "$H/.config/zen/gdgcari8.Default (release)/chrome/JS/zenleap.uc.js"
 
-# 39. A release that fails verification: what happened and what to do instead  [REV-LINST-01]
+# 39. A release that fails verification: what happened and what to do instead
 new_home unverified
 R="$H/.config/zen"
 mk_two_profiles "$R"
@@ -974,7 +974,7 @@ if $HAVE_SCRIPT; then
 fi
 run install-plugin.sh "$REPO/examples/plugins/tab-stats" --yes --profile 1 --profile 2
 check "plugin --profile 1 --profile 2: both" exists "$P/chrome/zenleap-plugins/tab-stats/plugin.js"
-# REV-LINST-04: the installed folder (or a folder around it) as the source
+# The installed folder (or a folder around it) as the source
 DEST="$P/chrome/zenleap-plugins/tab-stats"
 echo '// edited in place' >> "$DEST/plugin.js"
 run install-plugin.sh "$DEST" --yes --profile 1
@@ -1005,7 +1005,7 @@ check "plugin replaced: the new copy" exists "$DEST/unreadable"
 check "plugin replaced: the old files gone" lacks "$DEST/plugin.js" "edited in place"
 check "plugin replaced: no backup folder left" missing "$P/chrome/.zenleap-plugin-tab-stats.old"
 check "plugin replaced: nothing temporary ever in zenleap-plugins (ZenLeap would load it)" test -z "$(find "$PLX" -mindepth 1 -maxdepth 1 -name '.*')"
-# REV-LINST-14: ids are checked as a whole (a newline must not slip through)
+# Plugin ids are checked as a whole (a newline must not slip through)
 mkdir -p "$T/nlplugin"
 echo '// x' > "$T/nlplugin/plugin.js"
 printf '{"id": "ok\\n..", "name": "Bad"}\n' > "$T/nlplugin/manifest.json"

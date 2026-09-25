@@ -8,7 +8,7 @@
 #
 # Checks:
 #   - "// @version", const VERSION, theme.json "version" and the Manager's
-#     Info.plist versions all match (LEAP-COMPAT-14)
+#     Info.plist versions all match
 #   - CHECKSUMS.sha256 is `sha256sum` output whose JS/zenleap.uc.js hash matches
 #     the file (and the committed blob, so CRLF checkouts are caught)
 #   - theme.json / preferences.json are valid, reference existing files, have

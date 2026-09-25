@@ -245,7 +245,7 @@ ps -Action install -Yes -ZenPath "$ZENDIR"
 check "fx-autoconfig config.js without pref file: config.js kept" same "$T/ps-noprefs-config" "$ZENDIR/config.js"
 check "fx-autoconfig config.js without pref file: pref file added" has "$ZENDIR/defaults/pref/config-prefs.js" "general.config.filename"
 
-# 6. Sine-managed profile and Sine-only profile  [REV-LINST-05, REV-LINST-09]
+# 6. Sine-managed profile and Sine-only profile
 new_win sine
 S="$P/chrome/sine-mods/zenleap-relative-tab-nav"
 mkdir -p "$S/JS" "$P/chrome/JS" "$P/chrome/utils"
@@ -398,7 +398,7 @@ check "pinned hashes: nothing installed" missing "$ZENDIR/config.js"
 
 # 14. irm | iex leaves the caller's session as it was: $PROFILE, the error
 #     preference, variables named like the parameters, TLS setting, and no
-#     helper functions or variables left behind  [REV-LINST-06]
+#     helper functions or variables left behind
 new_win scope
 rm -rf "$O" && sed -i '/^\[Profile0\]/,/^$/d' "$R/profiles.ini"
 mkdir -p "$T/scopecwd" "$H/AppData/Local/Zen Browser"
@@ -438,7 +438,7 @@ ps_cmd "& ([scriptblock]::Create([IO.File]::ReadAllText($(ps_lit "$REPO/install.
 check "scriptblock one-liner with options: -Action check works" has "$OUT" "Default (release) [$P]: UP_TO_DATE"
 check "scriptblock one-liner with options: session kept, exit code 0" has "$OUT" "EXIT=0"
 
-# 15. -Profile takes several values of any kind; -ProfileDir too  [REV-LINST-07]
+# 15. -Profile takes several values of any kind; -ProfileDir too
 new_win multi
 ps -Action install -Yes -Profile "@raw:'Default (release)',2" -ZenPath "$ZENDIR"
 check "-Profile <name>,<n>: exit 0" rc_is 0
@@ -450,7 +450,7 @@ ps -Action install -Yes -ProfileDir "@raw:$(ps_lit "$H/adhoc1"),$(ps_lit "$H/adh
 check "-ProfileDir <a>,<b>: the first" exists "$H/adhoc1/chrome/JS/zenleap.uc.js"
 check "-ProfileDir <a>,<b>: the second" exists "$H/adhoc2/chrome/JS/zenleap.uc.js"
 
-# 16. profiles.ini the way Firefox reads it  [REV-LINST-10]
+# 16. profiles.ini the way Firefox reads it
 new_win ini
 printf '[Profile0]\r\nName=default-release\r\n  IsRelative=1\r\nPath=Profiles/aaaa.default-release\r\nDefault=1\r\n\r\n[Profile1] \r\n; a comment\r\nName=Default (release)\r\nIsRelative=1\r\nPath=Profiles/bbbb.Default (release)\r\n' > "$R/profiles.ini"
 rm -f "$R/installs.ini"
@@ -463,7 +463,7 @@ printf '[Profile0]\nName=default-release\nIsRelative=1\nPath=Profiles/aaaa.defau
 ps -Action check
 check "malformed '[Profile1]x': its keys ignored (as by Zen)" lacks "$OUT" "Default (release) ["
 
-# 17. The loader that runs a profile decides, not stray Sine files  [REV-LINST-05]
+# 17. The loader that runs a profile decides, not stray Sine files
 new_win loaders
 ps -Action install -Yes -ZenPath "$ZENDIR"
 rm -f "$P/chrome/JS/zenleap.uc.js"
@@ -499,7 +499,7 @@ check "... says it will not load yet" has "$OUT" "chrome\\utils is not fx-autoco
 check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 check "... chrome\\utils untouched" has "$P/chrome/utils/chrome.manifest" "content other"
 
-# 18. -Yes without -Profile: update where ZenLeap is, else the default  [REV-LINST-08]
+# 18. -Yes without -Profile: update where ZenLeap is, else the default
 new_win onlyother
 mkdir -p "$O/chrome/JS"
 printf '// @version 3.3.0\n' > "$O/chrome/JS/zenleap.uc.js"
@@ -507,7 +507,7 @@ ps -Action install -Yes -ZenPath "$ZENDIR"
 check "update -Yes: the profile with ZenLeap is updated" same "$REPO/JS/zenleap.uc.js" "$O/chrome/JS/zenleap.uc.js"
 check "update -Yes: not added to the default profile" missing "$P/chrome/JS/zenleap.uc.js"
 
-# 19. -ZenPath and -ProfileDir must point to Zen and to a profile  [REV-LINST-11]
+# 19. -ZenPath and -ProfileDir must point to Zen and to a profile
 new_win badpaths
 mkdir -p "$T/badpaths/notzen"
 ps -Action install -Yes -ZenPath "$T/badpaths/notzen"
@@ -521,7 +521,7 @@ check "-ProfileDir <home>, -Yes: refused" rc_is 1
 check "... explains" has "$OUT" "does not look like a Zen profile"
 check "... no chrome folder there" missing "$H/chrome"
 
-# 20. Leftovers of older versions  [REV-LINST-12]
+# 20. Leftovers of older versions
 new_win leftovers
 ps -Action install -Yes -ZenPath "$ZENDIR"
 cp "$P/chrome/JS/zenleap.uc.js" "$P/chrome/JS/zenleap.uc.js.bak"
@@ -554,7 +554,7 @@ check "userChrome.css with only ZenLeap's block: removed" missing "$P/chrome/use
 check "... backup kept" has "$P/chrome/userChrome.css.zenleap-backup" ".x{}"
 
 # 21. fx-autoconfig verification counts hidden files; exactly the verified
-#     files are copied  [REV-LINST-13]
+#     files are copied
 new_win fxhidden
 rm -rf "$T/fxh"
 mkdir -p "$T/fxh"
@@ -570,7 +570,7 @@ ps -Action install -Yes -ZenPath "$ZENDIR"
 check "verified loader: exactly the pinned files in chrome\\utils" \
     test "$(ls -A "$P/chrome/utils" | tr '\n' ' ')" = "boot.sys.mjs chrome.manifest fs.sys.mjs module_loader.mjs uc_api.sys.mjs utils.sys.mjs "
 
-# 22. -RemoveFxAutoconfig keeps fx-autoconfig that other scripts need  [REV-LINST-15]
+# 22. -RemoveFxAutoconfig keeps fx-autoconfig that other scripts need
 new_win fxusers
 ps -Action install -Yes -ZenPath "$ZENDIR"
 echo '// other' > "$P/chrome/JS/zenripple_agent.uc.js"
@@ -586,7 +586,7 @@ check "... this profile's loader removed" missing "$P/chrome/utils"
 ps -Action uninstall -Yes -RemoveFxAutoconfig -ZenPath "$ZENDIR"
 check "-RemoveFxAutoconfig, the last user: config.js removed" missing "$ZENDIR/config.js"
 
-# 23. A config.js that cannot load ZenLeap: no "Installation Complete!"  [REV-LINST-16]
+# 23. A config.js that cannot load ZenLeap: no "Installation Complete!"
 new_win foreignsum
 printf 'Components.utils.import("chrome://userchromejs/content/boot.jsm");\n' > "$ZENDIR/config.js"
 ps -Action install -Yes -ZenPath "$ZENDIR"
@@ -594,7 +594,7 @@ check "old/foreign config.js: installed, exit 0" rc_is 0
 check "... no 'Installation Complete!'" lacks "$OUT" "Installation Complete!"
 check "... says what keeps it from loading" has "$OUT" "does not load fx-autoconfig"
 
-# 24. A release that fails verification: what happened and what to do  [REV-LINST-01]
+# 24. A release that fails verification: what happened and what to do
 new_win unverified
 FAKE_RELEASE="$T/fixtures/release-badsum" ps -Action install -Remote -Yes -ZenPath "$ZENDIR"
 check "unverified release: exit 1" rc_is 1
