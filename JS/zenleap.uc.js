@@ -3,7 +3,7 @@
 // @description    Vim-style relative tab numbering with keyboard navigation
 // @include        main
 // @author         ZenLeap
-// @version        3.4.0  // Keep in sync with VERSION constant below
+// @version        3.5.0  // Keep in sync with VERSION constant below
 // ==/UserScript==
 
 (function() {
@@ -14,7 +14,7 @@
   window.__zenleapLoaded = true;
 
   // Version - keep in sync with @version in header above
-  const VERSION = '3.4.0';
+  const VERSION = '3.5.0';
 
   // Sine package manager detection — when true, self-update is disabled
   // (Sine manages file installation; ZenLeap only checks & notifies)

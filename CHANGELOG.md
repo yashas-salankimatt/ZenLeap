@@ -5,7 +5,7 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.5.0] - 2026-09-27
 
 Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and installers that find today's profile folders, safer destructive commands, and a keyboard layer that behaves next to web pages and next to ZenRipple's AI agents. The plugin API changes in ways plugin authors need to know about (see Breaking changes).
 
@@ -666,6 +666,7 @@ Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and insta
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 3.5.0 | 2026-09-27 | Zen 1.22 / Firefox 156 support, plugins load again, verified updates and installers, confirmations for destructive actions, keyboard fixes |
 | 3.4.0 | 2026-03-22 | Fix browser freeze on quit, jj escape now an opt-in setting, URL-bar jj fix |
 | 3.3.9 | 2026-03-14 | Folder badge alignment, long folder names fade before the badge |
 | 3.3.8 | 2026-03-13 | Browser theme on Zen 1.19+, no color flash on workspace switch |

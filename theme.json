@@ -4,10 +4,10 @@
   "description": "Vim-powered keyboard navigation suite for Zen Browser. Relative tab numbers, leap mode, browse mode, command palette, marks, jump history, tab search, split view, workspace sessions, plugin system, and 20+ themes.",
   "homepage": "https://github.com/yashas-salankimatt/ZenLeap",
   "author": "yashas-salankimatt",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "tags": ["tabs", "keyboard", "vim", "navigation"],
   "createdAt": "2026-02-05",
-  "updatedAt": "2026-03-14T00:00:00Z",
+  "updatedAt": "2026-09-28T04:56:01Z",
   "fork": ["zen"],
   "scripts": {
     "JS/zenleap.uc.js": {
