@@ -5,6 +5,11 @@ All notable changes to ZenLeap will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Closing several tabs failed on Zen 1.24** — Firefox moved `closingTabsEnum` from `gBrowser` to the `Tabbrowser` class, so closing selected tabs in browse mode, closing matched search results and the plugin API's `closeTabs`/`closeOthers`/`closeToRight`/`closeToLeft` threw `gBrowser.closingTabsEnum is undefined`; both locations are now supported (#55)
+
 ## [3.5.0] - 2026-09-27
 
 Ready for Zen 1.22 (Firefox 156): plugins load again, verified updates and installers that find today's profile folders, safer destructive commands, and a keyboard layer that behaves next to web pages and next to ZenRipple's AI agents. The plugin API changes in ways plugin authors need to know about (see Breaking changes).
