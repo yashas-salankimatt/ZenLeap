@@ -3516,21 +3516,21 @@
         },
         select: (tab) => { if (liveTab(tab)) return switchToTabAcrossWorkspaces(tab); return Promise.resolve(false); },
         close: (tab) => { if (liveTab(tab)) gBrowser.removeTab(tab); },
-        closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), gBrowser.closingTabsEnum.MULTI_SELECTED),
+        closeTabs: (tabs) => closeTabsWithWarning(Array.from(tabs || []), closingTabsEnum().MULTI_SELECTED),
         // Like the palette commands: pinned tabs and ZenRipple's agent tabs/pages stay open
         closeOthers: (keepTab) => {
           const keep = keepTab || currentTab();
-          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.OTHER);
+          return closeTabsWithWarning(getVisibleTabs().filter(t => t !== keep && !t.pinned && !isExternallyManagedTab(t)), closingTabsEnum().OTHER);
         },
         closeToRight: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || currentTab());
-          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.TO_END);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(idx + 1).filter(t => !t.pinned && !isExternallyManagedTab(t)), closingTabsEnum().TO_END);
         },
         closeToLeft: (fromTab) => {
           const tabs = getVisibleTabs();
           const idx = tabs.indexOf(fromTab || currentTab());
-          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned && !isExternallyManagedTab(t)), gBrowser.closingTabsEnum.TO_START);
+          return idx < 0 ? 0 : closeTabsWithWarning(tabs.slice(0, idx).filter(t => !t.pinned && !isExternallyManagedTab(t)), closingTabsEnum().TO_START);
         },
         // User-intent tab creation: Zen's Space Routing rules apply unless { skipRoute: true }
         create: (url, opts = {}) => gBrowser.addTab(url || 'about:newtab', {
@@ -5152,11 +5152,17 @@
     return [...tabs].sort((a, b) => (positionMap.get(a) ?? Infinity) - (positionMap.get(b) ?? Infinity));
   }
 
+  // Firefox's closingTabsEnum (warnAboutClosingTabs' second argument) moved from the
+  // tabbrowser instance to a static field of the Tabbrowser class (Zen 1.24); support both.
+  function closingTabsEnum() {
+    return gBrowser.closingTabsEnum ?? gBrowser.constructor?.closingTabsEnum;
+  }
+
   // Batch tab operations through Tabbrowser/Zen: one call per batch (one undo entry,
   // consistent tab caches and events) instead of per-tab loops or raw DOM moves.
   const TabOps = {
     // Close as one batch: a single "reopen closed tabs" restores all of them. `warn`
-    // (a gBrowser.closingTabsEnum value) shows Firefox's own "close N tabs?" prompt
+    // (a closingTabsEnum() value) shows Firefox's own "close N tabs?" prompt
     // where Firefox would; returns the number of tabs closed.
     close(tabs, { warn } = {}) {
       const valid = liveTabs(tabs);
@@ -6772,7 +6778,7 @@
   // more tabs than can be reopened would close.
   function closeMatchedTabs(tabs) {
     exitSearchMode();
-    const count = TabOps.close(tabs, { warn: gBrowser.closingTabsEnum.MULTI_SELECTED });
+    const count = TabOps.close(tabs, { warn: closingTabsEnum().MULTI_SELECTED });
     log(`Closed ${count} matching tabs`);
   }
 
@@ -17575,7 +17581,7 @@
     tabs = liveTabs(tabs);
     const pinned = tabs.filter(t => t.pinned);
     const normal = tabs.filter(t => !t.pinned);
-    const warn = normal.length > 1 ? gBrowser.closingTabsEnum.MULTI_SELECTED : undefined;
+    const warn = normal.length > 1 ? closingTabsEnum().MULTI_SELECTED : undefined;
     if (normal.length && !TabOps.close(normal, { warn })) return Promise.resolve(false);
     if (!pinned.length) return Promise.resolve(true);
     if (typeof window.gZenPinnedTabManager?.onCloseTabShortcut === 'function') {
